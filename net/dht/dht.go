@@ -10,9 +10,12 @@ package dht
 
 import (
 	"context"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +24,12 @@ import (
 	"github.com/ipfs/go-cid"
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/metrics"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	record "github.com/libp2p/go-libp2p-record"
+	dhtrecords "github.com/libp2p/go-libp2p-kad-dht/records"
+	"github.com/libp2p/go-libp2p/p2p/net/conngater"
 	"github.com/multiformats/go-multihash"
 
 	"github.com/nnlgsakib/membuss/core/mid"
@@ -41,7 +47,10 @@ const DefaultBootstrapTimeout = 30 * time.Second
 // MemDHT is the Membuss DHT facade. It is safe for concurrent
 // use after construction.
 type MemDHT struct {
-	dht *kaddht.IpfsDHT
+	dht        *kaddht.IpfsDHT
+	dstore     ds.Batching
+	bwc        *metrics.BandwidthCounter
+	freshStore *freshnessProviderStore
 }
 
 // Config configures a MemDHT.
@@ -79,6 +88,20 @@ type Config struct {
 	// dramatically faster and is what IPFS ships with
 	// by default. Default true.
 	OptimisticProvide bool
+
+	// ProviderRecordTTL is the duration provider records remain
+	// valid in the DHT.
+	ProviderRecordTTL time.Duration
+	// ProviderAddrTTL is the TTL for provider address records.
+	ProviderAddrTTL time.Duration
+	// ProviderCleanupInterval is the sweep interval for pruning
+	// expired provider records from local storage.
+	ProviderCleanupInterval time.Duration
+	// ConnectionGater is used to filter out blacklisted peers from the
+	// routing table and queries.
+	ConnectionGater *conngater.BasicConnectionGater
+	// BandwidthCounter tracks data transferred by remote peers.
+	BandwidthCounter *metrics.BandwidthCounter
 }
 
 // modeOrDefault resolves cfg.Mode vs cfg.ModeName to a
@@ -121,13 +144,39 @@ func New(ctx context.Context, cfg Config) (*MemDHT, error) {
 	opts := []kaddht.Option{
 		kaddht.ProtocolPrefix(protocol.ID(ProtocolPrefix)),
 		kaddht.Mode(cfg.modeOrDefault()),
-		// Register a permissive validator for the "membuss"
-		// namespace so that arbitrary app-level values can be
-		// stored and retrieved. The kad-dht default validator
-		// only allows "/pk/..." (public-key) records.
-		kaddht.NamespacedValidator("membuss", permissiveValidator{}),
-		kaddht.NamespacedValidator("memns", permissiveValidator{}),
+		// Register a validator for the "membuss" and "memns"
+		// namespaces so that app-level values and MemNS records can be
+		// securely stored, validated, and selected. The kad-dht default
+		// validator only allows "/pk/..." (public-key) records.
+		kaddht.NamespacedValidator("membuss", membussValidator{}),
+		kaddht.NamespacedValidator("memns", membussValidator{}),
 	}
+
+	var pmOpts []dhtrecords.Option
+	if cfg.ProviderRecordTTL > 0 {
+		pmOpts = append(pmOpts, dhtrecords.ProvideValidity(cfg.ProviderRecordTTL))
+	}
+	if cfg.ProviderAddrTTL > 0 {
+		pmOpts = append(pmOpts, dhtrecords.ProviderAddrTTL(cfg.ProviderAddrTTL))
+	}
+	if cfg.ProviderCleanupInterval > 0 {
+		pmOpts = append(pmOpts, dhtrecords.CleanupInterval(cfg.ProviderCleanupInterval))
+	}
+
+	dstore := cfg.Datastore
+	if dstore == nil {
+		dstore = ds.NewMapDatastore()
+	}
+	pm, err := dhtrecords.NewProviderManager(ctx, cfg.Host.ID(), cfg.Host.Peerstore(), dstore, pmOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("dht: build provider manager: %w", err)
+	}
+	freshStore := &freshnessProviderStore{
+		ProviderStore: pm,
+		fresh:         make(map[string]time.Time),
+	}
+	opts = append(opts, kaddht.ProviderStore(freshStore))
+
 	if cfg.Datastore != nil {
 		// Provider-record persistence. Without this, the
 		// DHT forgets every Provide() the moment the
@@ -143,11 +192,27 @@ func New(ctx context.Context, cfg Config) (*MemDHT, error) {
 		// (full DHT walk) to seconds (single hop).
 		opts = append(opts, kaddht.EnableOptimisticProvide())
 	}
+	if cfg.ConnectionGater != nil {
+		var rtFilter kaddht.RouteTableFilterFunc = func(dht any, p peer.ID) bool {
+			if !cfg.ConnectionGater.InterceptPeerDial(p) {
+				return false
+			}
+			return true
+		}
+		var qFilter kaddht.QueryFilterFunc = func(dht any, ai peer.AddrInfo) bool {
+			if !cfg.ConnectionGater.InterceptPeerDial(ai.ID) {
+				return false
+			}
+			return true
+		}
+		opts = append(opts, kaddht.RoutingTableFilter(rtFilter))
+		opts = append(opts, kaddht.QueryFilter(qFilter))
+	}
 	d, err := kaddht.New(ctx, cfg.Host, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dht: build kad-dht: %w", err)
 	}
-	return &MemDHT{dht: d}, nil
+	return &MemDHT{dht: d, dstore: cfg.Datastore, bwc: cfg.BandwidthCounter, freshStore: freshStore}, nil
 }
 
 // Provide announces to the DHT that this node can serve the
@@ -167,7 +232,7 @@ func (m *MemDHT) Provide(ctx context.Context, id mid.MID) error {
 }
 
 // FindProviders returns the set of peers the DHT knows are
-// providers of the given MID.
+// providers of the given MID, ranked by their peer score.
 func (m *MemDHT) FindProviders(ctx context.Context, id mid.MID) ([]peer.AddrInfo, error) {
 	if m == nil || m.dht == nil {
 		return nil, errors.New("dht: nil")
@@ -179,7 +244,53 @@ func (m *MemDHT) FindProviders(ctx context.Context, id mid.MID) ([]peer.AddrInfo
 	if !c.Defined() {
 		return nil, errors.New("dht: zero MID")
 	}
-	return m.dht.FindProviders(ctx, c)
+	providers, err := m.dht.FindProviders(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sort providers by score descending
+	key := c.Hash()
+	sort.Slice(providers, func(i, j int) bool {
+		return m.scorePeer(key, providers[i].ID) > m.scorePeer(key, providers[j].ID)
+	})
+
+	return providers, nil
+}
+
+func (m *MemDHT) scorePeer(key []byte, p peer.ID) float64 {
+	score := 0.0
+
+	// 1. Latency-based scoring
+	latency := m.dht.Host().Peerstore().LatencyEWMA(p)
+	if latency > 0 {
+		// Lower latency -> higher score
+		score += 1000.0 / (float64(latency/time.Millisecond) + 1.0)
+	} else {
+		// Default score for unknown/not-measured latency (e.g. assume 200ms)
+		score += 1000.0 / 201.0
+	}
+
+	// 2. Bandwidth-based scoring
+	if m.bwc != nil {
+		stats := m.bwc.GetBandwidthForPeer(p)
+		// 1 point per KB/s rate
+		score += stats.RateIn / 1024.0
+		// 1 point per MB total transferred in
+		score += float64(stats.TotalIn) / (1024.0 * 1024.0)
+	}
+
+	// 3. Freshness-based scoring
+	if m.freshStore != nil {
+		lastSeen := m.freshStore.getFreshness(key, p)
+		if !lastSeen.IsZero() {
+			age := time.Since(lastSeen)
+			// Higher score for younger/fresher records (e.g. up to 500 points)
+			score += 500.0 / (age.Hours() + 1.0)
+		}
+	}
+
+	return score
 }
 
 // PutValue stores an arbitrary small value under the given
@@ -221,7 +332,7 @@ func (m *MemDHT) SearchValue(ctx context.Context, key string) (<-chan []byte, er
 	return m.dht.SearchValue(ctx, key)
 }
 
-// Bootstrap connects to the configured bootstrap peers and
+// Bootstrap connects to the configured bootstrap peers in parallel and
 // refreshes the routing table.
 func (m *MemDHT) Bootstrap(ctx context.Context, peers []peer.AddrInfo) error {
 	if m == nil || m.dht == nil {
@@ -230,9 +341,45 @@ func (m *MemDHT) Bootstrap(ctx context.Context, peers []peer.AddrInfo) error {
 	if err := m.dht.Bootstrap(ctx); err != nil {
 		return fmt.Errorf("dht: bootstrap: %w", err)
 	}
-	for _, p := range peers {
-		_ = m.dht.Host().Connect(ctx, p)
+
+	if len(peers) == 0 {
+		return nil
 	}
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		lastErr error
+		success int
+	)
+
+	for _, p := range peers {
+		wg.Add(1)
+		go func(p peer.AddrInfo) {
+			defer wg.Done()
+			dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := m.dht.Host().Connect(dialCtx, p); err != nil {
+				mu.Lock()
+				lastErr = err
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				success++
+				mu.Unlock()
+			}
+		}(p)
+	}
+
+	wg.Wait()
+
+	if success == 0 {
+		if lastErr != nil {
+			return fmt.Errorf("dht: all bootstrap peers unreachable: %w", lastErr)
+		}
+		return errors.New("dht: all bootstrap peers unreachable")
+	}
+
 	return nil
 }
 
@@ -327,10 +474,16 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 				if cfg.MaxAttempts > 0 && attempt >= cfg.MaxAttempts {
 					break
 				}
+				// Add jitter (e.g. ±20%) to the backoff delay
+				jitter := float64(delay) * 0.2
+				minDelay := float64(delay) - jitter
+				maxDelay := float64(delay) + jitter
+				actualDelay := time.Duration(minDelay + rand.Float64()*(maxDelay-minDelay))
+
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(delay):
+				case <-time.After(actualDelay):
 				}
 				delay = time.Duration(float64(delay) * cfg.Factor)
 				if delay > cfg.Max {
@@ -384,29 +537,107 @@ func (m *MemDHT) RoutingTableSize() int {
 	return m.dht.RoutingTable().Size()
 }
 
+type cidCacheKey struct {
+	codec uint64
+	hash  string
+}
+
+var (
+	cidCache   = make(map[cidCacheKey]cid.Cid)
+	cidCacheMu sync.RWMutex
+)
+
 func midToCID(m mid.MID) cid.Cid {
 	if m.IsZero() {
 		return cid.Cid{}
 	}
-	return cid.NewCidV1(uint64(mid.CodecRaw), mhFromMID(m))
+	key := cidCacheKey{
+		codec: m.Codec(),
+		hash:  string(m.Hash),
+	}
+
+	cidCacheMu.RLock()
+	c, ok := cidCache[key]
+	cidCacheMu.RUnlock()
+	if ok {
+		return c
+	}
+
+	c = cid.NewCidV1(uint64(mid.CodecRaw), multihash.Multihash(m.Hash))
+
+	cidCacheMu.Lock()
+	if len(cidCache) > 10000 {
+		cidCache = make(map[cidCacheKey]cid.Cid)
+	}
+	cidCache[key] = c
+	cidCacheMu.Unlock()
+
+	return c
 }
 
 func mhFromMID(m mid.MID) multihash.Multihash {
-	return multihash.Multihash(append([]byte(nil), m.HashBytes()...))
+	return multihash.Multihash(m.Hash)
 }
 
-// permissiveValidator accepts any value stored under its
-// namespace. It is used for the "membuss" app-level key/value
-// records; the default kad-dht validator is preserved for
-// "pk" public-key records.
-type permissiveValidator struct{}
-
-func (permissiveValidator) Validate(_ string, _ []byte) error { return nil }
-func (permissiveValidator) Select(_ string, values [][]byte) (int, error) {
-	if len(values) == 0 {
-		return 0, errors.New("no values")
+// RemoveProviderRecord deletes the local provider record for the given MID.
+func (m *MemDHT) RemoveProviderRecord(id mid.MID) error {
+	if m == nil || m.dht == nil {
+		return errors.New("dht: nil")
 	}
-	return 0, nil
+	if m.dstore == nil {
+		return nil
+	}
+	if id.IsZero() {
+		return errors.New("dht: zero MID")
+	}
+	c := midToCID(id)
+	if !c.Defined() {
+		return errors.New("dht: zero MID")
+	}
+
+	rawStd := base32.StdEncoding.WithPadding(base32.NoPadding)
+	cidB32 := rawStd.EncodeToString(c.Hash())
+	pidB32 := rawStd.EncodeToString([]byte(m.dht.PeerID()))
+
+	key := ds.NewKey("/providers/" + cidB32 + "/" + pidB32)
+	if err := m.dstore.Delete(context.Background(), key); err != nil {
+		if errors.Is(err, ds.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("dht: delete provider record from datastore: %w", err)
+	}
+	return nil
+}
+
+type freshnessProviderStore struct {
+	dhtrecords.ProviderStore
+	mu    sync.RWMutex
+	fresh map[string]time.Time
+}
+
+func (f *freshnessProviderStore) AddProvider(ctx context.Context, key []byte, prov peer.AddrInfo) error {
+	rawStd := base32.StdEncoding.WithPadding(base32.NoPadding)
+	kStr := rawStd.EncodeToString(key) + "/" + rawStd.EncodeToString([]byte(prov.ID))
+
+	f.mu.Lock()
+	f.fresh[kStr] = time.Now()
+	f.mu.Unlock()
+
+	return f.ProviderStore.AddProvider(ctx, key, prov)
+}
+
+func (f *freshnessProviderStore) getFreshness(key []byte, pid peer.ID) time.Time {
+	rawStd := base32.StdEncoding.WithPadding(base32.NoPadding)
+	kStr := rawStd.EncodeToString(key) + "/" + rawStd.EncodeToString([]byte(pid))
+
+	f.mu.RLock()
+	t, ok := f.fresh[kStr]
+	f.mu.RUnlock()
+
+	if ok {
+		return t
+	}
+	return time.Time{}
 }
 
 // silence unused import

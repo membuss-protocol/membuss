@@ -147,6 +147,7 @@ func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize
 		Name:     name,
 		MimeType: mimeType,
 		Size:     size,
+		IsRoot:   true,
 	}); err != nil {
 		return serverpkg.AddResult{}, fmt.Errorf("add: objectinfo: %w", err)
 	}
@@ -541,6 +542,9 @@ func (b *daemonBackend) Delete(ctx context.Context, midStr string) (serverpkg.De
 		deleted, freed, err := rd.DeleteRecursive(m)
 		if err != nil {
 			return serverpkg.DeleteResult{}, err
+		}
+		if b.dht != nil {
+			_ = b.dht.RemoveProviderRecord(m)
 		}
 		return serverpkg.DeleteResult{
 			BlocksDeleted: deleted,

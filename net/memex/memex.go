@@ -26,13 +26,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	corepeerstore "github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
+	ma "github.com/multiformats/go-multiaddr"
 	"google.golang.org/protobuf/proto"
 
 	membusspb "github.com/nnlgsakib/membuss/proto"
@@ -179,6 +183,16 @@ type Engine struct {
 	// disables the Phase 13 want-list optimization. Set
 	// by New(Bloom: mgr).
 	bloom *BloomManager
+
+	metricsMu   sync.RWMutex
+	peerMetrics map[peer.ID]*peerMetrics
+}
+
+type peerMetrics struct {
+	mu         sync.RWMutex
+	successes  int
+	failures   int
+	avgLatency time.Duration
 }
 
 // Config configures an Engine.
@@ -201,10 +215,11 @@ func New(cfg Config) (*Engine, error) {
 		return nil, errors.New("memex: nil blockstore")
 	}
 	return &Engine{
-		host: cfg.Host,
-		bs:   cfg.Blockstore,
-		wm:   newWantManager(),
-	bloom: cfg.Bloom,
+		host:        cfg.Host,
+		bs:          cfg.Blockstore,
+		wm:          newWantManager(),
+		bloom:       cfg.Bloom,
+		peerMetrics: make(map[peer.ID]*peerMetrics),
 	}, nil
 }
 
@@ -482,9 +497,190 @@ func writeFrame(s network.Stream, m *membusspb.MemexMessage) error {
 	return err
 }
 
-// openStream opens a Memex stream to pid with a timeout.
+// openStream opens a Memex stream to pid with a timeout. Falls back to circuit relay if direct connection fails.
 func (e *Engine) openStream(ctx context.Context, pid peer.ID) (network.Stream, error) {
 	cctx, cancel := context.WithTimeout(ctx, DefaultPeerTimeout)
 	defer cancel()
-	return e.host.NewStream(cctx, pid, ProtocolID)
+
+	// 1. Try direct connection first (explicitly allowing limited connections if already established)
+	cctx = network.WithAllowLimitedConn(cctx, "membuss-memex-direct")
+	cctx = network.WithUseTransient(cctx, "membuss-memex-direct")
+	stream, err := e.host.NewStream(cctx, pid, ProtocolID)
+	if err == nil {
+		return stream, nil
+	}
+
+	// 2. Direct dial failed. Try circuit relay fallback.
+	// Find all peers in our peerstore that support the Circuit Relay v2 hop protocol.
+	var relays []peer.ID
+	for _, p := range e.host.Peerstore().Peers() {
+		protocols, err := e.host.Peerstore().SupportsProtocols(p, "/libp2p/circuit/relay/v2/hop")
+		if err == nil && len(protocols) > 0 {
+			relays = append(relays, p)
+		}
+	}
+
+	// Fall back to currently connected peers if no protocols registered in peerstore
+	if len(relays) == 0 {
+		relays = e.host.Network().Peers()
+	}
+
+	if len(relays) == 0 {
+		return nil, fmt.Errorf("direct stream open failed: %w (no relay candidates available)", err)
+	}
+
+	// Construct relayed multiaddresses for the target peer `pid` via each relay candidate
+	var relayAddrs []ma.Multiaddr
+	for _, relayID := range relays {
+		if relayID == pid || relayID == e.host.ID() {
+			continue
+		}
+		// Standard circuit relay v2 address: /p2p/<relayID>/p2p-circuit/p2p/<pid>
+		maddrStr := fmt.Sprintf("/p2p/%s/p2p-circuit/p2p/%s", relayID.String(), pid.String())
+		maddr, merr := ma.NewMultiaddr(maddrStr)
+		if merr == nil {
+			relayAddrs = append(relayAddrs, maddr)
+		}
+
+		// Also construct specific physical relay addresses if available
+		addrs := e.host.Peerstore().Addrs(relayID)
+		for _, addr := range addrs {
+			var fullRelayAddr ma.Multiaddr
+			if !strings.Contains(addr.String(), "/p2p/") {
+				p2pPart, perr := ma.NewMultiaddr(fmt.Sprintf("/p2p/%s", relayID.String()))
+				if perr == nil {
+					fullRelayAddr = addr.Encapsulate(p2pPart)
+				}
+			} else {
+				fullRelayAddr = addr
+			}
+
+			if fullRelayAddr != nil {
+				circuitPart, cerr := ma.NewMultiaddr(fmt.Sprintf("/p2p-circuit/p2p/%s", pid.String()))
+				if cerr == nil {
+					relayAddrs = append(relayAddrs, fullRelayAddr.Encapsulate(circuitPart))
+				}
+			}
+		}
+	}
+
+	if len(relayAddrs) == 0 {
+		return nil, fmt.Errorf("direct stream open failed: %w (could not construct relay addresses)", err)
+	}
+
+	// Add the relayed multiaddresses to the target peer's peerstore with a temporary TTL
+	e.host.Peerstore().AddAddrs(pid, relayAddrs, corepeerstore.TempAddrTTL)
+
+	// Clear swarm backoff for the peer to make sure it doesn't block the fallback dial
+	if sw, ok := e.host.Network().(*swarm.Swarm); ok {
+		sw.Backoff().Clear(pid)
+	}
+
+	// Retry opening the stream via the relay addresses
+	rctx, rcancel := context.WithTimeout(ctx, DefaultPeerTimeout)
+	defer rcancel()
+
+	rctx = network.WithAllowLimitedConn(rctx, "membuss-memex-fallback")
+	rctx = network.WithUseTransient(rctx, "membuss-memex-fallback")
+	rstream, rerr := e.host.NewStream(rctx, pid, ProtocolID)
+	if rerr != nil {
+		return nil, fmt.Errorf("direct stream open failed: %w; relay fallback failed: %v", err, rerr)
+	}
+
+	return rstream, nil
+}
+
+// RecordPeerSuccess records a successful block transfer from pid with measured latency.
+func (e *Engine) RecordPeerSuccess(pid peer.ID, latency time.Duration) {
+	if pid == "" {
+		return
+	}
+	e.metricsMu.Lock()
+	m, exists := e.peerMetrics[pid]
+	if !exists {
+		m = &peerMetrics{}
+		e.peerMetrics[pid] = m
+	}
+	e.metricsMu.Unlock()
+
+	m.mu.Lock()
+	m.successes++
+	if m.avgLatency == 0 {
+		m.avgLatency = latency
+	} else {
+		// EMA with alpha = 0.2
+		m.avgLatency = time.Duration(float64(m.avgLatency)*0.8 + float64(latency)*0.2)
+	}
+	m.mu.Unlock()
+}
+
+// RecordPeerFailure records a failed block transfer or timeout from pid.
+func (e *Engine) RecordPeerFailure(pid peer.ID) {
+	if pid == "" {
+		return
+	}
+	e.metricsMu.Lock()
+	m, exists := e.peerMetrics[pid]
+	if !exists {
+		m = &peerMetrics{}
+		e.peerMetrics[pid] = m
+	}
+	e.metricsMu.Unlock()
+
+	m.mu.Lock()
+	m.failures++
+	m.mu.Unlock()
+}
+
+// PeerScore calculates a performance score for a peer. Higher is better.
+func (e *Engine) PeerScore(pid peer.ID) float64 {
+	if pid == "" {
+		return 0
+	}
+
+	// 1. Get connection latency from the libp2p peerstore (via peerstore.Metrics interface)
+	var pstoreLatency time.Duration
+	if m, ok := e.host.Peerstore().(corepeerstore.Metrics); ok {
+		pstoreLatency = m.LatencyEWMA(pid)
+	}
+
+	// 2. Get dynamic latency & success rate from memex engine metrics
+	var dynamicLatency time.Duration
+	successRate := 1.0
+
+	e.metricsMu.RLock()
+	m, exists := e.peerMetrics[pid]
+	e.metricsMu.RUnlock()
+
+	if exists {
+		m.mu.RLock()
+		dynamicLatency = m.avgLatency
+		total := m.successes + m.failures
+		if total > 0 {
+			successRate = float64(m.successes) / float64(total)
+		}
+		m.mu.RUnlock()
+	}
+
+	// Determine representative latency
+	var latency time.Duration
+	if dynamicLatency > 0 {
+		latency = dynamicLatency
+	} else if pstoreLatency > 0 {
+		latency = pstoreLatency
+	} else {
+		latency = 200 * time.Millisecond // assume a default latency of 200ms
+	}
+
+	// Success rate multiplier: heavily penalize nodes with high failure rates.
+	effectiveLatency := float64(latency)
+	if successRate > 0 {
+		effectiveLatency = effectiveLatency / successRate
+	} else {
+		effectiveLatency = effectiveLatency * 100.0 // heavily penalize 0% success rate
+	}
+
+	// Score is inversely proportional to effective latency (in seconds)
+	// Higher score = better / faster peer
+	return 1.0 / (effectiveLatency/float64(time.Second) + 0.001)
 }
