@@ -366,6 +366,7 @@ func main() {
 		Burst:    8,
 		KeyRing:  kr,
 		MemDHT:   mdht,
+		Metrics:  mtrx,
 	})
 	if err != nil {
 		logger.Error("herald", "err", err.Error())
