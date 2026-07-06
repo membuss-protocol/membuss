@@ -1168,3 +1168,356 @@ func TestRefererResolution(t *testing.T) {
 		t.Errorf("body mismatch: got %q, want 'console.log(1)'", string(got))
 	}
 }
+
+func TestRefererResolution_Recursive(t *testing.T) {
+	bs, _ := store.NewMemStore(store.Options{InMemory: true})
+	defer bs.Close()
+	builder := memfs.NewBuilder(bs)
+	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
+		"index.html":      &fstest.MapFile{Data: []byte("html")},
+		"assets/index.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+		"assets/chunk.js": &fstest.MapFile{Data: []byte("console.log(chunk)")},
+	}, ".")
+	if err != nil {
+		t.Fatalf("add dir: %v", err)
+	}
+
+	be := &memfsBackend{
+		memBackend: newMemBackend(),
+		resolver:   memfs.NewResolver(bs),
+		bs:         bs,
+	}
+
+	mg := newTestGate(t, be)
+	srv := httptest.NewServer(mg.Handler())
+	defer srv.Close()
+
+	// 1. Visit index.html or root to populate active list & cookie
+	reqRoot, _ := http.NewRequest("GET", srv.URL+"/mem/"+root.MID.String()+"/", nil)
+	respRoot, err := http.DefaultClient.Do(reqRoot)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	respRoot.Body.Close()
+
+	// 2. Request first asset index.js (Referer is root page)
+	req1, _ := http.NewRequest("GET", srv.URL+"/assets/index.js", nil)
+	req1.Header.Set("Referer", srv.URL+"/mem/"+root.MID.String()+"/")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp1.Body.Close()
+
+	// 3. Request dynamic chunk.js (Referer is index.js, which is not under /mem/)
+	req2, _ := http.NewRequest("GET", srv.URL+"/assets/chunk.js", nil)
+	req2.Header.Set("Referer", srv.URL+"/assets/index.js")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != 200 {
+		t.Fatalf("status: got %d, want 200", resp2.StatusCode)
+	}
+
+	got, _ := io.ReadAll(resp2.Body)
+	if string(got) != "console.log(chunk)" {
+		t.Errorf("body mismatch: got %q, want 'console.log(chunk)'", string(got))
+	}
+}
+
+func TestRefererResolution_CookieFallback(t *testing.T) {
+	bs, _ := store.NewMemStore(store.Options{InMemory: true})
+	defer bs.Close()
+	builder := memfs.NewBuilder(bs)
+	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
+		"assets/index.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+	}, ".")
+	if err != nil {
+		t.Fatalf("add dir: %v", err)
+	}
+
+	be := &memfsBackend{
+		memBackend: newMemBackend(),
+		resolver:   memfs.NewResolver(bs),
+		bs:         bs,
+	}
+
+	mg := newTestGate(t, be)
+	srv := httptest.NewServer(mg.Handler())
+	defer srv.Close()
+
+	// Request asset with NO referer header, but WITH the active MID cookie
+	req, _ := http.NewRequest("GET", srv.URL+"/assets/index.js", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "membuss_gateway_mid",
+		Value: root.MID.String(),
+	})
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != "console.log(1)" {
+		t.Errorf("body mismatch: got %q, want 'console.log(1)'", string(got))
+	}
+}
+
+func TestSPAFallbackToIndexHTML(t *testing.T) {
+	bs, _ := store.NewMemStore(store.Options{InMemory: true})
+	defer bs.Close()
+	builder := memfs.NewBuilder(bs)
+	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("SPA Root")},
+	}, ".")
+	if err != nil {
+		t.Fatalf("add dir: %v", err)
+	}
+
+	be := &memfsBackend{
+		memBackend: newMemBackend(),
+		resolver:   memfs.NewResolver(bs),
+		bs:         bs,
+	}
+
+	mg := newTestGate(t, be)
+	srv := httptest.NewServer(mg.Handler())
+	defer srv.Close()
+
+	// 1. Navigation request to a subpath that doesn't exist (Accept: text/html)
+	req1, _ := http.NewRequest("GET", srv.URL+"/mem/"+root.MID.String()+"/some/nested/spa-route", nil)
+	req1.Header.Set("Accept", "text/html,application/xhtml+xml")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d", resp1.StatusCode)
+	}
+	body1, _ := io.ReadAll(resp1.Body)
+	if string(body1) != "SPA Root" {
+		t.Errorf("expected body 'SPA Root', got %q", string(body1))
+	}
+
+	// 2. Non-navigation request (Accept: */*) for asset that doesn't exist
+	req2, _ := http.NewRequest("GET", srv.URL+"/mem/"+root.MID.String()+"/some/nested/missing.js", nil)
+	req2.Header.Set("Accept", "*/*")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != 404 {
+		t.Errorf("expected status 404 for asset fallback skip, got %d", resp2.StatusCode)
+	}
+}
+
+func TestExplorerPrefixResolution(t *testing.T) {
+	bs, _ := store.NewMemStore(store.Options{InMemory: true})
+	defer bs.Close()
+	builder := memfs.NewBuilder(bs)
+	// We upload the SvelteKit build folder directly to root (flat structure)
+	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
+		"index.html":                &fstest.MapFile{Data: []byte("custom explorer html")},
+		"_app/immutable/entry.js":   &fstest.MapFile{Data: []byte("console.log('custom')")},
+	}, ".")
+	if err != nil {
+		t.Fatalf("add dir: %v", err)
+	}
+
+	be := &memfsBackend{
+		memBackend: newMemBackend(),
+		resolver:   memfs.NewResolver(bs),
+		bs:         bs,
+	}
+
+	mg := newTestGate(t, be)
+	srv := httptest.NewServer(mg.Handler())
+	defer srv.Close()
+
+	// 1. Request static asset /explorer/_app/immutable/entry.js on the subdomain
+	// This should be treated as content path, strip 'explorer/', and serve from MID root.
+	req1, _ := http.NewRequest("GET", srv.URL+"/explorer/_app/immutable/entry.js", nil)
+	req1.Host = root.MID.String() + ".localhost"
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != 200 {
+		t.Fatalf("expected status 200 for static asset, got %d", resp1.StatusCode)
+	}
+	body1, _ := io.ReadAll(resp1.Body)
+	if string(body1) != "console.log('custom')" {
+		t.Errorf("expected body %q, got %q", "console.log('custom')", string(body1))
+	}
+
+	// 2. Request dynamic system route /explorer/api/node on the subdomain
+	// This should NOT resolve to the MID folder, but instead bypass content routing.
+	req2, _ := http.NewRequest("GET", srv.URL+"/explorer/api/node", nil)
+	req2.Host = root.MID.String() + ".localhost"
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	// In the test setup, there is no explorer API mounted, so it should fall through to chi router
+	// which returns 404 (or 404 not found, but it won't be resolved via our memfs backend!)
+	if resp2.StatusCode == 200 {
+		t.Errorf("expected status 404/500 for dynamic system route, got %d", resp2.StatusCode)
+	}
+}
+
+func TestDynamicBaseRedirect(t *testing.T) {
+	bs, _ := store.NewMemStore(store.Options{InMemory: true})
+	defer bs.Close()
+	builder := memfs.NewBuilder(bs)
+	// Create an index.html that references a custom framework base path "/my-custom-framework"
+	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte(`
+			<!doctype html>
+			<html>
+				<head>
+					<link href="/my-custom-framework/_app/immutable/entry.js" rel="modulepreload">
+				</head>
+				<body></body>
+			</html>
+		`)},
+		"_app/immutable/entry.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+	}, ".")
+	if err != nil {
+		t.Fatalf("add dir: %v", err)
+	}
+
+	be := &memfsBackend{
+		memBackend: newMemBackend(),
+		resolver:   memfs.NewResolver(bs),
+		bs:         bs,
+	}
+
+	mg := newTestGate(t, be)
+	srv := httptest.NewServer(mg.Handler())
+	defer srv.Close()
+
+	// 1. Visit / on path-based gateway
+	// Should redirect to /mem/{mid}/my-custom-framework/
+	req, _ := http.NewRequest("GET", srv.URL+"/mem/"+root.MID.String()+"/", nil)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Do not follow redirect so we can assert status and Location header
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("expected status 307 redirect, got %d", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	expectedLoc := "/mem/" + root.MID.String() + "/my-custom-framework/"
+	if loc != expectedLoc {
+		t.Errorf("expected redirect location %q, got %q", expectedLoc, loc)
+	}
+}
+
+func TestNestedDirectoryResolution(t *testing.T) {
+	bs, _ := store.NewMemStore(store.Options{InMemory: true})
+	defer bs.Close()
+	builder := memfs.NewBuilder(bs)
+	// Create nested structure inside "dist"
+	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
+		"dist/index.html": &fstest.MapFile{Data: []byte(`
+			<!doctype html>
+			<html>
+				<head>
+					<link href="/my-custom-framework/_app/immutable/entry.js" rel="modulepreload">
+				</head>
+				<body></body>
+			</html>
+		`)},
+		"dist/_app/immutable/entry.js": &fstest.MapFile{Data: []byte("console.log(2)")},
+	}, ".")
+	if err != nil {
+		t.Fatalf("add dir: %v", err)
+	}
+
+	be := &memfsBackend{
+		memBackend: newMemBackend(),
+		resolver:   memfs.NewResolver(bs),
+		bs:         bs,
+	}
+
+	mg := newTestGate(t, be)
+	srv := httptest.NewServer(mg.Handler())
+	defer srv.Close()
+
+	// 1. Visit /mem/{mid}/
+	// Should redirect to /mem/{mid}/my-custom-framework/ (by automatically discovering dist/index.html)
+	req, _ := http.NewRequest("GET", srv.URL+"/mem/"+root.MID.String()+"/", nil)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("expected status 307 redirect, got %d", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	expectedLoc := "/mem/" + root.MID.String() + "/my-custom-framework/"
+	if loc != expectedLoc {
+		t.Errorf("expected redirect location %q, got %q", expectedLoc, loc)
+	}
+
+	// 2. Fetch the custom asset via referer fallback:
+	// Path is /my-custom-framework/_app/immutable/entry.js
+	// Referer header points to the base path
+	assetURL := srv.URL + "/my-custom-framework/_app/immutable/entry.js"
+	reqAsset, _ := http.NewRequest("GET", assetURL, nil)
+	reqAsset.Header.Set("Referer", srv.URL+"/mem/"+root.MID.String()+"/dist/index.html")
+
+	respAsset, err := client.Do(reqAsset)
+	if err != nil {
+		t.Fatalf("asset request failed: %v", err)
+	}
+	defer respAsset.Body.Close()
+
+	if respAsset.StatusCode != http.StatusOK {
+		t.Errorf("expected asset status 200, got %d", respAsset.StatusCode)
+	}
+
+	body, _ := io.ReadAll(respAsset.Body)
+	if string(body) != "console.log(2)" {
+		t.Errorf("expected body 'console.log(2)', got %q", string(body))
+	}
+}
+
+
+
+
+

@@ -66,5 +66,6 @@ research.txt
 # Local dev / MCP configs
 .mcp.json
 test-react-app/
+test-svelte-game/
 
-
+kubo/
