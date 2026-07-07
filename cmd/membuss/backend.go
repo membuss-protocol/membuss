@@ -26,7 +26,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	"github.com/nnlgsakib/membuss/net/pex"
 	"github.com/nnlgsakib/membuss/obs/metrics"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
@@ -209,6 +209,7 @@ func (b *daemonBackend) Get(ctx context.Context, midStr string, offset, limit ui
 				if serr == nil {
 					if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
 						has = true
+						_, _ = io.Copy(io.Discard, rc)
 						if c, ok := rc.(io.Closer); ok {
 							_ = c.Close()
 						}
@@ -270,6 +271,7 @@ func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offs
 				if serr == nil {
 					if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
 						has = true
+						_, _ = io.Copy(io.Discard, rc)
 						if c, ok := rc.(io.Closer); ok {
 							_ = c.Close()
 						}

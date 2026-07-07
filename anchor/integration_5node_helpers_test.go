@@ -17,7 +17,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 )
 
 // memNode is a small in-process Membuss node for the 5-node

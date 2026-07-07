@@ -35,9 +35,10 @@ import (
 // to RPC callers. Most callers should treat the warning as
 // informational.
 func (s *MemStore) Seal(root mid.MID, recursive bool) error {
-	if s.db == nil {
-		return errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return err
 	}
+	defer s.exit()
 	if root.IsZero() {
 		return errors.New("store: zero MID")
 	}
@@ -83,9 +84,10 @@ var ErrSealWalkIncomplete = errors.New("store: seal walk incomplete")
 // seals for content not yet fetched) are silently skipped. Returns
 // the first error encountered during child seal deletion.
 func (s *MemStore) Unseal(root mid.MID) error {
-	if s.db == nil {
-		return errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return err
 	}
+	defer s.exit()
 	if root.IsZero() {
 		return errors.New("store: zero MID")
 	}
@@ -121,9 +123,10 @@ func (s *MemStore) Unseal(root mid.MID) error {
 
 // IsSealed reports whether a direct seal record exists for m.
 func (s *MemStore) IsSealed(m mid.MID) (bool, error) {
-	if s.db == nil {
-		return false, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return false, err
 	}
+	defer s.exit()
 	if m.IsZero() {
 		return false, errors.New("store: zero MID")
 	}
@@ -148,9 +151,10 @@ func (s *MemStore) IsSealed(m mid.MID) (bool, error) {
 // AllSealed returns every MID with a direct seal record. Order
 // is unspecified.
 func (s *MemStore) AllSealed() ([]mid.MID, error) {
-	if s.db == nil {
-		return nil, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return nil, err
 	}
+	defer s.exit()
 	var out []mid.MID
 	err := s.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -221,9 +225,10 @@ func (s *MemStore) GC(ctx context.Context) (uint64, error) {
 // garbage-collected. Pass 0 for minAge to disable the age
 // check (original GC behavior).
 func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint64, error) {
-	if s.db == nil {
-		return 0, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return 0, err
 	}
+	defer s.exit()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -378,9 +383,10 @@ func ksToMID(ks string) string {
 // DeleteRecursive removes the given root MID and all its reachable children from the store.
 // It also unseals them. It returns the number of blocks deleted and the number of bytes freed.
 func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
-	if s.db == nil {
-		return 0, 0, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return 0, 0, err
 	}
+	defer s.exit()
 	if root.IsZero() {
 		return 0, 0, errors.New("store: zero MID")
 	}
@@ -413,7 +419,16 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 		}
 
 		var childMIDs []mid.MID
-		if m.Codec() == mid.CodecMemFS {
+		if desc, uerr := tryParseDescriptor(data); uerr == nil && desc.RootMid != "" && len(desc.Blocks) > 0 {
+			if rMID, err := mid.Parse(desc.RootMid); err == nil {
+				childMIDs = append(childMIDs, rMID)
+			}
+			for _, b := range desc.Blocks {
+				if m, err := mid.Parse(b.Mid); err == nil {
+					childMIDs = append(childMIDs, m)
+				}
+			}
+		} else if m.Codec() == mid.CodecMemFS {
 			var node membusspb.MemFSNode
 			if uerr := proto.Unmarshal(data, &node); uerr == nil {
 				switch node.Type {
@@ -534,9 +549,10 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 // AllObjectMIDs returns every MID that has an ObjectInfo metadata record
 // where IsRoot is true.
 func (s *MemStore) AllObjectMIDs() ([]mid.MID, error) {
-	if s.db == nil {
-		return nil, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return nil, err
 	}
+	defer s.exit()
 	var out []mid.MID
 	err := s.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions

@@ -571,6 +571,10 @@ func (e *Explorer) buildRouter() http.Handler {
 				return
 			}
 			// Fallback: serve index.html for client side routing
+			if strings.HasPrefix(cleanPath, "_app/") {
+				http.Error(w, "Not Found", http.StatusNotFound)
+				return
+			}
 			e.serveIndexHTML(w)
 		}))
 	}

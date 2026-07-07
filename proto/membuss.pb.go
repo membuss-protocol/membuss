@@ -1884,7 +1884,6 @@ func (x *WantEntry) GetSendDontHave() bool {
 	return false
 }
 
-// MemexMessage is the body of a /membuss/memex/1.0.0 frame.
 type MemexMessage struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Wants    []*WantEntry           `protobuf:"bytes,1,rep,name=wants,proto3" json:"wants,omitempty"`
@@ -1894,9 +1893,11 @@ type MemexMessage struct {
 	// Phase 19: per-MID object metadata (filename, MIME type)
 	// travels alongside blocks so the receiver can persist it
 	// locally. Only populated for the root block of a DAG.
-	ObjectInfos   map[string]*ObjectInfo `protobuf:"bytes,5,rep,name=object_infos,json=objectInfos,proto3" json:"object_infos,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ObjectInfos    map[string]*ObjectInfo `protobuf:"bytes,5,rep,name=object_infos,json=objectInfos,proto3" json:"object_infos,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	SequenceNumber uint64                 `protobuf:"varint,6,opt,name=sequence_number,json=sequenceNumber,proto3" json:"sequence_number,omitempty"`
+	BloomFilter    []byte                 `protobuf:"bytes,7,opt,name=bloom_filter,json=bloomFilter,proto3" json:"bloom_filter,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MemexMessage) Reset() {
@@ -1960,6 +1961,20 @@ func (x *MemexMessage) GetCancel() []string {
 func (x *MemexMessage) GetObjectInfos() map[string]*ObjectInfo {
 	if x != nil {
 		return x.ObjectInfos
+	}
+	return nil
+}
+
+func (x *MemexMessage) GetSequenceNumber() uint64 {
+	if x != nil {
+		return x.SequenceNumber
+	}
+	return 0
+}
+
+func (x *MemexMessage) GetBloomFilter() []byte {
+	if x != nil {
+		return x.BloomFilter
 	}
 	return nil
 }
@@ -2900,13 +2915,15 @@ const file_membuss_proto_rawDesc = "" +
 	"\tWantEntry\x12\x10\n" +
 	"\x03mid\x18\x01 \x01(\tR\x03mid\x12\x1a\n" +
 	"\bpriority\x18\x02 \x01(\x05R\bpriority\x12$\n" +
-	"\x0esend_dont_have\x18\x03 \x01(\bR\fsendDontHave\"\xc1\x02\n" +
+	"\x0esend_dont_have\x18\x03 \x01(\bR\fsendDontHave\"\x8d\x03\n" +
 	"\fMemexMessage\x12+\n" +
 	"\x05wants\x18\x01 \x03(\v2\x15.membuss.v1.WantEntryR\x05wants\x12)\n" +
 	"\x06blocks\x18\x02 \x03(\v2\x11.membuss.v1.BlockR\x06blocks\x12\x1b\n" +
 	"\thave_mids\x18\x03 \x03(\tR\bhaveMids\x12\x16\n" +
 	"\x06cancel\x18\x04 \x03(\tR\x06cancel\x12L\n" +
-	"\fobject_infos\x18\x05 \x03(\v2).membuss.v1.MemexMessage.ObjectInfosEntryR\vobjectInfos\x1aV\n" +
+	"\fobject_infos\x18\x05 \x03(\v2).membuss.v1.MemexMessage.ObjectInfosEntryR\vobjectInfos\x12'\n" +
+	"\x0fsequence_number\x18\x06 \x01(\x04R\x0esequenceNumber\x12!\n" +
+	"\fbloom_filter\x18\a \x01(\fR\vbloomFilter\x1aV\n" +
 	"\x10ObjectInfosEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
 	"\x05value\x18\x02 \x01(\v2\x16.membuss.v1.ObjectInfoR\x05value:\x028\x01\"Q\n" +

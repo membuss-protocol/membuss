@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -530,6 +531,83 @@ func TestMemStoreDeleteRecursive(t *testing.T) {
 	}
 	if isSealed, _ := s.IsSealed(root); isSealed {
 		t.Fatal("expected root to be unsealed")
+	}
+}
+
+func TestMemStoreDeleteRecursiveDescriptor(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create child blocks
+	c1Data := []byte("block-data-1")
+	c1 := mid.FromBytes(c1Data)
+	if err := s.Put(c1, c1Data); err != nil {
+		t.Fatalf("Put c1: %v", err)
+	}
+
+	// Create root MemFSNode
+	rootNode := &membusspb.MemFSNode{
+		Type: membusspb.MemFSType_FILE,
+		Blocks: []*membusspb.MemFSBlock{
+			{Mid: c1.Bytes(), Size: uint64(len(c1Data))},
+		},
+	}
+	rootNodeData, err := proto.Marshal(rootNode)
+	if err != nil {
+		t.Fatalf("Marshal root node: %v", err)
+	}
+	rootMID := mid.FromBytes(rootNodeData)
+	if err := s.Put(rootMID, rootNodeData); err != nil {
+		t.Fatalf("Put rootMID: %v", err)
+	}
+
+	// Create descriptor payload
+	desc := &membusspb.DescriptorPayload{
+		RootMid: rootMID.String(),
+		Blocks: []*membusspb.DescriptorBlock{
+			{Mid: c1.String()},
+			{Mid: rootMID.String()},
+		},
+	}
+	descData, err := proto.Marshal(desc)
+	if err != nil {
+		t.Fatalf("Marshal desc: %v", err)
+	}
+
+	// Build the wrapped format (.mbuss format)
+	var wrappedBuf bytes.Buffer
+	wrappedBuf.Write([]byte{'M', 'E', 'M', 'B'}) // Magic
+	wrappedBuf.WriteByte(1) // Version
+	wrappedBuf.Write(descData) // Payload
+	h := sha256.Sum256(descData)
+	wrappedBuf.Write(h[:]) // Checksum
+	wrappedData := wrappedBuf.Bytes()
+
+	descMID := mid.FromBytes(wrappedData)
+	if err := s.Put(descMID, wrappedData); err != nil {
+		t.Fatalf("Put descMID: %v", err)
+	}
+
+	// Verify all blocks are present
+	for _, m := range []mid.MID{c1, rootMID, descMID} {
+		if has, _ := s.Has(m); !has {
+			t.Fatalf("expected block %s to be present", m)
+		}
+	}
+
+	// Delete recursive from descriptor
+	deleted, _, err := s.DeleteRecursive(descMID)
+	if err != nil {
+		t.Fatalf("DeleteRecursive: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("expected 3 blocks deleted, got %d", deleted)
+	}
+
+	// Verify all blocks are gone
+	for _, m := range []mid.MID{c1, rootMID, descMID} {
+		if has, _ := s.Has(m); has {
+			t.Fatalf("expected block %s to be deleted", m)
+		}
 	}
 }
 

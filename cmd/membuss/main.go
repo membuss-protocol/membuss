@@ -59,7 +59,7 @@ import (
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
 	"github.com/nnlgsakib/membuss/net/host"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	"github.com/nnlgsakib/membuss/net/pex"
 	"github.com/nnlgsakib/membuss/obs/logging"
 	"github.com/nnlgsakib/membuss/obs/metrics"
@@ -956,7 +956,17 @@ func (h *httpServer) ShutdownCtx(ctx context.Context) error {
 	if h == nil || h.srv == nil {
 		return nil
 	}
-	return h.srv.Shutdown(ctx)
+	// Try graceful shutdown with a short timeout first (e.g. 500ms)
+	// to allow normal active requests to complete, then force close
+	// hijacked connections (like WebSockets) which never exit on shutdown.
+	sdCtx, sdCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer sdCancel()
+	err := h.srv.Shutdown(sdCtx)
+	if err != nil {
+		_ = h.srv.Close()
+		return err
+	}
+	return nil
 }
 
 // ensureGeoIPDatabase checks if the GeoLite2-City.mmdb database exists at
