@@ -163,8 +163,22 @@ func (e *Engine) Stop() {
 }
 
 func (e *Engine) StopWait(ctx context.Context) error {
-	e.Stop()
-	return nil
+	e.host.RemoveStreamHandler(ProtocolID)
+	e.streamPool.CloseAll()
+	e.cancel()
+
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (e *Engine) Blockstore() Blockstore { return e.bs }
