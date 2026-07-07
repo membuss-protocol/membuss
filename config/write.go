@@ -108,6 +108,7 @@ nat_wait_seconds: <<NAT_WAIT_SECONDS>>
 # How often Mem-Herald re-announces this node's provider
 # records to the DHT.
 reprovide_interval: <<REPROVIDE_INTERVAL>>
+reprovide_groups: <<REPROVIDE_GROUPS>>
 
 # Reprovide strategy. "roots" only re-pins DAG roots; "all"
 # re-pins every sealed block; "shards" re-pins erasure shards.
@@ -249,6 +250,7 @@ func writeTemplate(cfg *Config) (string, error) {
 		"<<FORCE_RELAY>>",                  boolString(cfg.ForceRelay),
 		"<<NAT_WAIT_SECONDS>>",             intString(cfg.NATWaitSeconds),
 		"<<REPROVIDE_INTERVAL>>",           durationString(cfg.ReprovideInterval),
+		"<<REPROVIDE_GROUPS>>",             intString(cfg.ReprovideGroups),
 		"<<BLOOM_CAPACITY>>",               uintString(cfg.BloomCapacity),
 		"<<BLOOM_FP_RATE>>",                fpFormatter(cfg.BloomFPRate),
 		"<<BLOOM_DISABLED>>",               boolString(cfg.BloomDisabled),

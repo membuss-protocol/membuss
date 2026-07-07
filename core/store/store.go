@@ -184,6 +184,22 @@ func (m *Memstore) Size() (uint64, error) {
 // in-memory and BadgerDB implementations are drop-in.
 func (m *Memstore) Close() error { return nil }
 
+func (m *Memstore) DropAll() error {
+	m.mu.Lock()
+	m.blocks = make(map[string][]byte)
+	m.mu.Unlock()
+
+	m.metaMu.Lock()
+	m.meta = make(map[string][]byte)
+	m.metaMu.Unlock()
+
+	m.sealsMu.Lock()
+	m.seals = make(map[string]bool)
+	m.sealsMu.Unlock()
+
+	return nil
+}
+
 // Len returns the number of blocks currently stored. It is
 // intended for tests and metrics.
 func (m *Memstore) Len() int {

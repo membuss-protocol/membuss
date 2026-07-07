@@ -358,15 +358,16 @@ func main() {
 
 	// 6) Mem-Herald.
 	hd, err := herald.New(herald.Config{
-		Store:    bs,
-		DHT:      mdht,
-		Strategy: herald.StrategyRoots,
-		Interval: cfg.ReprovideInterval,
-		Rate:     100,
-		Burst:    8,
-		KeyRing:  kr,
-		MemDHT:   mdht,
-		Metrics:  mtrx,
+		Store:           bs,
+		DHT:             mdht,
+		Strategy:        herald.StrategyRoots,
+		Interval:        cfg.ReprovideInterval,
+		Rate:            100,
+		Burst:           8,
+		KeyRing:         kr,
+		MemDHT:          mdht,
+		Metrics:         mtrx,
+		ReprovideGroups: cfg.ReprovideGroups,
 	})
 	if err != nil {
 		logger.Error("herald", "err", err.Error())

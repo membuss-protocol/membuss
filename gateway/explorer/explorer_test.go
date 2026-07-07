@@ -280,6 +280,15 @@ func (b *memBackend) Delete(ctx context.Context, m mid.MID) (uint64, uint64, err
 	return 1, 1024, nil
 }
 
+func (b *memBackend) DropAll(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.content = map[string][]byte{}
+	b.sealed = map[string]bool{}
+	b.providers = map[string][]string{}
+	return nil
+}
+
 
 // --- helpers ---
 

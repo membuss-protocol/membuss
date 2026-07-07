@@ -458,3 +458,41 @@ func TestHerald_ReprovidePermanentFailure(t *testing.T) {
 	}
 }
 
+func TestHerald_IncrementalReprovide(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	store := &fakeStore{}
+	// Add 10 MIDs
+	for i := 0; i < 10; i++ {
+		store.Seal(mid.FromBytes([]byte{byte(i)}))
+	}
+
+	prov := &fakeProvider{}
+	h, err := New(Config{
+		Store:           store,
+		DHT:             prov,
+		Strategy:        StrategyRoots,
+		Interval:        time.Hour,
+		Rate:            1000,
+		Burst:           32,
+		ReprovideGroups: 2, // 2 groups
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// First cycle
+	n1 := h.RunOnce(ctx)
+	// Second cycle
+	n2 := h.RunOnce(ctx)
+
+	// Together, they should reprovide all 10 MIDs
+	if n1 == 0 || n2 == 0 {
+		t.Fatalf("Expected both runs to provide some keys, got n1=%d, n2=%d", n1, n2)
+	}
+	if n1+n2 != 10 {
+		t.Fatalf("Expected sum of provides to equal 10, got %d", n1+n2)
+	}
+}
+

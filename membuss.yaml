@@ -33,3 +33,8 @@ anchor_mode: false
 # the DHT. Accepts any value parseable by time.ParseDuration (e.g.
 # "30m", "12h", "24h").
 reprovide_interval: 10m
+
+# Number of groups for incremental reprovide. When > 1, the reprovide cycle
+# is split into N runs. In each run, only 1/N of the total keys are announced,
+# reducing DHT load.
+reprovide_groups: 6

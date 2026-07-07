@@ -31,6 +31,35 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let copiedId = $state<string | null>(null);
+	let flashing = $state(false);
+	let flashSuccess = $state(false);
+
+	async function flashNode() {
+		const confirmed1 = confirm(
+			"🚨 WARNING: You are about to initiate FLASHNODE.\n\nThis will completely WIPE the BadgerDB database, clearing all content, pins, cached data, and indices.\n\nThis action is PERMANENT and CANNOT BE UNDONE.\n\nAre you sure you want to proceed?"
+		);
+		if (!confirmed1) return;
+
+		const confirmed2 = confirm(
+			"⚠️ FINAL CONFIRMATION:\n\nAre you absolutely sure you want to delete ALL data and reset this node?"
+		);
+		if (!confirmed2) return;
+
+		flashing = true;
+		try {
+			await apiFetch('/node/flash', { method: 'POST' });
+			flashSuccess = true;
+			// Reload node details after a short timeout
+			setTimeout(() => {
+				flashSuccess = false;
+				loadNode();
+			}, 2000);
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to flash node';
+		} finally {
+			flashing = false;
+		}
+	}
 
 	async function loadNode() {
 		try {
@@ -118,19 +147,37 @@
 			</div>
 
 			<!-- Storage Metrics -->
-			<div class="bg-slate-800/50 rounded-2xl p-6 flex flex-col gap-4">
-				<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2">
-					Storage Footprint
-				</h3>
-				<dl class="grid grid-cols-3 gap-y-3 text-xs leading-relaxed">
-					<dt class="text-slate-500 font-mono">Database size</dt>
-					<dd class="col-span-2 text-slate-200 font-bold font-mono">
-						{formatBytes(data.StoreBytes)} <span class="text-slate-500 text-[10px] font-normal font-sans">({data.StoreBytes} bytes)</span>
-					</dd>
+			<div class="bg-slate-800/50 rounded-2xl p-6 flex flex-col gap-4 justify-between">
+				<div>
+					<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2">
+						Storage Footprint
+					</h3>
+					<dl class="grid grid-cols-3 gap-y-3 text-xs leading-relaxed mt-4">
+						<dt class="text-slate-500 font-mono">Database size</dt>
+						<dd class="col-span-2 text-slate-200 font-bold font-mono">
+							{formatBytes(data.StoreBytes)} <span class="text-slate-500 text-[10px] font-normal font-sans">({data.StoreBytes} bytes)</span>
+						</dd>
 
-					<dt class="text-slate-500 font-mono">Pinned Roots</dt>
-					<dd class="col-span-2 text-slate-200 font-mono">{data.SealedCount} sealed Content IDs</dd>
-				</dl>
+						<dt class="text-slate-500 font-mono">Pinned Roots</dt>
+						<dd class="col-span-2 text-slate-200 font-mono">{data.SealedCount} sealed Content IDs</dd>
+					</dl>
+				</div>
+
+				<div class="mt-4 pt-4 border-t border-slate-800">
+					<button
+						onclick={flashNode}
+						disabled={flashing || flashSuccess}
+						class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg border transition-all duration-300
+							{flashSuccess 
+								? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' 
+								: flashing 
+									? 'bg-red-500/10 border-red-500/20 text-red-400 cursor-not-allowed animate-pulse' 
+									: 'bg-red-950/20 hover:bg-red-950/50 border-red-800/40 hover:border-red-600 text-red-400 hover:text-red-300'}"
+					>
+						<Icon icon={flashSuccess ? 'ph:check-bold' : flashing ? 'eos-icons:loading' : 'ph:fire'} class="text-sm" />
+						{flashSuccess ? 'Node Flashed Successfully' : flashing ? 'Flashing Database...' : 'Flash Node (Wipe Database)'}
+					</button>
+				</div>
 			</div>
 
 			<!-- Listen Interfaces -->

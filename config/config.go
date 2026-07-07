@@ -66,6 +66,11 @@ type Config struct {
 	// this node's provider records to the DHT.
 	ReprovideInterval time.Duration `yaml:"reprovide_interval"`
 
+	// ReprovideGroups controls the number of incremental reprovide groups.
+	// When > 1, the reprovide cycle is split into N runs. In each run,
+	// only 1/N of the total keys are announced, reducing DHT load.
+	ReprovideGroups int `yaml:"reprovide_groups"`
+
 	LogLevel string `yaml:"log_level"`
 	GatewayTLS TLSConfig `yaml:"gateway_tls"`
 	APITLS TLSConfig `yaml:"api_tls"`
@@ -213,6 +218,7 @@ func Default() *Config {
 		AutoGCInterval:    24 * time.Hour,
 		GCMinAge:          24 * time.Hour,
 		ReprovideInterval: 12 * time.Hour,
+		ReprovideGroups:   6,
 		LogLevel:               "info",
 		GatewayTLS:             TLSConfig{},
 		APITLS:                 TLSConfig{},
@@ -295,6 +301,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ReprovideInterval <= 0 {
 		return errors.New("reprovide_interval must be positive")
+	}
+	if c.ReprovideGroups < 1 {
+		return errors.New("reprovide_groups must be >= 1")
 	}
 	if c.GatewayRateLimitPerMin < 0 {
 		return errors.New("gateway_rate_limit_per_min must be >= 0")

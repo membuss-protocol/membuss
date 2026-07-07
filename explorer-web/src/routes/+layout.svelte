@@ -52,11 +52,17 @@
 			lowercaseClean.startsWith('k3')
 		) {
 			goto(`${base}/memns/${clean}`);
-		} else if (lowercaseClean.startsWith('mem1')) {
-			goto(`${base}/mid/${clean}`);
-		} else if (lowercaseClean.startsWith('mem/mem1')) {
+		} else if (
+			lowercaseClean.startsWith('mem/') &&
+			(lowercaseClean.startsWith('mem/mem1') || clean.length > 16)
+		) {
 			const midVal = clean.slice(4);
 			goto(`${base}/mid/${midVal}`);
+		} else if (
+			lowercaseClean.startsWith('mem') &&
+			(lowercaseClean.startsWith('mem1') || clean.length > 12)
+		) {
+			goto(`${base}/mid/${clean}`);
 		} else if (clean.includes('.')) {
 			goto(`${base}/memlink/${clean}`);
 		} else {

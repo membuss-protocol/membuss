@@ -1,4 +1,4 @@
-﻿package config
+package config
 
 import (
 	"os"
@@ -18,8 +18,19 @@ func TestDefault(t *testing.T) {
 	if cfg.ReprovideInterval <= 0 {
 		t.Fatal("default ReprovideInterval must be positive")
 	}
+	if cfg.ReprovideGroups <= 0 {
+		t.Fatal("default ReprovideGroups must be positive")
+	}
 	if len(cfg.ListenAddrs) == 0 {
 		t.Fatal("default ListenAddrs must be non-empty")
+	}
+}
+
+func TestValidateRejectsZeroGroups(t *testing.T) {
+	cfg := Default()
+	cfg.ReprovideGroups = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("zero ReprovideGroups must fail validation")
 	}
 }
 

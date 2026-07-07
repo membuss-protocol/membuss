@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"sync"
@@ -126,16 +127,23 @@ type Config struct {
 
 	// Metrics is the live instrumentation handle. Optional.
 	Metrics *metrics.Metrics
+
+	// ReprovideGroups controls the number of incremental reprovide groups.
+	// When > 1, the reprovide cycle is split into N runs. In each run,
+	// only 1/N of the total keys are announced. Default is 1 (disabled).
+	ReprovideGroups int
 }
 
 // MemHerald is the long-lived reprovisioner.
 type MemHerald struct {
 	cfg Config
 	lim *tokenBucket
+	nsLim *tokenBucket // dedicated rate limiter for MemNS republishing
 
-	mu        sync.Mutex
-	lastRun   time.Time
-	lastCount int
+	mu         sync.Mutex
+	lastRun    time.Time
+	lastCount  int
+	cycleCount int // tracks the current incremental cycle index
 
 	// triggerCh is a non-blocking signal channel. Sending
 	// on it causes the loop to run an immediate reprovide
@@ -168,12 +176,16 @@ func New(cfg Config) (*MemHerald, error) {
 	if cfg.Replicas <= 0 {
 		cfg.Replicas = 3
 	}
+	if cfg.ReprovideGroups <= 0 {
+		cfg.ReprovideGroups = 1
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
 	return &MemHerald{
 		cfg:       cfg,
 		lim:       newTokenBucket(cfg.Rate, cfg.Burst, cfg.Now),
+		nsLim:     newTokenBucket(1.0, 5, cfg.Now), // 1 republish/sec rate-limit, burst 5
 		triggerCh: make(chan struct{}, 1),
 	}, nil
 }
@@ -229,6 +241,10 @@ func (h *MemHerald) Trigger() {
 // RunOnce performs a single reprovide pass synchronously and
 // returns the number of MIDs announced.
 func (h *MemHerald) RunOnce(ctx context.Context) int {
+	h.mu.Lock()
+	h.cycleCount++
+	h.mu.Unlock()
+
 	announced := 0
 	failed := 0
 	seen := make(map[string]struct{})
@@ -346,6 +362,12 @@ func (h *MemHerald) RunOnce(ctx context.Context) int {
 					log.Printf("herald: failed to save updated record for key %s: %v", kInfo.Name, err)
 				}
 
+				// Rate limit check before publishing record to DHT
+				if err := h.nsLim.Wait(ctx); err != nil {
+					log.Printf("herald: MemNS rate-limiter wait error: %v", err)
+					break
+				}
+
 				if err := memns.PublishDHT(ctx, h.cfg.MemDHT, key, rec); err != nil {
 					log.Printf("herald: failed to publish record for key %s to DHT: %v", kInfo.Name, err)
 				} else {
@@ -384,7 +406,11 @@ func (h *MemHerald) LastCount() int {
 func (h *MemHerald) Strategy() Strategy { return h.cfg.Strategy }
 
 func (h *MemHerald) loop(ctx context.Context) {
-	t := time.NewTicker(h.cfg.Interval)
+	interval := h.cfg.Interval
+	if h.cfg.ReprovideGroups > 1 {
+		interval = h.cfg.Interval / time.Duration(h.cfg.ReprovideGroups)
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -411,6 +437,21 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
+	h.mu.Lock()
+	cycle := h.cycleCount
+	h.mu.Unlock()
+
+	filterFn := func(m mid.MID) error {
+		if h.cfg.ReprovideGroups > 1 {
+			hVal := deterministicHash(m)
+			if hVal%uint32(h.cfg.ReprovideGroups) != uint32(cycle%h.cfg.ReprovideGroups) {
+				return nil // skip this MID in this cycle
+			}
+		}
+		return fn(m)
+	}
+
 	switch h.cfg.Strategy {
 	case StrategyAll:
 		mids, err := h.cfg.Store.AllBlocks()
@@ -421,7 +462,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if err := fn(m); err != nil {
+			if err := filterFn(m); err != nil {
 				return err
 			}
 		}
@@ -437,7 +478,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if err := fn(m); err != nil {
+				if err := filterFn(m); err != nil {
 					return err
 				}
 			}
@@ -457,7 +498,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 			}
 			for _, p := range peers {
 				if p == h.cfg.PeerID {
-					if err := fn(m); err != nil {
+					if err := filterFn(m); err != nil {
 						return err
 					}
 					break
@@ -481,7 +522,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 			}
 			if _, ok := seen[r.String()]; !ok {
 				seen[r.String()] = struct{}{}
-				if err := fn(r); err != nil {
+				if err := filterFn(r); err != nil {
 					return err
 				}
 			}
@@ -494,7 +535,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 				if m.Codec() == mid.CodecMemFS {
 					if _, ok := seen[m.String()]; !ok {
 						seen[m.String()] = struct{}{}
-						if err := fn(m); err != nil {
+						if err := filterFn(m); err != nil {
 							return err
 						}
 					}
@@ -571,4 +612,10 @@ func (b *tokenBucket) refillLocked() {
 		b.tokens = b.burst
 	}
 	b.lastFill = now
+}
+
+func deterministicHash(m mid.MID) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write(m.Bytes())
+	return h.Sum32()
 }

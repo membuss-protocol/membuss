@@ -212,9 +212,6 @@
 			data = res;
 			if (data) {
 				renameValue = data.Name || '';
-				if (data.NotFound) {
-					startResolutionStream(mid);
-				}
 			}
 			loading = false;
 		} catch (err) {
@@ -486,9 +483,21 @@
 					</pre>
 				</div>
 
-				<button onclick={() => fetchMIDData(midVal)} class="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold text-xs transition-all duration-200 mt-4 active:scale-[0.98]">
-					Retry DHT Lookup
-				</button>
+				<div class="flex items-center gap-3 mt-4">
+					<button 
+						onclick={() => startResolutionStream(midVal)} 
+						class="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold text-xs transition-all duration-200 active:scale-[0.98] flex items-center gap-1.5"
+					>
+						<Icon icon="ph:cloud-arrow-down" class="text-sm" />
+						Resolve from Network
+					</button>
+					<button 
+						onclick={() => fetchMIDData(midVal)} 
+						class="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-750 text-xs font-bold transition-all duration-200 active:scale-[0.98]"
+					>
+						Refresh Status
+					</button>
+				</div>
 			</div>
 		{:else}
 			<div class="flex border-b border-slate-800">
