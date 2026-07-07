@@ -20,6 +20,7 @@
 		Title: string;
 		PeerCount: number;
 		Peers: PeerInfo[];
+		Self?: PeerInfo;
 	}
 
 	let data = $state<PeersData | null>(null);
@@ -39,6 +40,7 @@
 		lat: number;
 		lon: number;
 		transport: string;
+		isSelf?: boolean;
 	}
 
 	let displayPeers = $state<DisplayPeer[]>([]);
@@ -56,15 +58,54 @@
 		// Clear previous layers
 		markersLayer.clearLayers();
 
-		const validPeers = displayPeers.filter((p) => p.lat !== 0 || p.lon !== 0);
+		// Sort so the self node is processed first and gets true coordinates, and peers get offset
+		const sortedPeers = [...displayPeers].sort((a, b) => {
+			if (a.isSelf) return -1;
+			if (b.isSelf) return 1;
+			return 0;
+		});
+
+		// Deduplicate and jitter overlapping coordinates
+		const coordCounts = new Map<string, number>();
+		const validPeers = sortedPeers
+			.filter((p) => p.lat !== 0 || p.lon !== 0)
+			.map((p) => {
+				const key = `${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
+				const count = coordCounts.get(key) || 0;
+				coordCounts.set(key, count + 1);
+
+				let lat = p.lat;
+				let lon = p.lon;
+
+				if (count > 0) {
+					// Deterministic radial offset around coordinate center
+					const angle = (count * 2 * Math.PI) / 8;
+					const jitterDist = 0.006 + Math.floor(count / 8) * 0.003;
+					lat += Math.sin(angle) * jitterDist;
+					lon += Math.cos(angle) * jitterDist;
+				}
+
+				return { ...p, lat, lon };
+			});
+
 		if (validPeers.length === 0) return;
 
 		const leafletMarkers: any[] = [];
 
 		validPeers.forEach((p) => {
-			const iconClass = p.isAnchor ? 'network-marker anchor' : 'network-marker';
-			const dotClass = p.isAnchor ? 'marker-dot anchor' : 'marker-dot';
-			const pulseClass = p.isAnchor ? 'marker-pulse anchor' : 'marker-pulse';
+			let iconClass = 'network-marker';
+			let dotClass = 'marker-dot';
+			let pulseClass = 'marker-pulse';
+
+			if (p.isSelf) {
+				iconClass = 'network-marker self';
+				dotClass = 'marker-dot self';
+				pulseClass = 'marker-pulse self';
+			} else if (p.isAnchor) {
+				iconClass = 'network-marker anchor';
+				dotClass = 'marker-dot anchor';
+				pulseClass = 'marker-pulse anchor';
+			}
 
 			const customIcon = L.divIcon({
 				className: iconClass,
@@ -80,8 +121,8 @@
 				<div class="p-2 font-sans text-xs bg-slate-950 text-slate-205 border border-slate-800 rounded-lg flex flex-col gap-1.5 min-w-[200px]">
 					<div class="flex items-center justify-between border-b border-slate-800 pb-1">
 						<span class="font-mono text-[10px] text-slate-500">PEER ID</span>
-						<span class="px-1.5 py-0.2 rounded text-[9px] font-bold ${p.isAnchor ? 'bg-pink-950 text-pink-400 border border-pink-900/40' : 'bg-cyan-955 text-cyan-400 border border-cyan-900/40'}">
-							${p.isAnchor ? 'Anchor Node' : 'Node'}
+						<span class="px-1.5 py-0.2 rounded text-[9px] font-bold ${p.isSelf ? 'bg-emerald-950 text-emerald-400 border border-emerald-900/40' : p.isAnchor ? 'bg-pink-950 text-pink-400 border border-pink-900/40' : 'bg-cyan-955 text-cyan-400 border border-cyan-900/40'}">
+							${p.isSelf ? 'me' : p.isAnchor ? 'Anchor Node' : 'Node'}
 						</span>
 					</div>
 					<div class="font-mono text-[10px] truncate font-bold text-slate-200 select-all" title="${p.peerId}">
@@ -126,8 +167,8 @@
 			}
 		}
 
-		// Center/bounds map to fit
 		try {
+			map.invalidateSize();
 			const group = L.featureGroup(leafletMarkers);
 			map.fitBounds(group.getBounds().pad(0.18), { maxZoom: 9 });
 		} catch (_) {}
@@ -139,14 +180,50 @@
 			data = res;
 
 			if (data && data.Peers) {
-				displayPeers = data.Peers.map((p) => {
+				let selfLat = 23.81;
+				let selfLon = 90.41;
+				let selfHasGeo = false;
+
+				if (data.Self && data.Self.Lat !== 0) {
+					selfLat = data.Self.Lat;
+					selfLon = data.Self.Lon;
+					selfHasGeo = true;
+				}
+
+				const peersList = data.Peers.map((p, idx) => {
 					let transport = 'QUIC (UDP)';
 					if (p.Addrs && p.Addrs.length > 0) {
 						if (p.Addrs[0].includes('/tcp/')) transport = 'TCP';
 						else if (p.Addrs[0].includes('/ws/')) transport = 'WebSockets';
 					}
 
-					const location = [p.City, p.Country].filter(Boolean).join(', ') || 'Unknown';
+					let location = [p.City, p.Country].filter(Boolean).join(', ') || 'Unknown';
+					let lat = p.Lat;
+					let lon = p.Lon;
+
+					// Check if peer has local IP addresses (private ranges or localhost)
+					const isLocalIP = p.Addrs.some(addr => 
+						addr.includes('/ip4/192.168.') || 
+						addr.includes('/ip4/10.') || 
+						addr.includes('/ip4/172.16.') || 
+						addr.includes('/ip4/172.17.') || 
+						addr.includes('/ip4/172.18.') || 
+						addr.includes('/ip4/172.19.') || 
+						addr.includes('/ip4/172.2') || 
+						addr.includes('/ip4/172.3') || 
+						addr.includes('/ip4/127.0.0.1')
+					);
+
+					if ((lat === 0 && lon === 0) || isLocalIP) {
+						location = 'Local Network (mDNS)';
+						transport = 'mDNS (Local)';
+						
+						// Cluster local node slightly offset from self node position
+						const angle = (idx * 2 * Math.PI) / 8;
+						const radius = 0.015 + (idx % 3) * 0.008;
+						lat = selfLat + Math.sin(angle) * radius;
+						lon = selfLon + Math.cos(angle) * radius;
+					}
 
 					return {
 						peerId: p.PeerID,
@@ -154,11 +231,32 @@
 						isAnchor: p.IsAnchor,
 						connected: p.Connected,
 						location,
-						lat: p.Lat,
-						lon: p.Lon,
+						lat,
+						lon,
 						transport
 					};
 				});
+
+				if (data.Self) {
+					const p = data.Self;
+					let transport = 'Local';
+					const location = selfHasGeo
+						? ([p.City, p.Country].filter(Boolean).join(', ') || 'Local Node')
+						: 'Local Node (Offline)';
+					peersList.push({
+						peerId: p.PeerID,
+						addrs: p.Addrs,
+						isAnchor: p.IsAnchor,
+						connected: p.Connected,
+						location,
+						lat: selfLat,
+						lon: selfLon,
+						transport,
+						isSelf: true
+					});
+				}
+
+				displayPeers = peersList;
 			}
 			loading = false;
 
@@ -171,13 +269,20 @@
 	}
 
 	let filteredPeers = $derived.by(() => {
-		return displayPeers.filter((p) => {
+		const list = displayPeers.filter((p) => {
 			return (
 				!searchFilter ||
 				p.peerId.toLowerCase().includes(searchFilter.toLowerCase()) ||
 				p.location.toLowerCase().includes(searchFilter.toLowerCase()) ||
 				p.transport.toLowerCase().includes(searchFilter.toLowerCase())
 			);
+		});
+
+		// Sort self node to the very top, followed by standard nodes
+		return list.sort((a, b) => {
+			if (a.isSelf && !b.isSelf) return -1;
+			if (!a.isSelf && b.isSelf) return 1;
+			return 0;
 		});
 	});
 
@@ -214,40 +319,49 @@
 		}
 	}
 
-	onMount(async () => {
+	async function initMap() {
+		if (!mapEl || map) return;
+		try {
+			L = await import('leaflet');
+			if (!mapEl) return;
+
+			map = L.map(mapEl, {
+				center: [20, 0],
+				zoom: 3,
+				minZoom: 3,
+				maxZoom: 9,
+				zoomControl: true,
+				attributionControl: false,
+				maxBounds: [[-90, -180], [90, 180]],
+				maxBoundsViscosity: 1.0
+			});
+
+			L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+				maxZoom: 9,
+				minZoom: 3,
+				noWrap: true
+			}).addTo(map);
+
+			markersLayer = L.layerGroup().addTo(map);
+			mapReady = true;
+			setTimeout(() => {
+				if (map) map.invalidateSize();
+			}, 100);
+			updateMapData();
+		} catch (err) {
+			console.error('Leaflet initialization failed:', err);
+		}
+	}
+
+	$effect(() => {
+		if (browser && mapEl && !map) {
+			initMap();
+		}
+	});
+
+	onMount(() => {
 		loadPeers();
 		const interval = setInterval(loadPeers, 10000);
-
-		if (browser) {
-			try {
-				L = await import('leaflet');
-				if (mapEl) {
-					map = L.map(mapEl, {
-						center: [20, 0],
-						zoom: 3,
-						minZoom: 3,
-						maxZoom: 9,
-						zoomControl: true,
-						attributionControl: false,
-						maxBounds: [[-90, -180], [90, 180]],
-						maxBoundsViscosity: 1.0
-					});
-
-					L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-						maxZoom: 9,
-						minZoom: 3,
-						noWrap: true
-					}).addTo(map);
-
-					markersLayer = L.layerGroup().addTo(map);
-					mapReady = true;
-					updateMapData();
-				}
-			} catch (err) {
-				console.error('Leaflet initialization failed:', err);
-			}
-		}
-
 		return () => {
 			clearInterval(interval);
 		};
@@ -256,6 +370,8 @@
 	onDestroy(() => {
 		if (map) {
 			map.remove();
+			map = null;
+			mapReady = false;
 		}
 	});
 </script>
@@ -391,7 +507,13 @@
 									<td class="py-3.5 px-6 text-slate-400">{peer.transport}</td>
 
 									<td class="py-3.5 px-6 text-right font-sans">
-										{#if peer.isAnchor}
+										{#if peer.isSelf}
+											<span
+												class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-emerald-950/40 text-emerald-400 border border-emerald-800/30 uppercase"
+											>
+												self
+											</span>
+										{:else if peer.isAnchor}
 											<span
 												class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-pink-950/40 text-pink-400 border border-pink-800/30 uppercase"
 											>
@@ -421,14 +543,17 @@
 	}
 
 	:global(.network-marker) {
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		position: relative;
+		width: 24px;
+		height: 24px;
 	}
 
 	:global(.marker-dot) {
+		position: absolute;
 		width: 8px;
 		height: 8px;
+		top: 8px;
+		left: 8px;
 		border-radius: 50%;
 		background-color: #00f0ff;
 		box-shadow: 0 0 8px #00f0ff;
@@ -440,10 +565,18 @@
 		box-shadow: 0 0 8px #ff00aa;
 	}
 
+	:global(.marker-dot.self) {
+		background-color: #10b981;
+		box-shadow: 0 0 8px #10b981;
+		z-index: 12;
+	}
+
 	:global(.marker-pulse) {
 		position: absolute;
 		width: 24px;
 		height: 24px;
+		top: 0;
+		left: 0;
 		border-radius: 50%;
 		border: 1px solid rgba(0, 240, 255, 0.4);
 		animation: pulse 1.8s infinite ease-out;
@@ -454,6 +587,11 @@
 	:global(.marker-pulse.anchor) {
 		border-color: rgba(255, 0, 170, 0.4);
 		animation: pulse-anchor 1.8s infinite ease-out;
+	}
+
+	:global(.marker-pulse.self) {
+		border-color: rgba(16, 185, 129, 0.4);
+		animation: pulse-self 1.8s infinite ease-out;
 	}
 
 	@keyframes pulse {
@@ -468,6 +606,17 @@
 	}
 
 	@keyframes pulse-anchor {
+		0% {
+			transform: scale(0.3);
+			opacity: 1;
+		}
+		100% {
+			transform: scale(1.5);
+			opacity: 0;
+		}
+	}
+
+	@keyframes pulse-self {
 		0% {
 			transform: scale(0.3);
 			opacity: 1;

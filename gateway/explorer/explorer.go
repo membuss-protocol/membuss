@@ -984,6 +984,7 @@ type peersData struct {
 	Title     string
 	PeerCount int
 	Peers     []PeerInfo
+	Self      *PeerInfo `json:"self,omitempty"`
 }
 
 func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
@@ -1001,10 +1002,37 @@ func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	var selfPeer *PeerInfo
+	selfID := e.cfg.Backend.LocalPeerID(ctx)
+	if selfID != "" {
+		selfPeer = &PeerInfo{
+			PeerID:    selfID,
+			Addrs:     e.cfg.Backend.LocalAddrs(ctx),
+			IsAnchor:  e.cfg.Backend.AnchorMode(ctx),
+			Connected: true,
+		}
+		if selfLoc := ResolveSelfIP(ctx); selfLoc != nil {
+			selfPeer.Country = selfLoc.Country
+			selfPeer.City = selfLoc.City
+			selfPeer.Lat = selfLoc.Lat
+			selfPeer.Lon = selfLoc.Lon
+			// If geolocator is active but coordinates are not yet resolved by the API, fall back to MMDB lookup
+			if selfPeer.Lat == 0 && selfPeer.Lon == 0 && e.geo != nil {
+				geo := e.geo.Lookup(selfLoc.IP)
+				selfPeer.Country = geo.Country
+				selfPeer.City = geo.City
+				selfPeer.Lat = geo.Lat
+				selfPeer.Lon = geo.Lon
+			}
+		}
+	}
+
 	e.render(w, r, "peers.html", peersData{
 		Title:     "Peers",
 		PeerCount: len(peers),
 		Peers:     peers,
+		Self:      selfPeer,
 	})
 }
 
