@@ -156,6 +156,7 @@ func (ps *pooledStream) Close() {
 	_ = ps.stream.Reset()
 	ps.queue.Close()
 	ps.engine.streamPool.RemoveStream(ps.pid, ps)
+	ps.engine.NotifyPeerFailed(ps.pid)
 }
 
 func (ps *pooledStream) PushEvent(ev sessionEvent) {

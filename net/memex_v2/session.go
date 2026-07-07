@@ -511,6 +511,23 @@ func (s *Session) markFailed(id mid.MID, peerID peer.ID) {
 	}
 }
 
+func (s *Session) markPeerFailed(peerID peer.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	woke := false
+	for _, ws := range s.wantStates {
+		if ws.currentProvider == peerID {
+			ws.triedProviders[peerID] = struct{}{}
+			ws.currentProvider = ""
+			woke = true
+		}
+	}
+	if woke {
+		s.wakeScheduler()
+	}
+}
+
 func (s *Session) wakeScheduler() {
 	select {
 	case s.schedulerWakeCh <- struct{}{}:

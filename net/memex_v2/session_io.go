@@ -188,28 +188,40 @@ func (s *Session) scheduleWants() {
 			continue
 		}
 
-		var selected activeCandidate
-		maxEffectiveScore := -1.0
-		for _, ac := range activeList {
-			load := 0
-			for _, otherWs := range s.wantStates {
-				if otherWs.currentProvider == ac.peerID {
-					load++
+		total := len(s.enqueued)
+		resolved := len(s.resolved)
+		remaining := total - resolved
+		isEndgame := remaining > 0 && (remaining <= 3 || float64(remaining)/float64(total) <= 0.05)
+
+		if isEndgame {
+			ws.currentProvider = "endgame"
+			ws.lastSent = now
+			for _, ac := range activeList {
+				ac.stream.PushEvent(sessionEvent{isCancel: false, mid: ws.mid})
+			}
+		} else {
+			var selected activeCandidate
+			maxEffectiveScore := -1.0
+			for _, ac := range activeList {
+				load := 0
+				for _, otherWs := range s.wantStates {
+					if otherWs.currentProvider == ac.peerID {
+						load++
+					}
+				}
+				lat := s.cfg.Engine.GetPeerLatency(ac.peerID)
+				score := 1.0 / (float64(lat.Milliseconds()) + 1.0)
+				effectiveScore := score / float64(load+1)
+				if maxEffectiveScore == -1.0 || effectiveScore > maxEffectiveScore {
+					maxEffectiveScore = effectiveScore
+					selected = ac
 				}
 			}
-			lat := s.cfg.Engine.GetPeerLatency(ac.peerID)
-			score := 1.0 / (float64(lat.Milliseconds()) + 1.0)
-			effectiveScore := score / float64(load+1)
-			if maxEffectiveScore == -1.0 || effectiveScore > maxEffectiveScore {
-				maxEffectiveScore = effectiveScore
-				selected = ac
-			}
-		}
 
-		ws.currentProvider = selected.peerID
-		ws.lastSent = now
-		
-		selected.stream.PushEvent(sessionEvent{isCancel: false, mid: ws.mid})
+			ws.currentProvider = selected.peerID
+			ws.lastSent = now
+			selected.stream.PushEvent(sessionEvent{isCancel: false, mid: ws.mid})
+		}
 	}
 }
 

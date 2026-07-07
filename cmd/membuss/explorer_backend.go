@@ -601,8 +601,31 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 	}
 	defer os.RemoveAll(tmp)
 
+	commonPrefix := ""
+	if len(files) > 0 {
+		first := strings.ReplaceAll(files[0].Path, "\\", "/")
+		sub := strings.Split(first, "/")
+		if len(sub) > 1 {
+			prefix := sub[0] + "/"
+			allHave := true
+			for _, f := range files {
+				relPath := strings.ReplaceAll(f.Path, "\\", "/")
+				if !strings.HasPrefix(relPath, prefix) {
+					allHave = false
+					break
+				}
+			}
+			if allHave {
+				commonPrefix = prefix
+			}
+		}
+	}
+
 	for _, f := range files {
 		rel := strings.ReplaceAll(f.Path, "\\", "/")
+		if commonPrefix != "" {
+			rel = strings.TrimPrefix(rel, commonPrefix)
+		}
 		rel = path.Clean("/" + rel)
 		rel = strings.TrimPrefix(rel, "/")
 		if rel == "" || rel == "." {

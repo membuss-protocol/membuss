@@ -199,6 +199,14 @@ func (e *Engine) NotifyBlockFailed(id mid.MID, pid peer.ID) {
 	}
 }
 
+func (e *Engine) NotifyPeerFailed(pid peer.ID) {
+	e.sessionsMu.Lock()
+	defer e.sessionsMu.Unlock()
+	for s := range e.sessions {
+		s.markPeerFailed(pid)
+	}
+}
+
 func (e *Engine) StoreObjectInfos(infos map[string]*membusspb.ObjectInfo) {
 	type metaPutter interface {
 		PutMeta(key string, value []byte) error
