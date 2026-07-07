@@ -358,15 +358,16 @@ func main() {
 
 	// 6) Mem-Herald.
 	hd, err := herald.New(herald.Config{
-		Store:    bs,
-		DHT:      mdht,
-		Strategy: herald.StrategyRoots,
-		Interval: cfg.ReprovideInterval,
-		Rate:     100,
-		Burst:    8,
-		KeyRing:  kr,
-		MemDHT:   mdht,
-		Metrics:  mtrx,
+		Store:           bs,
+		DHT:             mdht,
+		Strategy:        herald.StrategyRoots,
+		Interval:        cfg.ReprovideInterval,
+		Rate:            100,
+		Burst:           8,
+		KeyRing:         kr,
+		MemDHT:          mdht,
+		Metrics:         mtrx,
+		ReprovideGroups: cfg.ReprovideGroups,
 	})
 	if err != nil {
 		logger.Error("herald", "err", err.Error())
@@ -581,6 +582,15 @@ func main() {
 	sig := <-sigCh
 	logger.Info("shutdown requested", "signal", sig.String())
 	cancel() // Stop all background routines using the main context
+
+	// Global watchdog: if the process takes more than 10 seconds to shut down
+	// (e.g. because database flushing gets stuck on Windows volume errors),
+	// force exit the process.
+	go func() {
+		time.Sleep(10 * time.Second)
+		logger.Error("shutdown watchdog: graceful teardown timed out, force exiting")
+		os.Exit(0)
+	}()
 
 	shutdownCtx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer scancel()

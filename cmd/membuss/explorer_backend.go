@@ -127,6 +127,27 @@ func (a *explorerAdapter) Delete(ctx context.Context, m mid.MID) (uint64, uint64
 	return res.BlocksDeleted, res.BytesFreed, nil
 }
 
+func (a *explorerAdapter) DropAll(ctx context.Context) error {
+	b := a.b
+	if b == nil || b.store == nil {
+		return errors.New("store not initialized")
+	}
+	if b.memex != nil {
+		b.memex.CancelAllSessions()
+	}
+	err := b.store.DropAll()
+	if err != nil {
+		return err
+	}
+	a.statsMu.Lock()
+	a.cachedBytes = 0
+	a.cachedCount = 0
+	a.lastStats = time.Now()
+	a.allRoots = make(map[string]struct{})
+	a.statsMu.Unlock()
+	return nil
+}
+
 
 // Providers returns DHT-known providers for m.
 func (a *explorerAdapter) Providers(ctx context.Context, m mid.MID, limit int) ([]string, error) {
@@ -218,7 +239,7 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 			Engine:         b.memex,
 			Root:           m,
 			Providers:      provs,
-			Timeout:        memex.DefaultSessionTimeout,
+			Timeout:        10 * time.Minute,
 			ProviderFinder: b.dht.FindProviders,
 			ProgressFn: func(update memex.ProgressUpdate) {
 				if progressFn != nil {
@@ -226,8 +247,11 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 				}
 			},
 		})
+		var ferr error
 		if serr == nil {
-			if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
+			var rc io.Reader
+			rc, ferr = sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig())
+			if ferr == nil && rc != nil {
 				has = true
 				_, _ = io.Copy(io.Discard, rc)
 				if c, ok := rc.(io.Closer); ok {
@@ -241,8 +265,14 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 				// even though the session-level Fetch errored.
 				if complete, cerr := isDAGComplete(b.store, m); cerr == nil && complete {
 					has = true
+					ferr = nil
 				}
 			}
+		} else {
+			ferr = serr
+		}
+		if !has && ferr != nil {
+			return nil, explorer.ContentInfo{}, ferr
 		}
 	}
 	if !has {

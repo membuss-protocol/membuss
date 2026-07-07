@@ -108,6 +108,9 @@ type Store interface {
 	// Close releases all resources held by the store. After
 	// Close, every other method returns an error.
 	Close() error
+
+	// DropAll deletes every key and value in the store, resetting it to empty.
+	DropAll() error
 }
 
 // MemStore is the BadgerDB-backed Store implementation. A zero
@@ -117,9 +120,10 @@ type MemStore struct {
 	bloom  *bloomIndex
 	stopGC chan struct{}
 
-	mu     sync.RWMutex
-	wg     sync.WaitGroup
-	closed bool
+	mu      sync.RWMutex
+	wg      sync.WaitGroup
+	closed  bool
+	dropping bool
 }
 
 // Options configures a MemStore at construction time.
@@ -476,7 +480,7 @@ func (s *MemStore) deleteKey(key []byte) error {
 func (s *MemStore) enter() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.closed || s.db == nil {
+	if s.closed || s.dropping || s.db == nil {
 		return errors.New("store: closed")
 	}
 	s.wg.Add(1)
@@ -521,6 +525,36 @@ func (s *MemStore) Close() error {
 		return dbErr
 	}
 	return snapErr
+}
+
+// DropAll deletes all keys and values in the store, resetting it to empty.
+func (s *MemStore) DropAll() error {
+	s.mu.Lock()
+	if s.closed || s.dropping {
+		s.mu.Unlock()
+		return errors.New("store closed or dropping")
+	}
+	s.dropping = true
+	s.mu.Unlock()
+
+	// Wait for any active store operations to drain
+	s.wg.Wait()
+
+	err := s.db.DropAll()
+
+	// Rebuild bloom filter to empty state
+	if err == nil && s.bloom != nil {
+		err = s.bloom.rebuildFromDB(s.db)
+	}
+
+	s.mu.Lock()
+	s.dropping = false
+	s.mu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("store: drop all failed: %w", err)
+	}
+	return nil
 }
 
 // runValueLogGC runs BadgerDB's value-log GC periodically to reclaim disk space.

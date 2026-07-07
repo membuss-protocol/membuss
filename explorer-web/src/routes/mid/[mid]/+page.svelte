@@ -4,6 +4,7 @@
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { apiFetch, formatBytes } from '$lib/api';
+	import { toast } from '$lib/toast';
 	import Icon from '@iconify/svelte';
 	import DagNode from '$lib/components/DagNode.svelte';
 
@@ -62,6 +63,7 @@
 	let activeTab = $state<'info' | 'dag'>('info');
 	let copiedDescriptor = $state(false);
 
+	let showDeleteMIDModal = $state(false);
 	let resolverActive = $state(false);
 	let statusBadgeText = $state('Connecting');
 	let statStatusText = $state('Connecting to network DHT...');
@@ -73,9 +75,9 @@
 	let eventSource = $state<EventSource | null>(null);
 	let pieceGrid = $state<('queued' | 'scanning' | 'checked' | 'downloaded' | 'finished')[]>([]);
 
-	const MAX_BOXES = 120;
+	const MAX_BOXES = 300;
 	function initPieceGrid(total: number) {
-		const size = total > 0 ? Math.min(MAX_BOXES, total) : 40;
+		const size = total > 0 ? Math.min(MAX_BOXES, total) : 100;
 		pieceGrid = Array(size).fill('queued');
 	}
 
@@ -120,9 +122,9 @@
 				statusBadgeText = 'Complete';
 				statStatusText = 'Assembly Complete!';
 
-				setTimeout(() => {
+				setTimeout(async () => {
+					await fetchMIDData(mid, true);
 					resolverActive = false;
-					fetchMIDData(mid);
 				}, 1000);
 				return;
 			}
@@ -201,24 +203,30 @@
 		}
 	}
 
-	async function fetchMIDData(mid: string) {
-		loading = true;
-		error = null;
-		closeResolver();
+	async function fetchMIDData(mid: string, silent = false) {
+		if (!silent) {
+			loading = true;
+			error = null;
+			closeResolver();
+		}
 
 		try {
 			const res = await apiFetch(`/mid/${mid}`);
 			data = res;
 			if (data) {
 				renameValue = data.Name || '';
-				if (data.NotFound) {
+				if (data.NotFound && !silent) {
 					startResolutionStream(mid);
 				}
 			}
-			loading = false;
+			if (!silent) {
+				loading = false;
+			}
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to query Content ID metadata';
-			loading = false;
+			if (!silent) {
+				error = err instanceof Error ? err.message : 'Failed to query Content ID metadata';
+				loading = false;
+			}
 		}
 	}
 
@@ -253,7 +261,7 @@
 				fetchMIDData(midVal);
 			}
 		} catch (err) {
-			alert(`Action failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Action failed: ${err instanceof Error ? err.message : err}`);
 			loading = false;
 		}
 	}
@@ -274,7 +282,7 @@
 			if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
 			fetchMIDData(midVal);
 		} catch (err) {
-			alert(`Rename failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Rename failed: ${err instanceof Error ? err.message : err}`);
 		} finally {
 			isRenaming = false;
 		}
@@ -433,22 +441,21 @@
 					<div class="flex justify-between items-center">
 						<h3 class="font-bold text-xs text-slate-400 font-mono ">Session Piece Map</h3>
 						<div class="flex gap-3 text-[9px] font-mono uppercase text-slate-500">
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-slate-800"></span> Queued</div>
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-yellow-500/30"></span> Scanning</div>
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-cyan-500/20"></span> Checked</div>
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-cyan-500 animate-pulse"></span> Downloaded</div>
+							<div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-[2px] bg-red-950/80 border border-red-900/30"></span> Missing</div>
+							<div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-[2px] bg-amber-500 animate-pulse"></span> Downloading</div>
+							<div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-[2px] bg-emerald-500"></span> Fetched</div>
 						</div>
 					</div>
 
-					<div class="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-20 gap-1.5 p-2 bg-slate-950/60 border border-slate-900 rounded-lg">
+					<div class="h-8 w-full bg-slate-950 border border-slate-850 rounded-lg flex overflow-hidden p-0.5 gap-[0.5px]">
 						{#each pieceGrid as cell}
 							<div
-								class={`aspect-square rounded-[3px] transition-all duration-300 ${
-									cell === 'finished' ? 'bg-emerald-500' :
-									cell === 'downloaded' ? 'bg-cyan-500' :
-									cell === 'checked' ? 'bg-cyan-950/60 border border-cyan-800/40' :
-									cell === 'scanning' ? 'bg-yellow-500/50 animate-pulse' :
-									'bg-slate-800'
+								class={`h-full flex-grow transition-all duration-300 ${
+									cell === 'finished' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' :
+									cell === 'downloaded' ? 'bg-emerald-500' :
+									cell === 'checked' ? 'bg-red-950/80' :
+									cell === 'scanning' ? 'bg-amber-500 animate-pulse' :
+									'bg-red-950/80'
 								}`}
 							></div>
 						{/each}
@@ -485,9 +492,21 @@
 					</pre>
 				</div>
 
-				<button onclick={() => fetchMIDData(midVal)} class="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold text-xs transition-all duration-200 mt-4 active:scale-[0.98]">
-					Retry DHT Lookup
-				</button>
+				<div class="flex items-center gap-3 mt-4">
+					<button 
+						onclick={() => startResolutionStream(midVal)} 
+						class="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold text-xs transition-all duration-200 active:scale-[0.98] flex items-center gap-1.5"
+					>
+						<Icon icon="ph:cloud-arrow-down" class="text-sm" />
+						Resolve from Network
+					</button>
+					<button 
+						onclick={() => fetchMIDData(midVal)} 
+						class="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-750 text-xs font-bold transition-all duration-200 active:scale-[0.98]"
+					>
+						Refresh Status
+					</button>
+				</div>
 			</div>
 		{:else}
 			<div class="flex border-b border-slate-800">
@@ -566,7 +585,7 @@
 								Seal (Pin)
 							</button>
 						{/if}
-						<button onclick={() => { if (confirm('Are you sure you want to delete this Content ID and all its blocks recursively from this node? This cannot be undone.')) runAction('delete'); }} class="px-4 py-2 rounded-lg bg-red-650 hover:bg-red-700 text-slate-50 border border-red-900/40 text-xs font-bold transition-colors active:scale-[0.98]">
+						<button onclick={() => showDeleteMIDModal = true} class="px-4 py-2 rounded-lg bg-red-650 hover:bg-red-700 text-slate-50 border border-red-900/40 text-xs font-bold transition-colors active:scale-[0.98]">
 							Delete
 						</button>
 					</div>
@@ -718,3 +737,31 @@
 		{/if}
 	{/if}
 </div>
+
+{#if showDeleteMIDModal}
+	<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+		<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full flex flex-col gap-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+			<h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
+				<Icon icon="ph:warning-bold" class="text-red-500 text-lg" />
+				Delete Content ID
+			</h3>
+			<p class="text-xs text-slate-400 leading-relaxed">
+				Are you sure you want to delete this Content ID and all its blocks recursively from this node? This action is permanent and cannot be undone.
+			</p>
+			<div class="flex items-center justify-end gap-3 mt-2">
+				<button 
+					onclick={() => showDeleteMIDModal = false} 
+					class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+				>
+					Cancel
+				</button>
+				<button 
+					onclick={() => { showDeleteMIDModal = false; runAction('delete'); }} 
+					class="px-4 py-2 rounded-xl bg-red-650 hover:bg-red-700 text-slate-50 text-xs font-semibold transition-colors"
+				>
+					Delete
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}

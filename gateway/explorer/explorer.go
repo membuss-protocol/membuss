@@ -247,6 +247,8 @@ type Backend interface {
 	DescriptorMeta(ctx context.Context, midStr string) (map[string]interface{}, error)
 	// DescriptorImport imports a .mbuss descriptor and returns the root MID string.
 	DescriptorImport(ctx context.Context, data []byte) (string, error)
+	// DropAll deletes all keys and values in the store.
+	DropAll(ctx context.Context) error
 }
 
 // KeyringKeyInfo represents metadata about a key in the keyring.
@@ -508,6 +510,7 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Post("/keyring/gen", e.handleKeyringGen)
 	r.Delete("/keyring/rm/{name}", e.handleKeyringRm)
 	r.Post("/memns/publish", e.handleMemNSPublish)
+	r.Post("/node/flash", e.handleNodeFlash)
 
 	// Phase 21: descriptor endpoints
 	r.Get("/descriptor/{mid}", e.handleDescriptorExport)
@@ -754,8 +757,16 @@ func (e *Explorer) handleMID(w http.ResponseWriter, r *http.Request) {
 		Sealers:       info.Sealers,
 		AnchorSealers: info.AnchorSealers,
 	}
+	isJSON := r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json")
 	if !present {
 		provs, _ := b.Providers(ctx, root, e.cfg.ProviderLimit)
+		data.Providers = provs
+		if isJSON {
+			data.ResolveStatus = ResolveNone
+			data.ResolveMessage = "content not present locally"
+			e.render(w, r, "mid.html", data)
+			return
+		}
 		if len(provs) > 0 {
 			e.render(w, r, "mid-resolving.html", data)
 			return
@@ -908,7 +919,7 @@ func (e *Explorer) handleResolveStream(w http.ResponseWriter, r *http.Request) {
 
 	timeout := e.cfg.ResolveTimeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 2 * time.Hour // Generous timeout for active streaming downloads
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -979,11 +990,26 @@ func (e *Explorer) handleDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/explorer/", http.StatusSeeOther)
 }
 
+func (e *Explorer) handleNodeFlash(w http.ResponseWriter, r *http.Request) {
+	err := e.cfg.Backend.DropAll(r.Context())
+	if err != nil {
+		http.Error(w, "flashnode failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok","message":"flashnode complete"}`))
+		return
+	}
+	http.Redirect(w, r, "/explorer/node", http.StatusSeeOther)
+}
+
 
 type peersData struct {
 	Title     string
 	PeerCount int
 	Peers     []PeerInfo
+	Self      *PeerInfo `json:"self,omitempty"`
 }
 
 func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
@@ -1001,10 +1027,37 @@ func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	var selfPeer *PeerInfo
+	selfID := e.cfg.Backend.LocalPeerID(ctx)
+	if selfID != "" {
+		selfPeer = &PeerInfo{
+			PeerID:    selfID,
+			Addrs:     e.cfg.Backend.LocalAddrs(ctx),
+			IsAnchor:  e.cfg.Backend.AnchorMode(ctx),
+			Connected: true,
+		}
+		if selfLoc := ResolveSelfIP(ctx); selfLoc != nil {
+			selfPeer.Country = selfLoc.Country
+			selfPeer.City = selfLoc.City
+			selfPeer.Lat = selfLoc.Lat
+			selfPeer.Lon = selfLoc.Lon
+			// If geolocator is active but coordinates are not yet resolved by the API, fall back to MMDB lookup
+			if selfPeer.Lat == 0 && selfPeer.Lon == 0 && e.geo != nil {
+				geo := e.geo.Lookup(selfLoc.IP)
+				selfPeer.Country = geo.Country
+				selfPeer.City = geo.City
+				selfPeer.Lat = geo.Lat
+				selfPeer.Lon = geo.Lon
+			}
+		}
+	}
+
 	e.render(w, r, "peers.html", peersData{
 		Title:     "Peers",
 		PeerCount: len(peers),
 		Peers:     peers,
+		Self:      selfPeer,
 	})
 }
 

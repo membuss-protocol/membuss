@@ -197,6 +197,16 @@ func (e *Engine) UnregisterSession(s *Session) {
 	e.sessionsMu.Unlock()
 }
 
+func (e *Engine) CancelAllSessions() {
+	e.sessionsMu.Lock()
+	defer e.sessionsMu.Unlock()
+	for s := range e.sessions {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	}
+}
+
 func (e *Engine) NotifyBlockResolved(id mid.MID) {
 	e.sessionsMu.Lock()
 	defer e.sessionsMu.Unlock()

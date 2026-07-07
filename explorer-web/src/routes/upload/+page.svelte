@@ -2,6 +2,7 @@
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { formatBytes } from '$lib/api';
+	import { toast } from '$lib/toast';
 	import Icon from '@iconify/svelte';
 
 	let activeTab = $state<'file' | 'folder' | 'descriptor'>('file');
@@ -221,7 +222,7 @@
 		function showError(msg: string) {
 			uploadPhase = 'error';
 			uploadStatusText = 'Failed';
-			alert(msg);
+			toast.error(msg);
 			resetUploadState();
 		}
 
@@ -309,7 +310,7 @@
 			<!-- File Submission Form -->
 			<form onsubmit={handleFileSubmit} class="flex flex-col gap-6">
 				<div class="flex flex-col gap-2">
-					<label class="text-xs font-mono text-slate-450">Choose File</label>
+					<label for="file-upload-input" class="text-xs font-mono text-slate-450">Choose File</label>
 					<div class="border-2 border-dashed border-slate-800 hover:border-slate-700/80 rounded-xl p-8 flex flex-col items-center justify-center gap-3 relative transition-all group bg-slate-950/20">
 						<span class="text-4xl group-hover:scale-110 transition-transform text-slate-400"><Icon icon="ph:file-text" /></span>
 						<div class="text-sm font-semibold text-slate-300">
@@ -325,6 +326,7 @@
 						</p>
 						<input
 							type="file"
+							id="file-upload-input"
 							required
 							disabled={uploadActive}
 							onchange={handleFileChange}
@@ -345,7 +347,7 @@
 			<!-- Folder Submission Form -->
 			<form onsubmit={handleFolderSubmit} class="flex flex-col gap-6">
 				<div class="flex flex-col gap-2">
-					<label class="text-xs font-mono text-slate-450">Choose Folder</label>
+					<label for="folder-upload-input" class="text-xs font-mono text-slate-450">Choose Folder</label>
 					<div class="border-2 border-dashed border-slate-800 hover:border-slate-700/80 rounded-xl p-8 flex flex-col items-center justify-center gap-3 relative transition-all group bg-slate-950/20">
 						<span class="text-4xl group-hover:scale-110 transition-transform text-slate-400"><Icon icon="ph:folder-open" /></span>
 						<div class="text-sm font-semibold text-slate-300">
@@ -363,6 +365,7 @@
 						</p>
 						<input
 							type="file"
+							id="folder-upload-input"
 							required
 							webkitdirectory
 							directory
@@ -400,7 +403,7 @@
 		{:else if activeTab === 'descriptor'}
 			<form onsubmit={handleDescriptorSubmit} class="flex flex-col gap-6">
 				<div class="flex flex-col gap-2">
-					<label class="text-xs font-mono text-slate-450">Select .mbuss Descriptor File</label>
+					<label for="descriptor-upload-input" class="text-xs font-mono text-slate-450">Select .mbuss Descriptor File</label>
 					<div class="border-2 border-dashed border-slate-800 hover:border-slate-700/80 rounded-xl p-8 flex flex-col items-center justify-center gap-3 relative transition-all group bg-slate-950/20">
 						<span class="text-4xl group-hover:scale-110 transition-transform text-slate-400"><Icon icon="ph:file-arrow-down" /></span>
 						<div class="text-sm font-semibold text-slate-300">
@@ -416,6 +419,7 @@
 						</p>
 						<input
 							type="file"
+							id="descriptor-upload-input"
 							accept=".mbuss"
 							required
 							disabled={descriptorStatus === 'importing' || descriptorStatus === 'fetching'}
