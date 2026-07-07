@@ -74,9 +74,9 @@
 	let eventSource = $state<EventSource | null>(null);
 	let pieceGrid = $state<('queued' | 'scanning' | 'checked' | 'downloaded' | 'finished')[]>([]);
 
-	const MAX_BOXES = 120;
+	const MAX_BOXES = 300;
 	function initPieceGrid(total: number) {
-		const size = total > 0 ? Math.min(MAX_BOXES, total) : 40;
+		const size = total > 0 ? Math.min(MAX_BOXES, total) : 100;
 		pieceGrid = Array(size).fill('queued');
 	}
 
@@ -121,9 +121,9 @@
 				statusBadgeText = 'Complete';
 				statStatusText = 'Assembly Complete!';
 
-				setTimeout(() => {
+				setTimeout(async () => {
+					await fetchMIDData(mid, true);
 					resolverActive = false;
-					fetchMIDData(mid);
 				}, 1000);
 				return;
 			}
@@ -202,21 +202,30 @@
 		}
 	}
 
-	async function fetchMIDData(mid: string) {
-		loading = true;
-		error = null;
-		closeResolver();
+	async function fetchMIDData(mid: string, silent = false) {
+		if (!silent) {
+			loading = true;
+			error = null;
+			closeResolver();
+		}
 
 		try {
 			const res = await apiFetch(`/mid/${mid}`);
 			data = res;
 			if (data) {
 				renameValue = data.Name || '';
+				if (data.NotFound && !silent) {
+					startResolutionStream(mid);
+				}
 			}
-			loading = false;
+			if (!silent) {
+				loading = false;
+			}
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to query Content ID metadata';
-			loading = false;
+			if (!silent) {
+				error = err instanceof Error ? err.message : 'Failed to query Content ID metadata';
+				loading = false;
+			}
 		}
 	}
 
@@ -431,22 +440,21 @@
 					<div class="flex justify-between items-center">
 						<h3 class="font-bold text-xs text-slate-400 font-mono ">Session Piece Map</h3>
 						<div class="flex gap-3 text-[9px] font-mono uppercase text-slate-500">
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-slate-800"></span> Queued</div>
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-yellow-500/30"></span> Scanning</div>
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-cyan-500/20"></span> Checked</div>
-							<div class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-cyan-500 animate-pulse"></span> Downloaded</div>
+							<div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-[2px] bg-red-950/80 border border-red-900/30"></span> Missing</div>
+							<div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-[2px] bg-amber-500 animate-pulse"></span> Downloading</div>
+							<div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-[2px] bg-emerald-500"></span> Fetched</div>
 						</div>
 					</div>
 
-					<div class="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-20 gap-1.5 p-2 bg-slate-950/60 border border-slate-900 rounded-lg">
+					<div class="h-8 w-full bg-slate-950 border border-slate-850 rounded-lg flex overflow-hidden p-0.5 gap-[0.5px]">
 						{#each pieceGrid as cell}
 							<div
-								class={`aspect-square rounded-[3px] transition-all duration-300 ${
-									cell === 'finished' ? 'bg-emerald-500' :
-									cell === 'downloaded' ? 'bg-cyan-500' :
-									cell === 'checked' ? 'bg-cyan-950/60 border border-cyan-800/40' :
-									cell === 'scanning' ? 'bg-yellow-500/50 animate-pulse' :
-									'bg-slate-800'
+								class={`h-full flex-grow transition-all duration-300 ${
+									cell === 'finished' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' :
+									cell === 'downloaded' ? 'bg-emerald-500' :
+									cell === 'checked' ? 'bg-red-950/80' :
+									cell === 'scanning' ? 'bg-amber-500 animate-pulse' :
+									'bg-red-950/80'
 								}`}
 							></div>
 						{/each}
