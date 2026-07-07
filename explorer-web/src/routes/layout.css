@@ -1,13 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap');
+
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
+
+@theme {
+  --color-slate-950: #050505;
+  --color-slate-900: #0b0c15;
+  --color-slate-800: rgba(255, 255, 255, 0.04);
+  --color-slate-750: rgba(255, 255, 255, 0.02);
+  --color-slate-700: rgba(255, 255, 255, 0.06);
+  --color-slate-650: rgba(255, 255, 255, 0.08);
+  
+  --font-sans: 'Geist', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'Geist Mono', monospace;
+  
+  --animate-fade-in-up: fade-in-up 0.8s cubic-bezier(0.32, 0.72, 0, 1) both;
+}
 
 @layer base {
   html {
     scroll-behavior: smooth;
   }
 
-  /* Noise overlay for digital flatness */
+  /* Noise overlay for physical grain depth */
   body::before {
     content: '';
     position: fixed;
@@ -33,19 +49,50 @@
 }
 
 @layer utilities {
-  /* Staggered fade-in animation for dashboard cards */
   @keyframes fade-in-up {
     from {
       opacity: 0;
-      transform: translateY(8px);
+      transform: translateY(16px);
+      filter: blur(4px);
     }
     to {
       opacity: 1;
       transform: translateY(0);
+      filter: blur(0);
     }
   }
+}
 
-  .animate-fade-in-up {
-    animation: fade-in-up 0.4s ease-out both;
-  }
+.premium-bg {
+  background-color: #050505;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.06) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.05) 0px, transparent 50%),
+    radial-gradient(at 50% 0%, rgba(6, 182, 212, 0.04) 0px, transparent 40%);
+}
+
+.double-bezel {
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 6px;
+  border-radius: 20px;
+  transition: all 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.double-bezel:hover {
+  border-color: rgba(6, 182, 212, 0.15);
+}
+
+.double-bezel-inner {
+  background: rgba(10, 12, 22, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
+  border-radius: 15px;
+  padding: 20px;
+}
+
+/* Premium transition speeds */
+.transition-bezier {
+  transition: all 700ms cubic-bezier(0.32, 0.72, 0, 1);
 }

@@ -342,11 +342,13 @@
 				zoom: 3,
 				minZoom: 3,
 				maxZoom: 9,
-				zoomControl: true,
+				zoomControl: false,
 				attributionControl: false,
 				maxBounds: [[-90, -180], [90, 180]],
 				maxBoundsViscosity: 1.0
 			});
+
+			L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 			L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 				maxZoom: 9,
@@ -392,42 +394,47 @@
 	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 </svelte:head>
 
-<div class="flex flex-col gap-6">
+<div class="flex flex-col gap-6 animate-fade-in-up" style="animation-delay: 0ms">
 	<!-- Page Header -->
-	<div class="border-b border-slate-800 pb-4">
-		<h1 class="text-2xl font-bold text-slate-50">Active Swarm Map</h1>
-		<p class="text-xs text-slate-500 mt-1">
-			Geographic coordinates and status parameters of active routing connections
-		</p>
+	<div class="border-b border-white/[0.04] pb-5 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+		<div>
+			<span class="text-[9px] text-cyan-400 uppercase tracking-widest font-mono font-semibold">Mesh Swarm Explorer</span>
+			<h1 class="text-2xl font-bold text-slate-50 mt-1">Active Swarm Map</h1>
+			<p class="text-xs text-slate-500 mt-1">
+				Geographic coordinates and status parameters of active routing connections
+			</p>
+		</div>
 	</div>
 
 	<!-- Connect to Peer -->
-	<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row gap-3">
-		<input
-			type="text"
-			bind:value={connectAddr}
-			placeholder="Paste peer multiaddr, e.g. /ip4/1.2.3.4/tcp/4001/p2p/12D3KooW..."
-			class="flex-1 bg-slate-950/60 border border-slate-850 text-xs px-3.5 py-2 rounded-lg focus:outline-none focus:border-cyan-500 font-mono"
-			onkeydown={(e) => {
-				if (e.key === 'Enter') connectToPeer();
-			}}
-		/>
-		<button
-			onclick={connectToPeer}
-			disabled={connectStatus === 'loading' || !connectAddr.trim()}
-			class="px-4 py-2 text-xs font-semibold rounded-lg transition-colors
-				{connectStatus === 'loading'
-					? 'bg-slate-800 text-slate-500 cursor-wait'
-					: 'bg-cyan-600 hover:bg-cyan-500 text-white cursor-pointer'}"
-		>
-			{connectStatus === 'loading' ? 'Connecting...' : 'Connect'}
-		</button>
+	<div class="double-bezel">
+		<div class="double-bezel-inner flex flex-col sm:flex-row gap-4 items-center">
+			<input
+				type="text"
+				bind:value={connectAddr}
+				placeholder="Paste peer multiaddr, e.g. /ip4/1.2.3.4/tcp/4001/p2p/12D3KooW..."
+				class="w-full flex-1 bg-slate-950/60 border border-white/[0.04] text-xs px-4 py-2.5 rounded-xl focus:outline-none focus:border-cyan-500/50 font-mono transition-all duration-300"
+				onkeydown={(e) => {
+					if (e.key === 'Enter') connectToPeer();
+				}}
+			/>
+			<button
+				onclick={connectToPeer}
+				disabled={connectStatus === 'loading' || !connectAddr.trim()}
+				class="w-full sm:w-auto px-5 py-2.5 text-xs font-semibold rounded-xl transition-all duration-300 cursor-pointer
+					{connectStatus === 'loading'
+						? 'bg-slate-800 text-slate-500 cursor-wait'
+						: 'bg-cyan-600 hover:bg-cyan-500 hover:scale-[1.02] active:scale-[0.98] text-white shadow-[0_4px_12px_rgba(6,182,212,0.15)]'}"
+			>
+				{connectStatus === 'loading' ? 'Connecting...' : 'Connect'}
+			</button>
+		</div>
 	</div>
 	{#if connectStatus === 'ok'}
-		<div class="text-xs text-cyan-400 font-mono -mt-4">Peer connected successfully</div>
+		<div class="text-xs text-cyan-400 font-mono px-2 -mt-2">Peer connected successfully</div>
 	{/if}
 	{#if connectStatus === 'error'}
-		<div class="text-xs text-red-400 font-mono -mt-4">Failed: {connectError}</div>
+		<div class="text-xs text-red-400 font-mono px-2 -mt-2">Failed: {connectError}</div>
 	{/if}
 
 	{#if loading && !data}
@@ -437,114 +444,116 @@
 		</div>
 	{:else if error}
 		<div
-			class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono"
+			class="bg-red-950/20 border border-red-900/40 text-red-450 p-4 rounded-xl text-xs font-mono"
 		>
 			{error}
 		</div>
 	{:else if data}
 		<!-- 2D Interactive Swarm Map -->
-		<div
-			class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl relative overflow-hidden"
-		>
-			<!-- Peer counter overlay -->
-			<div
-				class="absolute top-4 left-4 z-[1000] flex flex-col items-start pointer-events-none select-none"
-			>
-				<span
-					class="text-3xl md:text-4xl font-bold text-slate-50 tracking-tight leading-none"
+		<div class="double-bezel relative">
+			<div class="double-bezel-inner !p-0 relative overflow-hidden h-[450px]">
+				<!-- Peer counter overlay -->
+				<div
+					class="absolute top-5 left-5 z-[1000] flex flex-col items-start pointer-events-none select-none"
 				>
-					{data.PeerCount}
-				</span>
-				<span
-					class="text-[9px] text-cyan-400 font-mono tracking-widest uppercase mt-1 bg-slate-950/90 border border-cyan-800 px-2 py-0.5 rounded shadow"
-				>
-					peers in swarm
-				</span>
+					<span
+						class="text-3xl md:text-4xl font-bold text-slate-50 tracking-tight leading-none drop-shadow-md"
+					>
+						{data.PeerCount}
+					</span>
+					<span
+						class="text-[9px] text-cyan-400 font-mono tracking-widest uppercase mt-1.5 bg-slate-950/90 border border-cyan-800/40 px-2 py-0.5 rounded shadow"
+					>
+						peers in swarm
+					</span>
+				</div>
+				<!-- Map container -->
+				<div bind:this={mapEl} class="h-full w-full"></div>
 			</div>
-			<!-- Map container -->
-			<div bind:this={mapEl} class="h-[450px] w-full rounded-xl overflow-hidden"></div>
 		</div>
 
 		<!-- Peers Table Registry -->
-		<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col gap-4">
-			<div
-				class="px-6 py-4 bg-slate-950/40 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-			>
-				<h3 class="font-bold text-sm text-slate-300">Swarm Connections</h3>
-				<div class="relative w-full sm:w-64">
-					<input
-						type="text"
-						bind:value={searchFilter}
-						placeholder="Filter by country or ID..."
-						class="w-full bg-slate-950/60 border border-slate-850 text-xs px-3.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500"
-					/>
+		<div class="double-bezel">
+			<div class="double-bezel-inner !p-0 overflow-hidden flex flex-col">
+				<div
+					class="px-6 py-4 bg-slate-950/40 border-b border-white/[0.04] flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+				>
+					<h3 class="font-bold text-sm text-slate-350 font-mono">Swarm Connections</h3>
+					<div class="relative w-full sm:w-64">
+						<input
+							type="text"
+							bind:value={searchFilter}
+							placeholder="Filter by country or ID..."
+							class="w-full bg-slate-950/60 border border-white/[0.04] text-xs px-3.5 py-1.5 rounded-xl focus:outline-none focus:border-cyan-500/50"
+						/>
+					</div>
 				</div>
-			</div>
 
-			{#if filteredPeers.length > 0}
-				<div class="overflow-x-auto">
-					<table class="w-full text-left border-collapse text-xs">
-						<thead>
-							<tr
-								class="border-b border-slate-800/60 text-slate-500 font-mono text-[10px] uppercase bg-slate-950/20"
-							>
-								<th class="py-2.5 px-6 font-semibold w-1/4">Location</th>
-								<th class="py-2.5 px-6 font-semibold w-1/3">Peer ID</th>
-								<th class="py-2.5 px-6 font-semibold w-32">Transport</th>
-								<th class="py-2.5 px-6 font-semibold text-right">Anchor</th>
-							</tr>
-						</thead>
-						<tbody class="divide-y divide-slate-850/40 font-mono text-[11px]">
-							{#each filteredPeers as peer}
-								<tr class="hover:bg-slate-850/25 transition-colors group">
-									<td
-										class="py-3.5 px-6 font-sans text-slate-200 text-xs font-semibold"
-									>
-										{peer.location}
-									</td>
-
-									<td class="py-3.5 px-6 text-slate-400">
-										<div class="flex items-center gap-2">
-											<span>{peer.peerId}</span>
-											<button
-												onclick={() => copyToClipboard(peer.peerId, peer.peerId)}
-												class="text-[10px] text-slate-650 hover:text-slate-350 opacity-0 group-hover:opacity-100 transition-opacity"
-												title="Copy ID"
-											>
-												{copiedId === peer.peerId ? 'Copied' : 'Copy'}
-											</button>
-										</div>
-									</td>
-
-									<td class="py-3.5 px-6 text-slate-400">{peer.transport}</td>
-
-									<td class="py-3.5 px-6 text-right font-sans">
-										{#if peer.isSelf}
-											<span
-												class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-emerald-950/40 text-emerald-400 border border-emerald-800/30 uppercase"
-											>
-												self
-											</span>
-										{:else if peer.isAnchor}
-											<span
-												class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-pink-950/40 text-pink-400 border border-pink-800/30 uppercase"
-											>
-												anchor
-											</span>
-										{:else}
-											<span class="text-slate-600 font-mono text-xs">no</span>
-										{/if}
-									</td>
+				{#if filteredPeers.length > 0}
+					<div class="overflow-x-auto">
+						<table class="w-full text-left border-collapse text-xs">
+							<thead>
+								<tr
+									class="border-b border-white/[0.04] text-slate-500 font-mono text-[9px] uppercase tracking-wider bg-slate-950/20"
+								>
+									<th class="py-3 px-6 font-semibold w-1/4">Location</th>
+									<th class="py-3 px-6 font-semibold w-1/3">Peer ID</th>
+									<th class="py-3 px-6 font-semibold w-32">Transport</th>
+									<th class="py-3 px-6 font-semibold text-right">Anchor</th>
 								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			{:else}
-				<div class="py-12 text-center text-slate-600 italic">
-					No connections match current filters
-				</div>
-			{/if}
+							</thead>
+							<tbody class="divide-y divide-white/[0.02] font-mono text-[11px]">
+								{#each filteredPeers as peer}
+									<tr class="hover:bg-white/[0.02] transition-colors duration-300 group">
+										<td
+											class="py-3.5 px-6 font-sans text-slate-200 text-xs font-medium"
+										>
+											{peer.location}
+										</td>
+
+										<td class="py-3.5 px-6 text-slate-400">
+											<div class="flex items-center gap-2">
+												<span>{peer.peerId}</span>
+												<button
+													onclick={() => copyToClipboard(peer.peerId, peer.peerId)}
+													class="text-[9px] text-cyan-400 hover:text-cyan-300 opacity-0 group-hover:opacity-100 transition-opacity font-sans cursor-pointer bg-white/[0.05] border border-white/[0.05] px-1.5 py-0.5 rounded"
+													title="Copy ID"
+												>
+													{copiedId === peer.peerId ? 'Copied' : 'Copy'}
+												</button>
+											</div>
+										</td>
+
+										<td class="py-3.5 px-6 text-slate-400">{peer.transport}</td>
+
+										<td class="py-3.5 px-6 text-right font-sans">
+											{#if peer.isSelf}
+												<span
+													class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-emerald-950/40 text-emerald-400 border border-emerald-800/30 uppercase"
+												>
+													self
+												</span>
+											{:else if peer.isAnchor}
+												<span
+													class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-pink-950/40 text-pink-400 border border-pink-800/30 uppercase"
+												>
+													anchor
+												</span>
+											{:else}
+												<span class="text-slate-650 font-mono text-xs">no</span>
+											{/if}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{:else}
+					<div class="py-12 text-center text-slate-600 italic">
+						No connections match current filters
+					</div>
+				{/if}
+			</div>
 		</div>
 	{/if}
 </div>
