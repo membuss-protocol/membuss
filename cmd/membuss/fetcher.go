@@ -12,7 +12,7 @@ import (
 
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/net/dht"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 )
 
 type memexFetcher struct {
@@ -45,10 +45,9 @@ func (f *memexFetcher) Fetch(ctx context.Context, root mid.MID, providers []peer
 		return err
 	}
 	if rc != nil {
+		_, _ = io.Copy(io.Discard, rc)
 		if c, ok := rc.(io.Closer); ok {
 			_ = c.Close()
-		} else {
-			_, _ = io.Copy(io.Discard, rc)
 		}
 	}
 	return nil

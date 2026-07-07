@@ -12,6 +12,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/shard"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/host"
+	"github.com/nnlgsakib/membuss/obs/metrics"
 )
 
 // fakeStore is a tiny in-memory SealedLister.
@@ -352,3 +353,108 @@ func TestHerald_StrategyShardsOtherPeerNotProvided(t *testing.T) {
 		}
 	}
 }
+
+type fakeFailingProvider struct {
+	mu       sync.Mutex
+	attempts map[string]int
+}
+
+func (p *fakeFailingProvider) Provide(ctx context.Context, m mid.MID) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.attempts[m.String()]++
+	if p.attempts[m.String()] < 3 {
+		return errors.New("transient dht error")
+	}
+	return nil
+}
+
+type fakePermanentFailingProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *fakePermanentFailingProvider) Provide(ctx context.Context, m mid.MID) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	return errors.New("permanent dht error")
+}
+
+func TestHerald_ReprovideErrorHandlingAndRetry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	store := &fakeStore{}
+	m1 := mid.FromBytes([]byte("retry-success"))
+	store.Seal(m1)
+
+	prov := &fakeFailingProvider{
+		attempts: make(map[string]int),
+	}
+	
+	mtrx := metrics.Noop() // use noop metrics for safety
+
+	h, err := New(Config{
+		Store:    store,
+		DHT:      prov,
+		Strategy: StrategyRoots,
+		Interval: time.Hour,
+		Rate:     1000,
+		Burst:    32,
+		Metrics:  mtrx,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	n := h.RunOnce(ctx)
+	if n != 1 {
+		t.Fatalf("expected 1 successful provide after retries, got %d", n)
+	}
+
+	prov.mu.Lock()
+	att := prov.attempts[m1.String()]
+	prov.mu.Unlock()
+	if att != 3 {
+		t.Fatalf("expected 3 total provide attempts, got %d", att)
+	}
+}
+
+func TestHerald_ReprovidePermanentFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	store := &fakeStore{}
+	m1 := mid.FromBytes([]byte("permanent-failure"))
+	store.Seal(m1)
+
+	prov := &fakePermanentFailingProvider{}
+	mtrx := metrics.Noop()
+
+	h, err := New(Config{
+		Store:    store,
+		DHT:      prov,
+		Strategy: StrategyRoots,
+		Interval: time.Hour,
+		Rate:     1000,
+		Burst:    32,
+		Metrics:  mtrx,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	n := h.RunOnce(ctx)
+	if n != 0 {
+		t.Fatalf("expected 0 successful provides, got %d", n)
+	}
+
+	prov.mu.Lock()
+	calls := prov.calls
+	prov.mu.Unlock()
+	if calls != 3 {
+		t.Fatalf("expected 3 total retries/attempts, got %d", calls)
+	}
+}
+

@@ -16,7 +16,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
 )
 

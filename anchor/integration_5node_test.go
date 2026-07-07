@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/nnlgsakib/membuss/core/mid"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 )
 
 // TestAnchor_5Node_FetchAfterProviderShutdown is the headline
@@ -79,8 +79,8 @@ func TestAnchor_5Node_FetchAfterProviderShutdown(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("anchor did not sync within deadline")
 		}
-		has, _ := anchor.store.Has(parsedRoot)
-		if has {
+		st := anchor.anchor.Status()
+		if st.Synced >= 1 {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)

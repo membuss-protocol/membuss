@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -10,6 +11,28 @@ import (
 
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
+
+func tryParseDescriptor(data []byte) (*membusspb.DescriptorPayload, error) {
+	var desc membusspb.DescriptorPayload
+	if err := proto.Unmarshal(data, &desc); err == nil && desc.RootMid != "" {
+		return &desc, nil
+	}
+	if len(data) < 5+32 {
+		return nil, errors.New("descriptor: too short")
+	}
+	if !bytes.Equal(data[:4], []byte{'M', 'E', 'M', 'B'}) {
+		return nil, errors.New("descriptor: invalid magic")
+	}
+	if data[4] != 1 {
+		return nil, errors.New("descriptor: unsupported version")
+	}
+	payload := data[5 : len(data)-32]
+	var descWrapped membusspb.DescriptorPayload
+	if err := proto.Unmarshal(payload, &descWrapped); err == nil && descWrapped.RootMid != "" {
+		return &descWrapped, nil
+	}
+	return nil, errors.New("descriptor: failed to parse wrapped")
+}
 
 // Walk visits every MID reachable from root in depth-first order
 // (root first, then children in link order). For each visited
@@ -56,7 +79,17 @@ func Walk(bs BlockGetter, root mid.MID, visit func(m mid.MID, leaf bool) error) 
 		var childMIDs []mid.MID
 		var isInternal bool
 
-		if m.Codec() == mid.CodecMemFS {
+		if desc, uerr := tryParseDescriptor(data); uerr == nil && desc.RootMid != "" && len(desc.Blocks) > 0 {
+			isInternal = true
+			if rMID, err := mid.Parse(desc.RootMid); err == nil {
+				childMIDs = append(childMIDs, rMID)
+			}
+			for _, b := range desc.Blocks {
+				if m, err := mid.Parse(b.Mid); err == nil {
+					childMIDs = append(childMIDs, m)
+				}
+			}
+		} else if m.Codec() == mid.CodecMemFS {
 			var node membusspb.MemFSNode
 			if uerr := proto.Unmarshal(data, &node); uerr == nil {
 				switch node.Type {

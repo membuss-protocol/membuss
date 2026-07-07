@@ -25,6 +25,7 @@ package herald
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -36,6 +37,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/shard"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/net/dht"
+	"github.com/nnlgsakib/membuss/obs/metrics"
 )
 
 // Strategy selects which MIDs the herald re-announces.
@@ -121,6 +123,9 @@ type Config struct {
 	// Replicas is the number of replicas per MID for shard
 	// assignment. Default is 3.
 	Replicas int
+
+	// Metrics is the live instrumentation handle. Optional.
+	Metrics *metrics.Metrics
 }
 
 // MemHerald is the long-lived reprovisioner.
@@ -224,17 +229,77 @@ func (h *MemHerald) Trigger() {
 // RunOnce performs a single reprovide pass synchronously and
 // returns the number of MIDs announced.
 func (h *MemHerald) RunOnce(ctx context.Context) int {
-	mids := h.collect(ctx)
 	announced := 0
-	for _, m := range mids {
+	failed := 0
+	seen := make(map[string]struct{})
+
+	announceFn := func(m mid.MID) error {
+		if m.IsZero() {
+			return nil
+		}
+		mStr := m.String()
+		if _, ok := seen[mStr]; ok {
+			return nil
+		}
+		seen[mStr] = struct{}{}
+
+		// Rate limit check
 		if err := h.lim.Wait(ctx); err != nil {
-			break
+			return err
 		}
-		if err := h.cfg.DHT.Provide(ctx, m); err != nil {
-			continue
+
+		// Provide/Announce with up to 3 retries on transient errors
+		var provideErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			provideErr = h.cfg.DHT.Provide(ctx, m)
+			if provideErr == nil {
+				break
+			}
+			
+			if errors.Is(provideErr, context.Canceled) || errors.Is(provideErr, context.DeadlineExceeded) {
+				break
+			}
+			
+			if h.cfg.Metrics != nil {
+				h.cfg.Metrics.IncDHTProvideFailed()
+			}
+			
+			log.Printf("herald: Provide attempt %d failed for MID %s: %v. Retrying...", attempt, m, provideErr)
+			
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 50 * time.Millisecond):
+			}
 		}
+
+		if provideErr != nil {
+			failed++
+			log.Printf("herald: failed to provide MID %s after 3 attempts: %v", m, provideErr)
+			return nil // continue walking/collecting
+		}
+		
 		announced++
+		if h.cfg.Metrics != nil {
+			h.cfg.Metrics.IncDHTProvide()
+		}
+		
+		// Progress tracking log every 100 successful announcements
+		if announced%100 == 0 {
+			log.Printf("herald progress: successfully provided %d MIDs (failed: %d) in this round", announced, failed)
+		}
+
+		return nil
 	}
+
+	err := h.collectStream(ctx, announceFn)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("herald: reprovide run error: %v", err)
+	}
+
 	h.mu.Lock()
 	h.lastRun = h.cfg.Now()
 	h.lastCount = announced
@@ -334,30 +399,55 @@ func (h *MemHerald) loop(ctx context.Context) {
 }
 
 func (h *MemHerald) collect(ctx context.Context) []mid.MID {
-	if ctx.Err() != nil {
+	var collected []mid.MID
+	_ = h.collectStream(ctx, func(m mid.MID) error {
+		collected = append(collected, m)
 		return nil
+	})
+	return collected
+}
+
+func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	switch h.cfg.Strategy {
 	case StrategyAll:
 		mids, err := h.cfg.Store.AllBlocks()
 		if err != nil {
-			return nil
+			return err
 		}
-		return mids
-	case StrategyShards:
-		if h.cfg.ShardRing == nil || h.cfg.PeerID == "" {
-			mids, err := h.cfg.Store.AllSealed()
-			if err != nil {
-				return nil
+		for _, m := range mids {
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
-			return mids
+			if err := fn(m); err != nil {
+				return err
+			}
 		}
+		return nil
+
+	case StrategyShards:
 		sealed, err := h.cfg.Store.AllSealed()
 		if err != nil {
+			return err
+		}
+		if h.cfg.ShardRing == nil || h.cfg.PeerID == "" {
+			for _, m := range sealed {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if err := fn(m); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
-		var mids []mid.MID
+
 		for _, m := range sealed {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if m.IsZero() {
 				continue
 			}
@@ -367,41 +457,58 @@ func (h *MemHerald) collect(ctx context.Context) []mid.MID {
 			}
 			for _, p := range peers {
 				if p == h.cfg.PeerID {
-					mids = append(mids, m)
+					if err := fn(m); err != nil {
+						return err
+					}
 					break
 				}
 			}
 		}
-		return mids
+		return nil
+
 	case StrategyRoots, "":
 		roots, err := h.cfg.Store.AllSealed()
 		if err != nil {
-			return nil
+			return err
 		}
 		seen := make(map[string]struct{})
-		var collected []mid.MID
 		for _, r := range roots {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if r.IsZero() {
 				continue
 			}
 			if _, ok := seen[r.String()]; !ok {
 				seen[r.String()] = struct{}{}
-				collected = append(collected, r)
+				if err := fn(r); err != nil {
+					return err
+				}
 			}
+			
 			// Walk recursively to find all sub-files/directories
-			_ = store.Walk(h.cfg.Store, r, func(m mid.MID, leaf bool) error {
+			walkErr := store.Walk(h.cfg.Store, r, func(m mid.MID, leaf bool) error {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				if m.Codec() == mid.CodecMemFS {
 					if _, ok := seen[m.String()]; !ok {
 						seen[m.String()] = struct{}{}
-						collected = append(collected, m)
+						if err := fn(m); err != nil {
+							return err
+						}
 					}
 				}
 				return nil
 			})
+			if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
+				log.Printf("herald: walk error for root %s: %v", r, walkErr)
+			}
 		}
-		return collected
-	default:
 		return nil
+
+	default:
+		return fmt.Errorf("herald: unknown strategy %q", h.cfg.Strategy)
 	}
 }
 

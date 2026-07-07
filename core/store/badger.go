@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -115,6 +116,10 @@ type MemStore struct {
 	db     *badger.DB
 	bloom  *bloomIndex
 	stopGC chan struct{}
+
+	mu     sync.RWMutex
+	wg     sync.WaitGroup
+	closed bool
 }
 
 // Options configures a MemStore at construction time.
@@ -210,9 +215,10 @@ func (s *MemStore) initBloom(cfg BloomConfig) error {
 // raw block (prefix "/b/"). The MID is integrity-checked: the
 // SHA-256 digest of data must match the MID's digest.
 func (s *MemStore) Put(m mid.MID, data []byte) error {
-	if s.db == nil {
-		return errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return err
 	}
+	defer s.exit()
 	if m.IsZero() {
 		return errors.New("store: zero MID")
 	}
@@ -238,9 +244,10 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 // (prefix "/d/"). It is the counterpart of Put for internal
 // nodes emitted by core/dag.
 func (s *MemStore) PutDAG(m mid.MID, data []byte) error {
-	if s.db == nil {
-		return errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return err
 	}
+	defer s.exit()
 	if m.IsZero() {
 		return errors.New("store: zero MID")
 	}
@@ -273,9 +280,10 @@ func (s *MemStore) PutDAG(m mid.MID, data []byte) error {
 // result is conclusive; a positive result is verified against
 // BadgerDB.
 func (s *MemStore) Get(m mid.MID) ([]byte, error) {
-	if s.db == nil {
-		return nil, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return nil, err
 	}
+	defer s.exit()
 	if m.IsZero() {
 		return nil, errors.New("store: zero MID")
 	}
@@ -293,6 +301,10 @@ func (s *MemStore) Get(m mid.MID) ([]byte, error) {
 // GetDAG returns the bytes stored under m in the DAG
 // namespace only.
 func (s *MemStore) GetDAG(m mid.MID) ([]byte, error) {
+	if err := s.enter(); err != nil {
+		return nil, err
+	}
+	defer s.exit()
 	return s.getFrom(dagKey(m))
 }
 
@@ -329,9 +341,10 @@ func (s *MemStore) getFrom(key []byte) ([]byte, error) {
 // result is conclusive; a positive result is verified against
 // BadgerDB.
 func (s *MemStore) Has(m mid.MID) (bool, error) {
-	if s.db == nil {
-		return false, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return false, err
 	}
+	defer s.exit()
 	if m.IsZero() {
 		return false, errors.New("store: zero MID")
 	}
@@ -363,9 +376,10 @@ func (s *MemStore) Has(m mid.MID) (bool, error) {
 // HasDAG reports whether a DAG node exists for m. It looks ONLY
 // in the DAG namespace.
 func (s *MemStore) HasDAG(m mid.MID) (bool, error) {
-	if s.db == nil {
-		return false, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return false, err
 	}
+	defer s.exit()
 	if m.IsZero() {
 		return false, errors.New("store: zero MID")
 	}
@@ -406,9 +420,10 @@ func (s *MemStore) hasKey(key []byte) (bool, error) {
 // store, which is acceptable because Delete is rare and
 // operates out-of-band from the request path.
 func (s *MemStore) Delete(m mid.MID) error {
-	if s.db == nil {
-		return errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return err
 	}
+	defer s.exit()
 	if err := s.db.Update(func(txn *badger.Txn) error {
 		for _, key := range [][]byte{blockKey(m), dagKey(m)} {
 			err := txn.Delete(key)
@@ -430,6 +445,10 @@ func (s *MemStore) Delete(m mid.MID) error {
 
 // DeleteDAG removes the DAG node for m.
 func (s *MemStore) DeleteDAG(m mid.MID) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.exit()
 	if err := s.deleteKey(dagKey(m)); err != nil {
 		return err
 	}
@@ -454,6 +473,20 @@ func (s *MemStore) deleteKey(key []byte) error {
 	})
 }
 
+func (s *MemStore) enter() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || s.db == nil {
+		return errors.New("store: closed")
+	}
+	s.wg.Add(1)
+	return nil
+}
+
+func (s *MemStore) exit() {
+	s.wg.Done()
+}
+
 // Close releases the underlying BadgerDB handle. After Close all
 // other methods return errors.
 //
@@ -462,15 +495,23 @@ func (s *MemStore) deleteKey(key []byte) error {
 // NewMemStore can skip the rebuild. Snapshot errors are
 // surfaced to the caller but do not block DB close.
 func (s *MemStore) Close() error {
-	if s.db == nil {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
+	s.closed = true
+	s.mu.Unlock()
+
 	if s.stopGC != nil {
 		close(s.stopGC)
 	}
+
+	// Wait for active operations to drain
+	s.wg.Wait()
+
 	var snapErr error
 	if s.bloom != nil {
-	
 		snapErr = s.bloom.saveSnapshot()
 	}
 	dbErr := s.db.Close()
@@ -507,9 +548,10 @@ func (s *MemStore) runValueLogGC() {
 // value log sizes, we iterate over actual block data to get a
 // true picture of how much space the content occupies.
 func (s *MemStore) Size() (uint64, error) {
-	if s.db == nil {
-		return 0, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return 0, err
 	}
+	defer s.exit()
 	var total uint64
 	err := s.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -568,9 +610,10 @@ func bytesEqual(a, b []byte) bool {
 // in the store. The result is the union of the /b/ and /d/
 // namespaces, deduplicated. Order is implementation-defined.
 func (s *MemStore) AllBlocks() ([]mid.MID, error) {
-	if s.db == nil {
-		return nil, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return nil, err
 	}
+	defer s.exit()
 	seen := make(map[string]struct{})
 	var out []mid.MID
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -605,9 +648,10 @@ func (s *MemStore) AllBlocks() ([]mid.MID, error) {
 // PutMeta stores an arbitrary key/value pair under the "/m/"
 // namespace.
 func (s *MemStore) PutMeta(key string, value []byte) error {
-	if s.db == nil {
-		return errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return err
 	}
+	defer s.exit()
 	if key == "" {
 		return errors.New("store: empty meta key")
 	}
@@ -620,9 +664,10 @@ func (s *MemStore) PutMeta(key string, value []byte) error {
 // GetMeta returns the value previously stored under key, or
 // ErrNotFound if absent.
 func (s *MemStore) GetMeta(key string) ([]byte, error) {
-	if s.db == nil {
-		return nil, errors.New("store: closed")
+	if err := s.enter(); err != nil {
+		return nil, err
 	}
+	defer s.exit()
 	k := metaKey(key)
 	var out []byte
 	err := s.db.View(func(txn *badger.Txn) error {

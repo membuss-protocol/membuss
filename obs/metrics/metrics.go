@@ -32,6 +32,7 @@ type Metrics struct {
 	storedBytes          prometheus.Gauge
 	peersConnected       prometheus.Gauge
 	dhtProvides          prometheus.Counter
+	dhtProvidesFailed    prometheus.Counter
 	memexBlocksSent      prometheus.Counter
 	memexBlocksReceived  prometheus.Counter
 	gcRuns               prometheus.Counter
@@ -66,6 +67,10 @@ func New() *Metrics {
 		Name: "membuss_dht_provides_total",
 		Help: "Cumulative count of DHT provider announcements.",
 	})
+	m.dhtProvidesFailed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "membuss_dht_provides_failed_total",
+		Help: "Cumulative count of failed DHT provider announcements.",
+	})
 	m.memexBlocksSent = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "membuss_memex_blocks_sent_total",
 		Help: "Cumulative count of blocks pushed to remote peers via Memex.",
@@ -90,7 +95,7 @@ func New() *Metrics {
 	})
 	reg.MustRegister(
 		m.storedMIDs, m.storedBytes, m.peersConnected,
-		m.dhtProvides,
+		m.dhtProvides, m.dhtProvidesFailed,
 		m.memexBlocksSent, m.memexBlocksReceived,
 		m.gcRuns,
 		m.memexTransferDuration, m.addRequestDuration,
@@ -128,6 +133,12 @@ func (m *Metrics) SetPeersConnected(n int) {
 func (m *Metrics) IncDHTProvide() {
 	if m.noopGuard() { return }
 	m.dhtProvides.Inc()
+}
+
+// IncDHTProvideFailed records one failed DHT provider announcement.
+func (m *Metrics) IncDHTProvideFailed() {
+	if m.noopGuard() { return }
+	m.dhtProvidesFailed.Inc()
 }
 
 // IncMemexBlocksSent records n blocks pushed outbound via Memex.

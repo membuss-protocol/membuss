@@ -18,7 +18,7 @@ import (
 
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 )
 
 // memexFetcher wraps memex.Session.Fetch so it can be used

@@ -12,7 +12,7 @@ import (
 	"io"
 
 	"github.com/nnlgsakib/membuss/core/version"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 
 	"google.golang.org/grpc"

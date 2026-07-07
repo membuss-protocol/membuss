@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -30,7 +31,7 @@ import (
 	explorer "github.com/nnlgsakib/membuss/gateway/explorer"
 	memgate "github.com/nnlgsakib/membuss/gateway/memgate_v2"
 	"github.com/nnlgsakib/membuss/core/version"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
@@ -54,6 +55,12 @@ type explorerAdapter struct {
 	// list on startup, extended as content is added or
 	// fetched.
 	allRoots map[string]struct{}
+
+	// Cached statistics to avoid expensive BadgerDB iteration scans on every WS ticker
+	statsMu     sync.Mutex
+	cachedBytes uint64
+	cachedCount uint64
+	lastStats   time.Time
 }
 
 func newExplorerAdapter(b *daemonBackend, anchorMode bool, keyring *keyring.KeyRing, memnsRes *memns.Resolver) *explorerAdapter {
@@ -221,6 +228,7 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 		if serr == nil {
 			if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
 				has = true
+				_, _ = io.Copy(io.Discard, rc)
 				if c, ok := rc.(io.Closer); ok {
 					_ = c.Close()
 				}
@@ -364,6 +372,35 @@ func (a *explorerAdapter) SealedCount(ctx context.Context) (int, error) {
 	return len(mids), nil
 }
 
+func (a *explorerAdapter) updateStatsCached(ctx context.Context) {
+	a.statsMu.Lock()
+	if time.Since(a.lastStats) < 5*time.Second {
+		a.statsMu.Unlock()
+		return
+	}
+	a.statsMu.Unlock()
+
+	var size uint64
+	var count uint64
+
+	if s, ok := a.b.store.(interface {
+		AllBlocks() ([]mid.MID, error)
+	}); ok {
+		if mids, err := s.AllBlocks(); err == nil {
+			count = uint64(len(mids))
+		}
+	}
+	if sz, err := a.b.store.Size(); err == nil {
+		size = sz
+	}
+
+	a.statsMu.Lock()
+	a.cachedBytes = size
+	a.cachedCount = count
+	a.lastStats = time.Now()
+	a.statsMu.Unlock()
+}
+
 // BlockCount returns the count of all blocks in the
 // local store. Only meaningful for the BadgerDB-backed
 // store; returns 0 for the in-memory store.
@@ -371,16 +408,10 @@ func (a *explorerAdapter) BlockCount(ctx context.Context) (uint64, error) {
 	if a.b.store == nil {
 		return 0, nil
 	}
-	if s, ok := a.b.store.(interface {
-		AllBlocks() ([]mid.MID, error)
-	}); ok {
-		mids, err := s.AllBlocks()
-		if err != nil {
-			return 0, err
-		}
-		return uint64(len(mids)), nil
-	}
-	return 0, nil
+	a.updateStatsCached(ctx)
+	a.statsMu.Lock()
+	defer a.statsMu.Unlock()
+	return a.cachedCount, nil
 }
 
 // StoreBytes returns the total bytes used by the store.
@@ -388,7 +419,10 @@ func (a *explorerAdapter) StoreBytes(ctx context.Context) (uint64, error) {
 	if a.b.store == nil {
 		return 0, nil
 	}
-	return a.b.store.Size()
+	a.updateStatsCached(ctx)
+	a.statsMu.Lock()
+	defer a.statsMu.Unlock()
+	return a.cachedBytes, nil
 }
 
 // AnchorPeers returns the registered anchor peers.
@@ -567,8 +601,31 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 	}
 	defer os.RemoveAll(tmp)
 
+	commonPrefix := ""
+	if len(files) > 0 {
+		first := strings.ReplaceAll(files[0].Path, "\\", "/")
+		sub := strings.Split(first, "/")
+		if len(sub) > 1 {
+			prefix := sub[0] + "/"
+			allHave := true
+			for _, f := range files {
+				relPath := strings.ReplaceAll(f.Path, "\\", "/")
+				if !strings.HasPrefix(relPath, prefix) {
+					allHave = false
+					break
+				}
+			}
+			if allHave {
+				commonPrefix = prefix
+			}
+		}
+	}
+
 	for _, f := range files {
 		rel := strings.ReplaceAll(f.Path, "\\", "/")
+		if commonPrefix != "" {
+			rel = strings.TrimPrefix(rel, commonPrefix)
+		}
 		rel = path.Clean("/" + rel)
 		rel = strings.TrimPrefix(rel, "/")
 		if rel == "" || rel == "." {

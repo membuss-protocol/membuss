@@ -9,7 +9,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
-	"github.com/nnlgsakib/membuss/net/memex"
+	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 )
 
 var _ store.Blockstore = (*fetchingBlockstore)(nil)
@@ -70,10 +70,9 @@ func (f *fetchingBlockstore) Get(m mid.MID) ([]byte, error) {
 	}
 
 	if rc != nil {
+		_, _ = io.Copy(io.Discard, rc)
 		if c, ok := rc.(io.Closer); ok {
 			_ = c.Close()
-		} else {
-			_, _ = io.Copy(io.Discard, rc)
 		}
 	}
 

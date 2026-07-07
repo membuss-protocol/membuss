@@ -17,6 +17,7 @@ func TestMetrics_Noop(t *testing.T) {
 	m.SetStoredBytes(0)
 	m.SetPeersConnected(0)
 	m.IncDHTProvide()
+	m.IncDHTProvideFailed()
 	m.IncMemexBlocksSent(0)
 	m.IncMemexBlocksReceived(0)
 	m.IncGCRuns()
@@ -31,6 +32,7 @@ func TestMetrics_RecordsAndExposes(t *testing.T) {
 	m.SetPeersConnected(7)
 	m.IncDHTProvide()
 	m.IncDHTProvide()
+	m.IncDHTProvideFailed()
 	m.IncMemexBlocksSent(3)
 	m.IncMemexBlocksReceived(5)
 	m.IncGCRuns()
@@ -49,6 +51,7 @@ func TestMetrics_RecordsAndExposes(t *testing.T) {
 		"membuss_stored_bytes_total 1234",
 		"membuss_peers_connected 7",
 		"membuss_dht_provides_total 2",
+		"membuss_dht_provides_failed_total 1",
 		"membuss_memex_blocks_sent_total 3",
 		"membuss_memex_blocks_received_total 5",
 		"membuss_gc_runs_total 1",

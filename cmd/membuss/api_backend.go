@@ -281,10 +281,33 @@ func (a *apiAdapter) AddDirectory(ctx context.Context, name string, parts []api.
 	}
 	defer os.RemoveAll(tmp)
 
+	commonPrefix := ""
+	if len(parts) > 0 {
+		first := strings.ReplaceAll(parts[0].Path, "\\", "/")
+		sub := strings.Split(first, "/")
+		if len(sub) > 1 {
+			prefix := sub[0] + "/"
+			allHave := true
+			for _, p := range parts {
+				relPath := strings.ReplaceAll(p.Path, "\\", "/")
+				if !strings.HasPrefix(relPath, prefix) {
+					allHave = false
+					break
+				}
+			}
+			if allHave {
+				commonPrefix = prefix
+			}
+		}
+	}
+
 	for _, p := range parts {
 		// Normalize separators: accept both "/" and the
 		// OS-specific separator. fs.FS uses "/".
 		rel := strings.ReplaceAll(p.Path, string(filepath.Separator), "/")
+		if commonPrefix != "" {
+			rel = strings.TrimPrefix(rel, commonPrefix)
+		}
 		rel = path.Clean("/" + rel)
 		rel = strings.TrimPrefix(rel, "/")
 		if rel == "" || rel == "." {

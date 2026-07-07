@@ -150,18 +150,11 @@ type Config struct {
 
 // MemGate is the public HTTP gateway.
 type MemGate struct {
-	cfg    Config
-	router chi.Router
-
-	// lru is a small in-memory cache for hot MIDs. The
-	// implementation is a map + doubly-linked list kept
-	// under a single mutex; it does not need to scale
-	// beyond the configured MaxCacheBytes.
-	lru *lru
-
-	// ipLimiter enforces a per-source-IP request budget on
-	// public routes. nil disables rate limiting.
-	ipLimiter *ipLimiter
+	cfg            Config
+	router         chi.Router
+	lru            *lru
+	ipLimiter      *ipLimiter
+	refererTracker *RefererTracker
 }
 
 // New returns a MemGate ready to be served. The returned
@@ -180,7 +173,11 @@ func New(cfg Config) (*MemGate, error) {
 		cfg.MaxCacheBytes = 64 * 1024 * 1024
 	}
 
-	mg := &MemGate{cfg: cfg, lru: newLRU(cfg.MaxCacheBytes)}
+	mg := &MemGate{
+		cfg:            cfg,
+		lru:            newLRU(cfg.MaxCacheBytes),
+		refererTracker: NewRefererTracker(),
+	}
 	mg.ipLimiter = newIPLimiter(cfg.RateLimitPerMin, 10*time.Minute)
 	mg.router = mg.buildRouter()
 	return mg, nil
@@ -192,32 +189,63 @@ func (m *MemGate) Router() http.Handler { return m.router }
 
 func (m *MemGate) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 1. Subdomain routing
-		if midStr, innerPath, ok := m.resolveSubdomain(r); ok {
-			root, err := mid.Parse(midStr)
-			if err == nil {
-				info, err := m.cfg.Backend.MemFSInfo(r.Context(), root)
-				if err == nil && info.Type == "dir" {
-					m.serveMemFSPath(w, r, midStr, innerPath)
-					return
+		path := r.URL.Path
+		_, _, isSubdomain := m.resolveSubdomain(r)
+		systemPath := isSystemPath(path)
+
+		// 1. Subdomain routing (skip for system paths)
+		if !systemPath && isSubdomain {
+			if midStr, innerPath, ok := m.resolveSubdomain(r); ok {
+				m.refererTracker.RecordActiveMID(midStr)
+				setMIDCookie(w, midStr)
+				root, err := mid.Parse(midStr)
+				if err == nil {
+					info, err := m.cfg.Backend.MemFSInfo(r.Context(), root)
+					if err == nil && info.Type == "dir" {
+						m.serveMemFSPath(w, r, midStr, innerPath)
+						return
+					}
+					if innerPath == "" {
+						m.handleResolved(w, r, root, midStr)
+						return
+					}
 				}
-				if innerPath == "" {
-					m.handleResolved(w, r, root, midStr)
-					return
+				m.serveMemFSPath(w, r, midStr, innerPath)
+				return
+			}
+		}
+
+		// Record active MID if direct path-based route /mem/{mid} is accessed
+		if strings.HasPrefix(path, "/mem/") {
+			trimmed := strings.TrimPrefix(path, "/mem/")
+			parts := strings.Split(trimmed, "/")
+			if len(parts) > 0 && parts[0] != "" {
+				if _, err := mid.Parse(parts[0]); err == nil {
+					m.refererTracker.RecordActiveMID(parts[0])
+					setMIDCookie(w, parts[0])
 				}
 			}
-			m.serveMemFSPath(w, r, midStr, innerPath)
-			return
+		} else if strings.HasPrefix(path, "/memns/") {
+			trimmed := strings.TrimPrefix(path, "/memns/")
+			parts := strings.Split(trimmed, "/")
+			if len(parts) > 0 && parts[0] != "" {
+				if m.cfg.MemNSResolver != nil {
+					resolved, err := m.cfg.MemNSResolver.Resolve(r.Context(), parts[0])
+					if err == nil && resolved != "" {
+						midStr := resolved
+						if strings.HasPrefix(midStr, "/mem/") {
+							midStr = midStr[5:]
+						}
+						m.refererTracker.RecordActiveMID(midStr)
+						setMIDCookie(w, midStr)
+					}
+				}
+			}
 		}
 
 		// 2. Referer-based path resolution for absolute assets on path-based gateways
-		path := r.URL.Path
-		if !strings.HasPrefix(path, "/mem/") &&
-			!strings.HasPrefix(path, "/healthz") &&
-			!strings.HasPrefix(path, "/explorer") &&
-			!strings.HasPrefix(path, "/memns/") &&
-			!strings.HasPrefix(path, "/memlink/") {
-			if midStr, innerPath, ok := m.resolveRefererMID(r); ok {
+		if !systemPath {
+			if midStr, innerPath, ok := m.refererTracker.Resolve(r, m.cfg.Backend, m.cfg.MemNSResolver); ok {
 				m.serveMemFSPath(w, r, midStr, innerPath)
 				return
 			}
@@ -227,63 +255,40 @@ func (m *MemGate) Handler() http.Handler {
 	})
 }
 
+// setMIDCookie sets a cookie with the active MID to assist in path-based asset resolution.
+func setMIDCookie(w http.ResponseWriter, midStr string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "membuss_gateway_mid",
+		Value:    midStr,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   3600 * 24, // 1 day
+	})
+}
+
+// isSystemPath evaluates if a path is a dynamic node control route.
+func isSystemPath(path string) bool {
+	if strings.HasPrefix(path, "/mem/") ||
+		strings.HasPrefix(path, "/healthz") ||
+		strings.HasPrefix(path, "/memns/") ||
+		strings.HasPrefix(path, "/memlink/") {
+		return true
+	}
+	if path == "/explorer" || strings.HasPrefix(path, "/explorer/") {
+		// Dynamic APIs, WebSockets, and metrics are system paths.
+		// Others (like SvelteKit _app assets, images, etc.) are content paths.
+		return strings.HasPrefix(path, "/explorer/api") ||
+			strings.HasPrefix(path, "/explorer/ws") ||
+			strings.HasPrefix(path, "/explorer/metrics")
+	}
+	return false
+}
+
 // resolveRefererMID checks if the request's Referer header points to a Membuss gateway path.
 // If it does, it returns the MID and the inner path.
 func (m *MemGate) resolveRefererMID(r *http.Request) (string, string, bool) {
-	ref := r.Header.Get("Referer")
-	if ref == "" {
-		return "", "", false
-	}
-
-	refURL, err := url.Parse(ref)
-	if err != nil {
-		return "", "", false
-	}
-
-	refPath := refURL.Path
-	var prefix string
-	if strings.HasPrefix(refPath, "/mem/") {
-		prefix = "/mem/"
-	} else if strings.HasPrefix(refPath, "/memns/") {
-		prefix = "/memns/"
-	} else if strings.HasPrefix(refPath, "/memlink/") {
-		prefix = "/memlink/"
-	} else {
-		return "", "", false
-	}
-
-	trimmed := strings.TrimPrefix(refPath, prefix)
-	parts := strings.Split(trimmed, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		return "", "", false
-	}
-
-	identifier := parts[0]
-	var midStr string
-	if prefix == "/mem/" {
-		midStr = identifier
-	} else {
-		if m.cfg.MemNSResolver != nil {
-			resolved, err := m.cfg.MemNSResolver.Resolve(r.Context(), identifier)
-			if err == nil && resolved != "" {
-				midStr = resolved
-				if strings.HasPrefix(midStr, "/mem/") {
-					midStr = midStr[5:]
-				}
-			}
-		}
-	}
-
-	if midStr == "" {
-		return "", "", false
-	}
-
-	if _, err := mid.Parse(midStr); err != nil {
-		return "", "", false
-	}
-
-	innerPath := strings.TrimPrefix(r.URL.Path, "/")
-	return midStr, innerPath, true
+	return m.refererTracker.Resolve(r, m.cfg.Backend, m.cfg.MemNSResolver)
 }
 
 // resolveSubdomain checks if the host uses a subdomain representing either a MID or a MemNS name.
@@ -527,6 +532,15 @@ func (m *MemGate) handleDirList(w http.ResponseWriter, r *http.Request) {
 		if hasIndex {
 			m.serveMemFSPath(w, r, midStr, "index.html")
 			return
+		} else {
+			// Check commonDirs for index.html
+			commonDirs := []string{"dist", "build", "public", "out"}
+			for _, d := range commonDirs {
+				if _, checkErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, path.Join(d, "index.html")); checkErr == nil {
+					m.serveMemFSPath(w, r, midStr, path.Join(d, "index.html"))
+					return
+				}
+			}
 		}
 	}
 	m.renderDirectoryList(w, r, "Directory "+root.String(), root.String(), info.Size, entries)
@@ -1095,7 +1109,7 @@ func (m *MemGate) localOnlyMiddleware(next http.Handler) http.Handler {
 		if idx := strings.Index(host, ":"); idx != -1 {
 			host = host[:idx]
 		}
-		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1161,9 +1175,81 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		return
 	}
 
-	pathInfo, err := m.cfg.Backend.MemFSPathInfo(r.Context(), root, innerPath)
+	// Dynamic base path redirect for SvelteKit / framework apps compiled with custom base paths
+	if redirectURL, ok := m.checkBaseRedirect(r, root, innerPath); ok {
+		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+		return
+	}
+
+	resolvedPath := innerPath
+	pathInfo, err := m.cfg.Backend.MemFSPathInfo(r.Context(), root, resolvedPath)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		// Generic self-healing path resolution:
+		// If the path is not found, try stripping the base segment and look for direct/referer/common build folder mappings
+		var baseStrippedPath string
+		parts := strings.SplitN(innerPath, "/", 2)
+		if len(parts) == 2 {
+			if parts[1] != "" {
+				baseStrippedPath = parts[1]
+			} else {
+				baseStrippedPath = "index.html"
+			}
+		} else if len(parts) == 1 && parts[0] != "" {
+			baseStrippedPath = "index.html"
+		}
+
+		if baseStrippedPath != "" {
+			// 1. Check if base-stripped path exists directly (flat upload)
+			if _, checkErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, baseStrippedPath); checkErr == nil {
+				if baseStrippedPath == "index.html" && len(parts) == 1 {
+					resolvedPath = ""
+				} else {
+					resolvedPath = baseStrippedPath
+				}
+				pathInfo, err = m.cfg.Backend.MemFSPathInfo(r.Context(), root, resolvedPath)
+			} else {
+				// 2. Check if it exists nested in a directory matched by the Referer (nested upload like dist/)
+				refDir := m.getRefererDir(r, root)
+				if refDir != "" {
+					nestedPath := path.Join(refDir, baseStrippedPath)
+					if _, checkErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, nestedPath); checkErr == nil {
+						resolvedPath = nestedPath
+						pathInfo, err = m.cfg.Backend.MemFSPathInfo(r.Context(), root, resolvedPath)
+					}
+				}
+				// 3. Fallback: Auto-detect common build directories (dist, build, public, out)
+				if err != nil && strings.Contains(err.Error(), "not found") {
+					commonDirs := []string{"dist", "build", "public", "out"}
+					for _, d := range commonDirs {
+						nestedPath := path.Join(d, baseStrippedPath)
+						if _, checkErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, nestedPath); checkErr == nil {
+							resolvedPath = nestedPath
+							pathInfo, err = m.cfg.Backend.MemFSPathInfo(r.Context(), root, resolvedPath)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
+			// SPA fallback: Serve index.html if the requested path is not found,
+			// the browser accepts HTML (navigation), and index.html exists at the root or common build dirs.
+			if strings.Contains(r.Header.Get("Accept"), "text/html") && innerPath != "index.html" {
+				if _, indexErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, "index.html"); indexErr == nil {
+					m.serveMemFSPath(w, r, midStr, "index.html")
+					return
+				}
+				commonDirs := []string{"dist", "build", "public", "out"}
+				for _, d := range commonDirs {
+					if _, indexErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, path.Join(d, "index.html")); indexErr == nil {
+						m.serveMemFSPath(w, r, midStr, path.Join(d, "index.html"))
+						return
+					}
+				}
+			}
 			http.Error(w, "not found: "+err.Error(), http.StatusNotFound)
 		} else {
 			http.Error(w, "memfs: "+err.Error(), http.StatusInternalServerError)
@@ -1176,7 +1262,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 			return
 		}
-		entries, err := m.cfg.Backend.MemFSPathList(r.Context(), root, innerPath)
+		entries, err := m.cfg.Backend.MemFSPathList(r.Context(), root, resolvedPath)
 		if err != nil {
 			http.Error(w, "memfs list: "+err.Error(), http.StatusNotFound)
 			return
@@ -1191,43 +1277,56 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 				}
 			}
 			if hasIndex {
-				m.serveMemFSPath(w, r, midStr, path.Join(innerPath, "index.html"))
+				m.serveMemFSPath(w, r, midStr, path.Join(resolvedPath, "index.html"))
 				return
+			} else if resolvedPath == "" {
+				// Check commonDirs for index.html if we are at the root
+				commonDirs := []string{"dist", "build", "public", "out"}
+				for _, d := range commonDirs {
+					if _, checkErr := m.cfg.Backend.MemFSPathInfo(r.Context(), root, path.Join(d, "index.html")); checkErr == nil {
+						m.serveMemFSPath(w, r, midStr, path.Join(d, "index.html"))
+						return
+					}
+				}
 			}
 		}
-		m.renderDirectoryList(w, r, "Directory "+midStr+"/"+innerPath, pathInfo.MID, pathInfo.Size, entries)
+		m.renderDirectoryList(w, r, "Directory "+midStr+"/"+resolvedPath, pathInfo.MID, pathInfo.Size, entries)
 		return
 	}
 
-	etagVal := midStr + "/" + innerPath
+	etagVal := midStr + "/" + resolvedPath
 	if checkETag(w, r, etagVal) {
 		return
 	}
 
-	cacheKey := "path:" + midStr + ":" + innerPath
+	cacheKey := "path:" + midStr + ":" + resolvedPath
 	if cachedBytes, ok := m.lru.get(cacheKey); ok {
 		var cp struct {
 			Data []byte `json:"data"`
 			Mime string `json:"mime"`
 		}
 		if json.Unmarshal(cachedBytes, &cp) == nil {
-			filename := filepath.Base(innerPath)
+			filename := filepath.Base(resolvedPath)
 			w.Header().Set("Content-Type", cp.Mime)
 			w.Header().Set("X-Membuss-MID", pathInfo.MID)
-			w.Header().Set("X-Membuss-Path", "/"+innerPath)
+			w.Header().Set("X-Membuss-Path", "/"+resolvedPath)
 			w.Header().Set("X-Membuss-Name", filename)
 			w.Header().Set("X-Membuss-MimeType", cp.Mime)
 			if w.Header().Get("Content-Disposition") == "" {
 				w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": sanitizeFilename(filename)}))
 			}
 			w.Header().Set("ETag", `"`+etagVal+`"`)
-			w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
+			if cp.Mime == "text/html" || strings.HasSuffix(filename, ".html") {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			} else {
+				w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
+			}
 			m.writeBytes(w, r, pathInfo.MID, cp.Data, cp.Mime)
 			return
 		}
 	}
 
-	rc, size, mimeType, err := m.cfg.Backend.MemFSPathGet(r.Context(), root, innerPath)
+	rc, size, mimeType, err := m.cfg.Backend.MemFSPathGet(r.Context(), root, resolvedPath)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, "not found: "+err.Error(), http.StatusNotFound)
@@ -1238,8 +1337,8 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	}
 	defer rc.Close()
 
-	ct := DetectContentType(innerPath, nil, mimeType)
-	filename := filepath.Base(innerPath)
+	ct := DetectContentType(resolvedPath, nil, mimeType)
+	filename := filepath.Base(resolvedPath)
 
 	if size > 0 && size <= m.cfg.MaxCacheBytes {
 		buf := make([]byte, size)
@@ -1247,7 +1346,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		ct = DetectContentType(innerPath, buf, mimeType)
+		ct = DetectContentType(resolvedPath, buf, mimeType)
 		cp := struct {
 			Data []byte `json:"data"`
 			Mime string `json:"mime"`
@@ -1261,21 +1360,25 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("X-Membuss-MID", pathInfo.MID)
-		w.Header().Set("X-Membuss-Path", "/"+innerPath)
+		w.Header().Set("X-Membuss-Path", "/"+resolvedPath)
 		w.Header().Set("X-Membuss-Name", filename)
 		w.Header().Set("X-Membuss-MimeType", ct)
 		if w.Header().Get("Content-Disposition") == "" {
 			w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": sanitizeFilename(filename)}))
 		}
 		w.Header().Set("ETag", `"`+etagVal+`"`)
-		w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
+		if ct == "text/html" || strings.HasSuffix(filename, ".html") {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		} else {
+			w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
+		}
 		m.writeBytes(w, r, pathInfo.MID, buf, ct)
 		return
 	}
 
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("X-Membuss-MID", pathInfo.MID)
-	w.Header().Set("X-Membuss-Path", "/"+innerPath)
+	w.Header().Set("X-Membuss-Path", "/"+resolvedPath)
 	w.Header().Set("X-Membuss-Name", filename)
 	w.Header().Set("X-Membuss-MimeType", ct)
 	if w.Header().Get("Content-Disposition") == "" {
@@ -1286,7 +1389,11 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	}
 	w.Header().Set("ETag", `"`+etagVal+`"`)
 	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
+	if ct == "text/html" || strings.HasSuffix(filename, ".html") {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	} else {
+		w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
+	}
 
 	fileMID, err := mid.Parse(pathInfo.MID)
 	if err == nil {
@@ -1523,3 +1630,147 @@ func (m *MemGate) handleStreamRange(w http.ResponseWriter, r *http.Request, file
 	_, _ = io.CopyN(w, reader, end-start)
 	return true
 }
+
+func (m *MemGate) checkBaseRedirect(r *http.Request, root mid.MID, innerPath string) (string, bool) {
+	targetFile := innerPath
+	if targetFile == "" {
+		targetFile = "index.html"
+	}
+	if !strings.HasSuffix(targetFile, "index.html") {
+		return "", false
+	}
+
+	// Try reading the file at targetFile
+	rc, _, _, err := m.cfg.Backend.MemFSPathGet(r.Context(), root, targetFile)
+	if err != nil && innerPath == "" {
+		// If innerPath was empty and index.html wasn't at the root, check common build folders
+		commonDirs := []string{"dist", "build", "public", "out"}
+		for _, d := range commonDirs {
+			rc, _, _, err = m.cfg.Backend.MemFSPathGet(r.Context(), root, path.Join(d, "index.html"))
+			if err == nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		return "", false
+	}
+	defer rc.Close()
+
+	buf := make([]byte, 8192)
+	n, _ := io.ReadFull(rc, buf)
+	content := string(buf[:n])
+
+	base := detectFrameworkBase(content)
+	if base != "" {
+		relBase := strings.TrimPrefix(base, "/")
+		redirectPath := r.URL.Path
+		if strings.HasSuffix(redirectPath, "index.html") {
+			redirectPath = strings.TrimSuffix(redirectPath, "index.html")
+		}
+		
+		// Clean and compare path to see if base path prefix is already at the end
+		cleanedPath := strings.TrimSuffix(redirectPath, "/")
+		if strings.HasSuffix(cleanedPath, "/"+relBase) || cleanedPath == relBase || strings.HasSuffix(cleanedPath, "/"+base) {
+			return "", false
+		}
+
+		// Also strip any /dist/ or /build/ prefix from the redirect path if we are redirecting to the base route
+		commonDirs := []string{"dist", "build", "public", "out"}
+		for _, d := range commonDirs {
+			if strings.HasSuffix(cleanedPath, "/"+d) || cleanedPath == d {
+				// Strip the prefix
+				redirectPath = strings.TrimSuffix(cleanedPath, d)
+				break
+			}
+		}
+
+		if strings.HasSuffix(redirectPath, "/") {
+			redirectPath = redirectPath + relBase + "/"
+		} else {
+			redirectPath = redirectPath + "/" + relBase + "/"
+		}
+		redirectPath = strings.ReplaceAll(redirectPath, "//", "/")
+		return redirectPath, true
+	}
+	return "", false
+}
+
+// detectFrameworkBase inspects index.html content to find common compiled asset path prefix patterns.
+func detectFrameworkBase(content string) string {
+	suffixes := []string{"_app/", "assets/", "_nuxt/", "_next/", "static/"}
+	for _, suffix := range suffixes {
+		idx := strings.Index(content, suffix)
+		if idx == -1 {
+			continue
+		}
+		startQuote := -1
+		for j := idx - 1; j >= 0; j-- {
+			if content[j] == '"' || content[j] == '\'' || content[j] == '`' {
+				startQuote = j
+				break
+			}
+		}
+		if startQuote == -1 {
+			continue
+		}
+		pathSegment := content[startQuote+1 : idx]
+		if strings.HasPrefix(pathSegment, "/") {
+			base := strings.TrimSuffix(pathSegment, "/")
+			if base != "" {
+				return base
+			}
+		}
+	}
+	return ""
+}
+
+// getRefererDir parses the Referer header to extract the directory path inside the MID.
+func (m *MemGate) getRefererDir(r *http.Request, root mid.MID) string {
+	ref := r.Header.Get("Referer")
+	if ref == "" {
+		return ""
+	}
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+	refPath := refURL.Path
+
+	// Strip the prefix (/mem/{mid}/, /memns/{name}/, /memlink/{domain}/, or /)
+	inner := refPath
+	if strings.HasPrefix(inner, "/mem/") {
+		trimmed := strings.TrimPrefix(inner, "/mem/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) > 1 {
+			inner = strings.Join(parts[1:], "/")
+		}
+	} else if strings.HasPrefix(inner, "/memns/") {
+		trimmed := strings.TrimPrefix(inner, "/memns/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) > 1 {
+			inner = strings.Join(parts[1:], "/")
+		}
+	} else if strings.HasPrefix(inner, "/memlink/") {
+		trimmed := strings.TrimPrefix(inner, "/memlink/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) > 1 {
+			inner = strings.Join(parts[1:], "/")
+		}
+	} else {
+		inner = strings.TrimPrefix(inner, "/")
+	}
+
+	// Remove explorer prefix if present
+	if strings.HasPrefix(inner, "explorer/") {
+		inner = strings.TrimPrefix(inner, "explorer/")
+	}
+
+	// Now get the directory portion
+	dir := path.Dir(inner)
+	if dir == "." || dir == "/" {
+		return ""
+	}
+	return dir
+}
+
