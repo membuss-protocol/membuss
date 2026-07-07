@@ -153,16 +153,28 @@
 		if (validPeers.length >= 2) {
 			for (let i = 0; i < validPeers.length; i++) {
 				for (let j = i + 1; j < validPeers.length; j++) {
-					const line = L.polyline(
-						[[validPeers[i].lat, validPeers[i].lon], [validPeers[j].lat, validPeers[j].lon]],
-						{
-							color: '#00f0ff',
-							weight: 1.5,
-							opacity: 0.25,
-							className: 'mesh-line'
-						}
-					);
-					markersLayer.addLayer(line);
+					const coords = [
+						[validPeers[i].lat, validPeers[i].lon],
+						[validPeers[j].lat, validPeers[j].lon]
+					];
+
+					// 1. Background static cable connection
+					const bgLine = L.polyline(coords, {
+						color: '#00f0ff',
+						weight: 1,
+						opacity: 0.12,
+						className: 'mesh-line-bg'
+					});
+					markersLayer.addLayer(bgLine);
+
+					// 2. Animated glowing data packet sliding along the cable
+					const pulseLine = L.polyline(coords, {
+						color: '#00f0ff',
+						weight: 1.5,
+						opacity: 0.7,
+						className: 'mesh-line-pulse'
+					});
+					markersLayer.addLayer(pulseLine);
 				}
 			}
 		}
@@ -646,14 +658,23 @@
 		border: 1px solid rgba(255, 255, 255, 0.08) !important;
 	}
 
-	:global(.mesh-line) {
-		stroke-dasharray: 4, 8;
-		animation: mesh-flow 1.5s infinite linear;
+	:global(.mesh-line-bg) {
+		stroke: rgba(0, 240, 255, 0.08);
+		stroke-width: 1px;
 	}
 
-	@keyframes mesh-flow {
+	:global(.mesh-line-pulse) {
+		stroke: #00f0ff;
+		stroke-width: 1.5px;
+		stroke-linecap: round;
+		stroke-dasharray: 15, 120;
+		animation: mesh-pulse-flow 2.5s infinite linear;
+		filter: drop-shadow(0 0 2px #00f0ff);
+	}
+
+	@keyframes mesh-pulse-flow {
 		from {
-			stroke-dashoffset: 24;
+			stroke-dashoffset: 270;
 		}
 		to {
 			stroke-dashoffset: 0;
