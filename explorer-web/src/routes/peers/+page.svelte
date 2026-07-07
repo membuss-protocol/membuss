@@ -2,9 +2,8 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { tick } from 'svelte';
 	import { apiFetch } from '$lib/api';
-	import ThreeGlobe from 'three-globe';
-	import * as THREE from 'three';
-	import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+	import { browser } from '$app/environment';
+	import Icon from '@iconify/svelte';
 
 	interface PeerInfo {
 		PeerID: string;
@@ -28,7 +27,7 @@
 	let error = $state<string | null>(null);
 	let copiedId = $state<string | null>(null);
 	let searchFilter = $state('');
-	let globeEl = $state<HTMLDivElement>();
+	let mapEl = $state<HTMLDivElement>();
 	let mapReady = $state(false);
 
 	interface DisplayPeer {
@@ -47,214 +46,91 @@
 	let connectStatus = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
 	let connectError = $state('');
 
-	let globe: ThreeGlobe | undefined;
-	let renderer: THREE.WebGLRenderer | undefined;
-	let controls: OrbitControls | undefined;
-	let scene: THREE.Scene | undefined;
-	let camera: THREE.PerspectiveCamera | undefined;
-	let animFrameId: number | undefined;
-	let autoRotateTimeout: ReturnType<typeof setTimeout> | undefined;
-	let resizeObserver: ResizeObserver | undefined;
+	let L: any;
+	let map: any;
+	let markersLayer: any;
 
-	function createStars(): THREE.Points {
-		const count = 2000;
-		const positions = new Float32Array(count * 3);
-		for (let i = 0; i < count * 3; i++) {
-			positions[i] = (Math.random() - 0.5) * 1000;
-		}
-		const geo = new THREE.BufferGeometry();
-		geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-		const mat = new THREE.PointsMaterial({
-			color: 0xffffff,
-			size: 0.5,
-			sizeAttenuation: true,
-			transparent: true,
-			opacity: 0.6
-		});
-		return new THREE.Points(geo, mat);
-	}
+	function updateMapData() {
+		if (!mapReady || !map || !L || !markersLayer) return;
 
-	async function initGlobe() {
-		if (mapReady || !globeEl) return;
-
-		const width = globeEl.clientWidth;
-		const height = 400;
-
-		scene = new THREE.Scene();
-		scene.add(new THREE.AmbientLight(0xffffff, 2));
-		scene.add(new THREE.DirectionalLight(0xffffff, 1));
-		scene.add(createStars());
-
-		camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 2000);
-		camera.position.z = 300;
-
-		renderer = new THREE.WebGLRenderer({
-			antialias: true,
-			alpha: true
-		});
-		renderer.setSize(width, height);
-		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-		renderer.setClearColor(0x0a0a1a, 1);
-		globeEl.appendChild(renderer.domElement);
-
-		globe = new ThreeGlobe()
-			.globeImageUrl('/explorer/earth-dark.jpg')
-			.bumpImageUrl('/explorer/earth-dark.jpg')
-			.atmosphereColor(0x00f0ff)
-			.atmosphereAltitude(0.2)
-			.polygonCapColor(() => 'rgba(0, 240, 255, 0.05)')
-			.polygonStrokeColor(() => '#00f0ff')
-			.polygonAltitude(0.005)
-			.polygonSideColor(() => 'rgba(0, 240, 255, 0.03)');
-
-		fetch('/explorer/countries-110m.json')
-			.then((r) => r.json())
-			.then((topology) => {
-				if (!globe) return;
-				const countries = (topology.objects?.countries?.geometries || []).map((g: any, i: number) => {
-					const arcs = g.arcs;
-					const coords: number[][][] = [];
-					const transform = topology.transform;
-					const scale = transform?.scale || [1, 1];
-					const translate = transform?.translate || [0, 0];
-					let x = 0, y = 0;
-					const rings: number[][] = [];
-					for (const arc of (Array.isArray(arcs[0]) ? arcs : [arcs])) {
-						const ring: number[][] = [];
-						for (const delta of arc) {
-							x += delta[0]; y += delta[1];
-							ring.push([
-								x * scale[0] + translate[0],
-								y * scale[1] + translate[1]
-							]);
-						}
-						rings.push(ring);
-					}
-					return { type: 'Polygon', coordinates: rings };
-				});
-				globe.polygonsData(countries)
-					.polygonGeoJsonGeometry((d: any) => d);
-			})
-			.catch(() => {});
-
-		scene.add(globe);
-
-		const wireGeo = new THREE.SphereGeometry(100.8, 64, 32);
-		const wireMat = new THREE.MeshBasicMaterial({
-			color: 0x00f0ff,
-			wireframe: true,
-			transparent: true,
-			opacity: 0.08
-		});
-		const wireGlobe = new THREE.Mesh(wireGeo, wireMat);
-		scene.add(wireGlobe);
-
-		const ringGeo = new THREE.RingGeometry(104, 106, 128);
-		const ringMat = new THREE.MeshBasicMaterial({
-			color: 0x00f0ff,
-			side: THREE.DoubleSide,
-			transparent: true,
-			opacity: 0.15
-		});
-		const ring = new THREE.Mesh(ringGeo, ringMat);
-		ring.rotation.x = Math.PI / 2;
-		scene.add(ring);
-
-		const ringGeo2 = new THREE.RingGeometry(110, 111.5, 128);
-		const ringMat2 = new THREE.MeshBasicMaterial({
-			color: 0xff00aa,
-			side: THREE.DoubleSide,
-			transparent: true,
-			opacity: 0.12
-		});
-		const ring2 = new THREE.Mesh(ringGeo2, ringMat2);
-		ring2.rotation.x = Math.PI / 2;
-		ring2.rotation.z = 0.3;
-		scene.add(ring2);
-
-		controls = new OrbitControls(camera, renderer.domElement);
-		controls.enableDamping = true;
-		controls.dampingFactor = 0.1;
-		controls.rotateSpeed = 0.5;
-		controls.minDistance = 150;
-		controls.maxDistance = 600;
-		controls.enablePan = false;
-		controls.autoRotate = true;
-		controls.autoRotateSpeed = 0.4;
-
-		controls.addEventListener('start', () => {
-			controls!.autoRotate = false;
-			if (autoRotateTimeout) clearTimeout(autoRotateTimeout);
-		});
-
-		controls.addEventListener('end', () => {
-			autoRotateTimeout = setTimeout(() => {
-				if (controls) controls.autoRotate = true;
-			}, 3000);
-		});
-
-		function animate() {
-			animFrameId = requestAnimationFrame(animate);
-			controls?.update();
-			if (renderer && scene && camera) renderer.render(scene, camera);
-		}
-		animate();
-
-		resizeObserver = new ResizeObserver((entries) => {
-			for (const entry of entries) {
-				const { width: w, height: h } = entry.contentRect;
-				if (w > 0 && h > 0 && renderer && camera) {
-					camera.aspect = w / h;
-					camera.updateProjectionMatrix();
-					renderer.setSize(w, h);
-				}
-			}
-		});
-		resizeObserver.observe(globeEl);
-
-		mapReady = true;
-	}
-
-	function updateGlobeData() {
-		if (!globe) return;
+		// Clear previous layers
+		markersLayer.clearLayers();
 
 		const validPeers = displayPeers.filter((p) => p.lat !== 0 || p.lon !== 0);
+		if (validPeers.length === 0) return;
 
-		globe
-			.pointsData(validPeers)
-			.pointLat('lat')
-			.pointLng('lon')
-			.pointColor((d: DisplayPeer) => (d.isAnchor ? '#ff00aa' : '#00f0ff'))
-			.pointAltitude(0.02)
-			.pointRadius(0.4);
+		const leafletMarkers: any[] = [];
 
+		validPeers.forEach((p) => {
+			const iconClass = p.isAnchor ? 'network-marker anchor' : 'network-marker';
+			const dotClass = p.isAnchor ? 'marker-dot anchor' : 'marker-dot';
+			const pulseClass = p.isAnchor ? 'marker-pulse anchor' : 'marker-pulse';
+
+			const customIcon = L.divIcon({
+				className: iconClass,
+				html: `
+					<div class="${pulseClass}"></div>
+					<div class="${dotClass}"></div>
+				`,
+				iconSize: [24, 24],
+				iconAnchor: [12, 12]
+			});
+
+			const popupContent = `
+				<div class="p-2 font-sans text-xs bg-slate-950 text-slate-205 border border-slate-800 rounded-lg flex flex-col gap-1.5 min-w-[200px]">
+					<div class="flex items-center justify-between border-b border-slate-800 pb-1">
+						<span class="font-mono text-[10px] text-slate-500">PEER ID</span>
+						<span class="px-1.5 py-0.2 rounded text-[9px] font-bold ${p.isAnchor ? 'bg-pink-950 text-pink-400 border border-pink-900/40' : 'bg-cyan-955 text-cyan-400 border border-cyan-900/40'}">
+							${p.isAnchor ? 'Anchor Node' : 'Node'}
+						</span>
+					</div>
+					<div class="font-mono text-[10px] truncate font-bold text-slate-200 select-all" title="${p.peerId}">
+						${p.peerId}
+					</div>
+					<div class="flex justify-between text-[11px] mt-0.5">
+						<span class="text-slate-500">Location</span>
+						<span class="text-slate-300 font-medium">${p.location}</span>
+					</div>
+					<div class="flex justify-between text-[11px]">
+						<span class="text-slate-500">Transport</span>
+						<span class="text-slate-350 font-mono text-[10px]">${p.transport}</span>
+					</div>
+				</div>
+			`;
+
+			const marker = L.marker([p.lat, p.lon], { icon: customIcon })
+				.bindPopup(popupContent, {
+					closeButton: false,
+					className: 'custom-leaflet-popup'
+				});
+
+			markersLayer.addLayer(marker);
+			leafletMarkers.push(marker);
+		});
+
+		// Connect lines mesh topology
 		if (validPeers.length >= 2) {
-			const arcPairs: { startLat: number; startLng: number; endLat: number; endLng: number }[] = [];
 			for (let i = 0; i < validPeers.length; i++) {
 				for (let j = i + 1; j < validPeers.length; j++) {
-					arcPairs.push({
-						startLat: validPeers[i].lat,
-						startLng: validPeers[i].lon,
-						endLat: validPeers[j].lat,
-						endLng: validPeers[j].lon
-					});
+					const line = L.polyline(
+						[[validPeers[i].lat, validPeers[i].lon], [validPeers[j].lat, validPeers[j].lon]],
+						{
+							color: '#00f0ff',
+							weight: 1.5,
+							opacity: 0.25,
+							className: 'mesh-line'
+						}
+					);
+					markersLayer.addLayer(line);
 				}
 			}
-			globe
-				.arcsData(arcPairs)
-				.arcStartLat('startLat')
-				.arcStartLng('startLng')
-				.arcEndLat('endLat')
-				.arcEndLng('endLng')
-				.arcColor(() => '#00f0ff')
-				.arcDashLength(0.4)
-				.arcDashGap(0.2)
-				.arcDashAnimateTime(2000)
-				.arcStroke(1.5)
-				.arcDashInitialGap(() => Math.random());
-		} else {
-			globe.arcsData([]);
 		}
+
+		// Center/bounds map to fit
+		try {
+			const group = L.featureGroup(leafletMarkers);
+			map.fitBounds(group.getBounds().pad(0.18), { maxZoom: 9 });
+		} catch (_) {}
 	}
 
 	async function loadPeers() {
@@ -287,8 +163,7 @@
 			loading = false;
 
 			await tick();
-			await initGlobe();
-			updateGlobeData();
+			updateMapData();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to query peer swarm';
 			loading = false;
@@ -339,25 +214,55 @@
 		}
 	}
 
-	onMount(() => {
+	onMount(async () => {
 		loadPeers();
-		const interval = setInterval(() => {
-			loadPeers();
-		}, 10000);
-		return () => clearInterval(interval);
+		const interval = setInterval(loadPeers, 10000);
+
+		if (browser) {
+			try {
+				L = await import('leaflet');
+				if (mapEl) {
+					map = L.map(mapEl, {
+						center: [20, 0],
+						zoom: 3,
+						minZoom: 3,
+						maxZoom: 9,
+						zoomControl: true,
+						attributionControl: false,
+						maxBounds: [[-90, -180], [90, 180]],
+						maxBoundsViscosity: 1.0
+					});
+
+					L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+						maxZoom: 9,
+						minZoom: 3,
+						noWrap: true
+					}).addTo(map);
+
+					markersLayer = L.layerGroup().addTo(map);
+					mapReady = true;
+					updateMapData();
+				}
+			} catch (err) {
+				console.error('Leaflet initialization failed:', err);
+			}
+		}
+
+		return () => {
+			clearInterval(interval);
+		};
 	});
 
 	onDestroy(() => {
-		if (autoRotateTimeout) clearTimeout(autoRotateTimeout);
-		if (animFrameId) cancelAnimationFrame(animFrameId);
-		if (resizeObserver) resizeObserver.disconnect();
-		if (controls) controls.dispose();
-		if (renderer) {
-			renderer.dispose();
-			renderer.domElement.remove();
+		if (map) {
+			map.remove();
 		}
 	});
 </script>
+
+<svelte:head>
+	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+</svelte:head>
 
 <div class="flex flex-col gap-6">
 	<!-- Page Header -->
@@ -409,7 +314,7 @@
 			{error}
 		</div>
 	{:else if data}
-		<!-- 3D Globe Swarm Map -->
+		<!-- 2D Interactive Swarm Map -->
 		<div
 			class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl relative overflow-hidden"
 		>
@@ -428,8 +333,8 @@
 					peers in swarm
 				</span>
 			</div>
-			<!-- 3D Globe container -->
-			<div bind:this={globeEl} class="h-[400px] w-full rounded-xl overflow-hidden"></div>
+			<!-- Map container -->
+			<div bind:this={mapEl} class="h-[450px] w-full rounded-xl overflow-hidden"></div>
 		</div>
 
 		<!-- Peers Table Registry -->
@@ -509,3 +414,100 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	:global(.leaflet-container) {
+		background: #090f1c !important;
+	}
+
+	:global(.network-marker) {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	:global(.marker-dot) {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background-color: #00f0ff;
+		box-shadow: 0 0 8px #00f0ff;
+		z-index: 10;
+	}
+
+	:global(.marker-dot.anchor) {
+		background-color: #ff00aa;
+		box-shadow: 0 0 8px #ff00aa;
+	}
+
+	:global(.marker-pulse) {
+		position: absolute;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		border: 1px solid rgba(0, 240, 255, 0.4);
+		animation: pulse 1.8s infinite ease-out;
+		pointer-events: none;
+		z-index: 1;
+	}
+
+	:global(.marker-pulse.anchor) {
+		border-color: rgba(255, 0, 170, 0.4);
+		animation: pulse-anchor 1.8s infinite ease-out;
+	}
+
+	@keyframes pulse {
+		0% {
+			transform: scale(0.3);
+			opacity: 1;
+		}
+		100% {
+			transform: scale(1.5);
+			opacity: 0;
+		}
+	}
+
+	@keyframes pulse-anchor {
+		0% {
+			transform: scale(0.3);
+			opacity: 1;
+		}
+		100% {
+			transform: scale(1.5);
+			opacity: 0;
+		}
+	}
+
+	:global(.custom-leaflet-popup .leaflet-popup-content-wrapper) {
+		background: #0f172a !important;
+		border: 1px solid rgba(255, 255, 255, 0.08) !important;
+		box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
+		border-radius: 12px !important;
+		padding: 0 !important;
+	}
+
+	:global(.custom-leaflet-popup .leaflet-popup-content) {
+		margin: 0 !important;
+		padding: 0 !important;
+		color: #e2e8f0 !important;
+	}
+
+	:global(.custom-leaflet-popup .leaflet-popup-tip) {
+		background: #0f172a !important;
+		border: 1px solid rgba(255, 255, 255, 0.08) !important;
+	}
+
+	:global(.mesh-line) {
+		stroke-dasharray: 4, 8;
+		animation: mesh-flow 1.5s infinite linear;
+	}
+
+	@keyframes mesh-flow {
+		from {
+			stroke-dashoffset: 24;
+		}
+		to {
+			stroke-dashoffset: 0;
+		}
+	}
+</style>

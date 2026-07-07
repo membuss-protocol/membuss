@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { apiFetch, formatBytes } from '$lib/api';
+	import { toast } from '$lib/toast';
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import Icon from '@iconify/svelte';
@@ -117,7 +118,7 @@
 			file.sealed = !file.sealed;
 			loadFiles();
 		} catch (err) {
-			alert(`Action failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Action failed: ${err instanceof Error ? err.message : err}`);
 		}
 	}
 
@@ -134,7 +135,7 @@
 			// Remove from local list immediately
 			fileList = fileList.filter(f => f.mid !== file.mid);
 		} catch (err) {
-			alert(`Delete failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Delete failed: ${err instanceof Error ? err.message : err}`);
 		}
 	}
 
@@ -164,14 +165,14 @@
 
 		// Check if already in fileList
 		if (fileList.some(f => f.mid === midVal)) {
-			alert('This Content ID is already present in your local store.');
+			toast.info('This Content ID is already present in your local store.');
 			fetchMIDInput = '';
 			return;
 		}
 
 		// Check if already resolving
 		if (resolvingMIDs.some(r => r.mid === midVal)) {
-			alert('This Content ID is already actively resolving from the DHT.');
+			toast.info('This Content ID is already actively resolving from the DHT.');
 			fetchMIDInput = '';
 			return;
 		}
@@ -295,13 +296,13 @@
 					loadFiles();
 				}, 1000);
 			} else {
-				alert('Upload failed: ' + xhr.responseText);
+				toast.error('Upload failed: ' + xhr.responseText);
 				uploadActive = false;
 			}
 		});
 
 		xhr.addEventListener('error', () => {
-			alert('Network error occurred.');
+			toast.error('Network error occurred.');
 			uploadActive = false;
 		});
 

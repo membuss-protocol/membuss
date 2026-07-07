@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
+	import { toast } from '$lib/toast';
 	import { base } from '$app/paths';
 	import Icon from '@iconify/svelte';
 
@@ -90,7 +91,7 @@
 			});
 			await fetchKeys();
 		} catch (err) {
-			alert(`Delete failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Delete failed: ${err instanceof Error ? err.message : err}`);
 		}
 	}
 

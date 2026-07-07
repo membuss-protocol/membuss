@@ -7,6 +7,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import Icon from '@iconify/svelte';
+	import Toasts from '$lib/components/Toasts.svelte';
 
 	let { children } = $props();
 
@@ -162,4 +163,6 @@
 			<span>Served by Mem-Gate Public Proxy Layer</span>
 		</div>
 	</footer>
+
+	<Toasts />
 </div>

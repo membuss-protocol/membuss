@@ -4,6 +4,7 @@
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { apiFetch, formatBytes } from '$lib/api';
+	import { toast } from '$lib/toast';
 	import Icon from '@iconify/svelte';
 	import DagNode from '$lib/components/DagNode.svelte';
 
@@ -253,7 +254,7 @@
 				fetchMIDData(midVal);
 			}
 		} catch (err) {
-			alert(`Action failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Action failed: ${err instanceof Error ? err.message : err}`);
 			loading = false;
 		}
 	}
@@ -274,7 +275,7 @@
 			if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
 			fetchMIDData(midVal);
 		} catch (err) {
-			alert(`Rename failed: ${err instanceof Error ? err.message : err}`);
+			toast.error(`Rename failed: ${err instanceof Error ? err.message : err}`);
 		} finally {
 			isRenaming = false;
 		}
