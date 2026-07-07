@@ -34,17 +34,20 @@
 	let flashing = $state(false);
 	let flashSuccess = $state(false);
 
-	async function flashNode() {
-		const confirmed1 = confirm(
-			"🚨 WARNING: You are about to initiate FLASHNODE.\n\nThis will completely WIPE the BadgerDB database, clearing all content, pins, cached data, and indices.\n\nThis action is PERMANENT and CANNOT BE UNDONE.\n\nAre you sure you want to proceed?"
-		);
-		if (!confirmed1) return;
+	let showConfirmModal = $state(false);
+	let confirmStep = $state(1);
 
-		const confirmed2 = confirm(
-			"⚠️ FINAL CONFIRMATION:\n\nAre you absolutely sure you want to delete ALL data and reset this node?"
-		);
-		if (!confirmed2) return;
+	function triggerFlashNode() {
+		confirmStep = 1;
+		showConfirmModal = true;
+	}
 
+	async function proceedFlashNode() {
+		if (confirmStep === 1) {
+			confirmStep = 2;
+			return;
+		}
+		showConfirmModal = false;
 		flashing = true;
 		try {
 			await apiFetch('/node/flash', { method: 'POST' });
@@ -165,7 +168,7 @@
 
 				<div class="mt-4 pt-4 border-t border-slate-800">
 					<button
-						onclick={flashNode}
+						onclick={triggerFlashNode}
 						disabled={flashing || flashSuccess}
 						class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg border transition-all duration-300
 							{flashSuccess 
@@ -267,3 +270,47 @@
 		</div>
 	{/if}
 </div>
+
+{#if showConfirmModal}
+	<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+		<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full flex flex-col gap-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+			<h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
+				<Icon icon="ph:warning-bold" class="text-red-500 text-lg" />
+				{#if confirmStep === 1}
+					Wipe Node Database
+				{:else}
+					Final Confirmation Required
+				{/if}
+			</h3>
+			<p class="text-xs text-slate-400 leading-relaxed whitespace-pre-line">
+				{#if confirmStep === 1}
+					🚨 WARNING: You are about to initiate FLASHNODE.
+					This will completely WIPE the BadgerDB database, clearing all content, pins, cached data, and indices.
+					This action is PERMANENT and CANNOT BE UNDONE.
+					Are you sure you want to proceed?
+				{:else}
+					⚠️ FINAL CONFIRMATION:
+					Are you absolutely sure you want to delete ALL data and reset this node?
+				{/if}
+			</p>
+			<div class="flex items-center justify-end gap-3 mt-2">
+				<button 
+					onclick={() => showConfirmModal = false} 
+					class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+				>
+					Cancel
+				</button>
+				<button 
+					onclick={proceedFlashNode} 
+					class="px-4 py-2 rounded-xl bg-red-650 hover:bg-red-700 text-slate-50 text-xs font-semibold transition-colors animate-pulse"
+				>
+					{#if confirmStep === 1}
+						Proceed
+					{:else}
+						Yes, Wipe Everything
+					{/if}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}

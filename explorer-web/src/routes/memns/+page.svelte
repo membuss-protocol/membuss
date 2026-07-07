@@ -80,16 +80,26 @@
 		}
 	}
 
-	async function handleDeleteKey(name: string) {
-		if (!confirm(`Are you sure you want to delete the key "${name}"? This action cannot be undone.`)) {
-			return;
-		}
+	let showDeleteKeyModal = $state(false);
+	let keyToDelete = $state('');
+
+	function triggerDeleteKey(name: string) {
+		keyToDelete = name;
+		showDeleteKeyModal = true;
+	}
+
+	async function proceedDeleteKey() {
+		if (!keyToDelete) return;
+		const name = keyToDelete;
+		showDeleteKeyModal = false;
+		keyToDelete = '';
 
 		try {
 			await apiFetch(`/keyring/rm/${name}`, {
 				method: 'DELETE'
 			});
 			await fetchKeys();
+			toast.success(`Key "${name}" deleted successfully.`);
 		} catch (err) {
 			toast.error(`Delete failed: ${err instanceof Error ? err.message : err}`);
 		}
@@ -236,7 +246,7 @@
 											Select to Publish
 										</button>
 										<button 
-											onclick={() => handleDeleteKey(key.name)}
+											onclick={() => triggerDeleteKey(key.name)}
 											class="p-2 rounded-lg bg-red-950/20 hover:bg-red-950/40 text-red-400 border border-red-900/30 transition-colors"
 											title="Delete Key"
 										>
@@ -471,3 +481,31 @@
 		</div>
 	{/if}
 </div>
+
+{#if showDeleteKeyModal && keyToDelete}
+	<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+		<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full flex flex-col gap-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+			<h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
+				<Icon icon="ph:warning-bold" class="text-red-500 text-lg" />
+				Delete MemNS Key
+			</h3>
+			<p class="text-xs text-slate-400 leading-relaxed">
+				Are you sure you want to delete the key <span class="font-bold text-slate-300">"{keyToDelete}"</span>? This action is permanent and cannot be undone.
+			</p>
+			<div class="flex items-center justify-end gap-3 mt-2">
+				<button 
+					onclick={() => showDeleteKeyModal = false} 
+					class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+				>
+					Cancel
+				</button>
+				<button 
+					onclick={proceedDeleteKey} 
+					class="px-4 py-2 rounded-xl bg-red-650 hover:bg-red-700 text-slate-50 text-xs font-semibold transition-colors"
+				>
+					Delete
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}

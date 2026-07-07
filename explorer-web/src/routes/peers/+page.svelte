@@ -511,12 +511,12 @@
 											{peer.location}
 										</td>
 
-										<td class="py-3.5 px-6 text-slate-400">
-											<div class="flex items-center gap-2">
-												<span>{peer.peerId}</span>
+										<td class="py-3.5 px-6 text-slate-400 max-w-[150px] md:max-w-[250px] truncate" title={peer.peerId}>
+											<div class="flex items-center gap-2 min-w-0">
+												<span class="truncate">{peer.peerId}</span>
 												<button
 													onclick={() => copyToClipboard(peer.peerId, peer.peerId)}
-													class="text-[9px] text-cyan-400 hover:text-cyan-300 opacity-0 group-hover:opacity-100 transition-opacity font-sans cursor-pointer bg-white/[0.05] border border-white/[0.05] px-1.5 py-0.5 rounded"
+													class="shrink-0 text-[9px] text-cyan-400 hover:text-cyan-300 opacity-0 group-hover:opacity-100 transition-opacity font-sans cursor-pointer bg-white/[0.05] border border-white/[0.05] px-1.5 py-0.5 rounded"
 													title="Copy ID"
 												>
 													{copiedId === peer.peerId ? 'Copied' : 'Copy'}
