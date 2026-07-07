@@ -586,10 +586,18 @@ func main() {
 	defer scancel()
 
 	if err := gateSrv.ShutdownCtx(shutdownCtx); err != nil {
-		logger.Warn("gateway shutdown", "err", err.Error())
+		if errors.Is(err, context.DeadlineExceeded) {
+			logger.Info("gateway shutdown: active connections force-closed")
+		} else {
+			logger.Warn("gateway shutdown", "err", err.Error())
+		}
 	}
 	if err := apiSrv.ShutdownCtx(shutdownCtx); err != nil {
-		logger.Warn("api shutdown", "err", err.Error())
+		if errors.Is(err, context.DeadlineExceeded) {
+			logger.Info("api shutdown: active connections force-closed")
+		} else {
+			logger.Warn("api shutdown", "err", err.Error())
+		}
 	}
 
 	// Stop gRPC server with timeout. GracefulStop blocks until all connections

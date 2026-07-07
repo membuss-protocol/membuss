@@ -61,6 +61,7 @@ type explorerAdapter struct {
 	cachedBytes uint64
 	cachedCount uint64
 	lastStats   time.Time
+	updating    bool
 }
 
 func newExplorerAdapter(b *daemonBackend, anchorMode bool, keyring *keyring.KeyRing, memnsRes *memns.Resolver) *explorerAdapter {
@@ -374,11 +375,18 @@ func (a *explorerAdapter) SealedCount(ctx context.Context) (int, error) {
 
 func (a *explorerAdapter) updateStatsCached(ctx context.Context) {
 	a.statsMu.Lock()
-	if time.Since(a.lastStats) < 5*time.Second {
+	if a.updating || time.Since(a.lastStats) < 5*time.Second {
 		a.statsMu.Unlock()
 		return
 	}
+	a.updating = true
 	a.statsMu.Unlock()
+
+	defer func() {
+		a.statsMu.Lock()
+		a.updating = false
+		a.statsMu.Unlock()
+	}()
 
 	var size uint64
 	var count uint64
