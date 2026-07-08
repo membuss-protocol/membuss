@@ -47,6 +47,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	ds "github.com/ipfs/go-datastore"
 	"github.com/libp2p/go-libp2p/p2p/net/conngater"
+	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
 // IdentityFilename is the on-disk filename for the Ed25519
@@ -246,8 +247,8 @@ func NewHost(cfg Config) (*Host, error) {
 		opts = append(opts, libp2p.UserAgent(cfg.UserAgent))
 	}
 
+	var announceAddrs []ma.Multiaddr
 	if len(cfg.AnnounceAddrs) > 0 {
-		announceAddrs := make([]ma.Multiaddr, 0, len(cfg.AnnounceAddrs))
 		for _, a := range cfg.AnnounceAddrs {
 			maddr, err := ma.NewMultiaddr(a)
 			if err != nil {
@@ -255,10 +256,20 @@ func NewHost(cfg Config) (*Host, error) {
 			}
 			announceAddrs = append(announceAddrs, maddr)
 		}
-		opts = append(opts, libp2p.AddrsFactory(func([]ma.Multiaddr) []ma.Multiaddr {
-			return announceAddrs
-		}))
 	}
+
+	opts = append(opts, libp2p.AddrsFactory(func(listenAddrs []ma.Multiaddr) []ma.Multiaddr {
+		var addrs []ma.Multiaddr
+		if len(announceAddrs) > 0 {
+			addrs = append(addrs, announceAddrs...)
+		} else {
+			addrs = append(addrs, listenAddrs...)
+		}
+		if ngAddr := tunnel.GetNgrokAddress(); ngAddr != nil {
+			addrs = append(addrs, ngAddr)
+		}
+		return addrs
+	}))
 
 	h, err := libp2p.New(opts...)
 	if err != nil {

@@ -215,6 +215,13 @@ log_file: ""
 # pre-Phase-14 base58 form, supported for one release cycle so
 # operators can drain pre-upgrade stores.
 mid_version: <<MID_VERSION>>
+
+# -----------------------------------------------------------------------------
+# Tunnel Configuration (ngrok)
+# -----------------------------------------------------------------------------
+tunnel:
+  enabled: <<TUNNEL_ENABLED>>
+  authtoken: "<<TUNNEL_AUTHTOKEN>>"
 `
 
 // writeTemplate returns the rendered YAML-with-comments that
@@ -264,6 +271,8 @@ func writeTemplate(cfg *Config) (string, error) {
 		"<<MID_VERSION>>",                  cfg.MIDVersion,
 		"<<ENABLE_GEOLOCATION>>",           boolString(cfg.EnableGeolocation),
 		"<<GEOLOCATION_DB>>",               cfg.GeolocationDB,
+		"<<TUNNEL_ENABLED>>",               boolString(cfg.Tunnel.Enabled),
+		"<<TUNNEL_AUTHTOKEN>>",             cfg.Tunnel.Authtoken,
 		"<<LISTEN_ADDRS>>",                 listenBlock,
 		"<<BOOTSTRAP_PEERS>>",              bootBlock,
 	)

@@ -28,8 +28,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/gorilla/websocket"
 
+	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/descriptor"
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
 //go:embed web/templates/*.html web/static/*.css web/static/*.js all:web/dist
@@ -336,14 +338,17 @@ type Config struct {
 	// GeoResolver performs IP geolocation. May be nil
 	// when geolocation is disabled.
 	GeoResolver *GeoResolver
+	// TunnelManager handles the lifecycle of the ngrok tunnel.
+	TunnelManager *tunnel.Manager
 }
 
 // Explorer is the built-in web UI.
 type Explorer struct {
-	cfg Config
-	tpl *template.Template
-	pages map[string]*template.Template
-	geo  *GeoResolver
+	cfg    Config
+	tpl    *template.Template
+	pages  map[string]*template.Template
+	geo    *GeoResolver
+	tunMgr *tunnel.Manager
 }
 
 // New parses the embedded templates and returns an Explorer
@@ -378,7 +383,13 @@ func New(cfg Config) (*Explorer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("explorer: build pages: %w", err)
 	}
-	return &Explorer{cfg: cfg, tpl: tpl, pages: pages, geo: cfg.GeoResolver}, nil
+	return &Explorer{
+		cfg:    cfg,
+		tpl:    tpl,
+		pages:  pages,
+		geo:    cfg.GeoResolver,
+		tunMgr: cfg.TunnelManager,
+	}, nil
 }
 
 // Router returns the chi router. Exposed so tests can drive
@@ -511,6 +522,8 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Delete("/keyring/rm/{name}", e.handleKeyringRm)
 	r.Post("/memns/publish", e.handleMemNSPublish)
 	r.Post("/node/flash", e.handleNodeFlash)
+	r.Get("/node/tunnel", e.handleGetTunnel)
+	r.Post("/node/tunnel", e.handlePostTunnel)
 
 	// Phase 21: descriptor endpoints
 	r.Get("/descriptor/{mid}", e.handleDescriptorExport)
@@ -1673,4 +1686,102 @@ func (e *Explorer) handleDescriptorImport(w http.ResponseWriter, r *http.Request
 		return
 	}
 	http.Redirect(w, r, "/explorer/mid/"+midStr, http.StatusSeeOther)
+}
+
+func (e *Explorer) handleGetTunnel(w http.ResponseWriter, r *http.Request) {
+	if e.tunMgr == nil {
+		http.Error(w, "tunnel manager not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	status, publicAddr, lastErr := e.tunMgr.Status()
+	cfg, err := config.Load(e.tunMgr.CfgPath)
+	if err != nil {
+		http.Error(w, "failed to load config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type TunnelStatus struct {
+		Enabled             bool   `json:"enabled"`
+		Status              string `json:"status"`
+		PublicAddress       string `json:"public_address"`
+		LastError           string `json:"last_error"`
+		AuthtokenConfigured bool   `json:"authtoken_configured"`
+		PeerID              string `json:"peer_id"`
+	}
+
+	res := TunnelStatus{
+		Enabled:             cfg.Tunnel.Enabled,
+		Status:              status,
+		PublicAddress:       publicAddr,
+		LastError:           lastErr,
+		AuthtokenConfigured: cfg.Tunnel.Authtoken != "",
+		PeerID:              e.cfg.Backend.LocalPeerID(r.Context()),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (e *Explorer) handlePostTunnel(w http.ResponseWriter, r *http.Request) {
+	if e.tunMgr == nil {
+		http.Error(w, "tunnel manager not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		Enabled   *bool   `json:"enabled"`
+		Authtoken *string `json:"authtoken"`
+		Action    string  `json:"action"` // "install", "uninstall", "start", "stop"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	cfg, err := config.Load(e.tunMgr.CfgPath)
+	if err != nil {
+		http.Error(w, "failed to load config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	enabled := cfg.Tunnel.Enabled
+	authtoken := cfg.Tunnel.Authtoken
+
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if req.Authtoken != nil {
+		authtoken = *req.Authtoken
+	}
+
+	if req.Action == "install" {
+		enabled = true
+	} else if req.Action == "uninstall" {
+		enabled = false
+		authtoken = ""
+	} else if req.Action == "start" {
+		enabled = true
+	} else if req.Action == "stop" {
+		enabled = false
+	}
+
+	if err := e.tunMgr.SaveConfig(enabled, authtoken); err != nil {
+		http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if enabled {
+		updatedCfg, _ := config.Load(e.tunMgr.CfgPath)
+		if err := e.tunMgr.Start(context.Background(), updatedCfg); err != nil {
+			http.Error(w, "failed to start tunnel: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		e.tunMgr.Stop()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
