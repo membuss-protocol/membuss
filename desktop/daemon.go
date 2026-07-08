@@ -399,6 +399,34 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 		return "", err
 	}
 
+	// Fallback: If GitHub API query failed or didn't yield a downloadUrl, try getting the tag via HTML redirect.
+	if downloadUrl == "" {
+		progressCb(15, "GitHub API rate limit or error encountered. Retrying via release redirection...")
+		redirClient := &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		rresp, rerr := redirClient.Get("https://github.com/nnlgsakib/membuss/releases/latest")
+		if rerr == nil {
+			defer rresp.Body.Close()
+			loc := rresp.Header.Get("Location")
+			if loc != "" {
+				parts := strings.Split(loc, "/tag/")
+				if len(parts) == 2 {
+					versionTag = parts[1]
+					archiveExt := "zip"
+					if runtime.GOOS != "windows" {
+						archiveExt = "tar.gz"
+					}
+					downloadUrl = fmt.Sprintf("https://github.com/nnlgsakib/membuss/releases/download/%s/membuss-%s-%s-%s.%s", versionTag, versionTag, runtime.GOOS, runtime.GOARCH, archiveExt)
+					apiErr = nil // Clear API error since redirect fallback succeeded!
+				}
+			}
+		}
+	}
+
 	// Fallback implementation: If download URL is empty, we look for locally built binaries.
 	if downloadUrl == "" {
 		progressCb(30, "No compatible asset found in GitHub release. Falling back to local binaries...")
