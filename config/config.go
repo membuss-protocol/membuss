@@ -217,7 +217,7 @@ func Default() *Config {
 		},
 		AnnounceAddrs:     []string{},
 		BootstrapPeers: []string{
-			"/ip4/45.10.162.79/udp/4001/quic-v1/p2p/12D3KooWMNbuDSWaMw7evxzsp9CtaphofzxcEbHisWQQUmg7zfUx",
+			"/dns4/0.tcp.in.ngrok.io/tcp/25104/p2p/12D3KooWDFogLYszFtPFuy72RqYuktFaHSapKSFotgN4BDnuNvJw",
 		},
 		DataDir:           "./data",
 		GatewayAddr:       "127.0.0.1:8080",
