@@ -64,6 +64,7 @@ import (
 	"github.com/nnlgsakib/membuss/obs/logging"
 	"github.com/nnlgsakib/membuss/obs/metrics"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
+	"github.com/nnlgsakib/membuss/net/tunnel"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -469,12 +470,22 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stdout, "  grpc_addr:      %s\n", cfg.GRPCAddr)
+	// Tunnel: programmatic libp2p port forwarding.
+	tunMgr := tunnel.NewManager(*cfgPath)
+	if cfg.Tunnel.Enabled {
+		logger.Info("starting tunnel client...")
+		if err := tunMgr.Start(ctx, cfg); err != nil {
+			logger.Warn("failed to start tunnel on boot", "err", err.Error())
+		}
+	}
+	defer tunMgr.Stop()
+
 	// 9) Mem-Gate: public HTTP gateway + CDN edge.
 	var geo *explorerPkg.GeoResolver
 	if cfg.EnableGeolocation && geoDB != "" {
 		geo = explorerPkg.NewGeoResolver(geoDB)
 	}
-	gateSrv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), geo, cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel)
+	gateSrv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), geo, cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr)
 	if err != nil {
 		logger.Error("gateway", "err", err.Error())
 		os.Exit(1)
@@ -802,11 +813,11 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, geo *explorerPkg.GeoResolver, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, geo *explorerPkg.GeoResolver, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
-		ExplorerHandler: buildExplorer(exp, geo),
+		ExplorerHandler: buildExplorer(exp, geo, tunMgr),
 		RateLimitPerMin: rateLimitPerMin,
 		MemNSResolver:   memnsRes,
 		LogLevel:        logLevel,
@@ -942,11 +953,15 @@ func (h *httpServer) Addr() string {
 // buildExplorer constructs the explorer http.Handler.
 // It returns nil when exp is nil so the gateway can be
 // constructed without an explorer for tests.
-func buildExplorer(exp *explorerAdapter, geo *explorerPkg.GeoResolver) http.Handler {
+func buildExplorer(exp *explorerAdapter, geo *explorerPkg.GeoResolver, tunMgr *tunnel.Manager) http.Handler {
 	if exp == nil {
 		return nil
 	}
-	h, err := explorerPkg.New(explorerPkg.Config{Backend: exp, GeoResolver: geo})
+	h, err := explorerPkg.New(explorerPkg.Config{
+		Backend:       exp,
+		GeoResolver:   geo,
+		TunnelManager: tunMgr,
+	})
 	if err != nil {
 		slog.Warn("explorer", "err", err.Error())
 		return nil

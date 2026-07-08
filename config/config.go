@@ -177,6 +177,15 @@ type Config struct {
 	// EnableMDNS enables libp2p mDNS discovery. When true, the node
 	// will broadcast and listen for other peers on the local network.
 	EnableMDNS bool `yaml:"enable_mdns"`
+
+	// Tunnel contains ngrok integration configuration
+	Tunnel TunnelConfig `yaml:"tunnel"`
+}
+
+// TunnelConfig holds ngrok tunneling configurations.
+type TunnelConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Authtoken string `yaml:"authtoken"`
 }
 
 // TLSConfig is a pair of PEM file paths enabling HTTPS on an HTTP
@@ -255,6 +264,10 @@ func Default() *Config {
 		DHTProviderCleanupInterval:    1 * time.Hour,
 		EnableGeolocation:             true,
 		EnableMDNS:                    true,
+		Tunnel: TunnelConfig{
+			Enabled:   false,
+			Authtoken: "",
+		},
 	}
 }
 

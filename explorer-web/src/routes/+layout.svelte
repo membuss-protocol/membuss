@@ -20,6 +20,7 @@
 		{ name: 'MemNS', path: '/memns', icon: 'ph:identification-card-light' },
 		{ name: 'Explore', path: '/explore', icon: 'ph:git-branch-light' },
 		{ name: 'Peers', path: '/peers', icon: 'ph:circle-notch-light' },
+		{ name: 'Tunnel', path: '/tunnel', icon: 'ph:link-light' },
 		{ name: 'Node Info', path: '/node', icon: 'ph:gear-six-light' }
 	];
 
