@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -480,6 +482,110 @@ func (a *App) UpgradeBinaries() error {
 // IsNodeRunningSystemWide checks if any membuss daemon process is running on the system.
 func (a *App) IsNodeRunningSystemWide() bool {
 	return isProcessRunning("membuss")
+}
+
+// DownloadContent fetches a Membuss gateway URL and saves the response
+// body into dir, auto-detecting the filename from the Content-Disposition
+// header (or the URL path). This powers the desktop "Download to folder"
+// flow so explorer downloads land in a user-chosen directory instead of
+// the default Downloads folder.
+// 🖂 minimal: one-shot stream to disk, no resume/partial support.
+func (a *App) DownloadContent(targetURL, dir string) (string, error) {
+	if dir == "" {
+		return "", errors.New("destination directory cannot be empty")
+	}
+	// 🖂 only allow the local gateway to avoid fetching arbitrary URLs.
+	gw := "http://" + a.config.GatewayAddr
+	if !strings.HasPrefix(targetURL, gw) &&
+		!strings.HasPrefix(targetURL, "http://127.0.0.1") &&
+		!strings.HasPrefix(targetURL, "http://localhost") {
+		return "", errors.New("only local gateway URLs are supported")
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("invalid destination directory: %w", err)
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(targetURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed: status %s", resp.Status)
+	}
+
+	name := detectDownloadFilename(resp, targetURL)
+	outPath := filepath.Join(dir, name)
+	f, err := os.Create(outPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return "", err
+	}
+	return outPath, nil
+}
+
+// detectDownloadFilename derives a safe filename from the
+// Content-Disposition header, falling back to the URL path.
+func detectDownloadFilename(resp *http.Response, fallbackURL string) string {
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if fn := parseDispositionFilename(cd); fn != "" {
+			return sanitizeDownloadName(fn)
+		}
+	}
+	if u, err := url.Parse(fallbackURL); err == nil {
+		if base := filepath.Base(u.Path); base != "" && base != "/" && base != "." && base != `\` {
+			return sanitizeDownloadName(base)
+		}
+	}
+	return "download.bin"
+}
+
+// parseDispositionFilename extracts the filename from a
+// Content-Disposition header, supporting both filename= and the
+// RFC 5987 filename*=UTF-8''encoded form.
+func parseDispositionFilename(cd string) string {
+	// RFC 5987 extended form first (highest precedence).
+	for _, part := range strings.Split(cd, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "filename*=") {
+			val := part[len("filename*="):]
+			val = strings.Trim(val, `"`)
+			// Expect form: UTF-8''encoded
+			if i := strings.Index(val, "''"); i >= 0 {
+				if dec, err := url.QueryUnescape(val[i+2:]); err == nil {
+					return dec
+				}
+			}
+		}
+	}
+	for _, part := range strings.Split(cd, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "filename=") {
+			val := part[len("filename="):]
+			return strings.Trim(val, `"'`)
+		}
+	}
+	return ""
+}
+
+// sanitizeDownloadName strips path separators and control characters
+// so a malicious/disallowed name cannot escape the destination dir.
+func sanitizeDownloadName(name string) string {
+	name = filepath.Base(name)
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '_'
+		}
+		return r
+	}, name)
 }
 
 // ForceKillNode attempts to force-kill any running membuss daemon processes on the system.

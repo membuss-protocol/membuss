@@ -8,6 +8,8 @@ export function CheckForUpdate():Promise<main.UpdateCheckResult>;
 
 export function CheckNodeStatus():Promise<Record<string, any>>;
 
+export function DownloadContent(arg1:string,arg2:string):Promise<string>;
+
 export function ForceKillNode():Promise<void>;
 
 export function GetConfig():Promise<main.DesktopConfig>;

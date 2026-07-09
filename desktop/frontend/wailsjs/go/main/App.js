@@ -14,6 +14,10 @@ export function CheckNodeStatus() {
   return window['go']['main']['App']['CheckNodeStatus']();
 }
 
+export function DownloadContent(arg1, arg2) {
+  return window['go']['main']['App']['DownloadContent'](arg1, arg2);
+}
+
 export function ForceKillNode() {
   return window['go']['main']['App']['ForceKillNode']();
 }
