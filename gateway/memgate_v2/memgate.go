@@ -438,51 +438,12 @@ func (m *MemGate) handleGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	q := r.URL.Query()
-
-	// Phase 19: resolve the content info FIRST so we can
-	// set the right Content-Type and Content-Disposition
-	// headers before the body handler writes a single byte.
-	// The CDN-style behavior is: explicit ?download=1
-	// forces attachment, ?view=1 (or absence of either)
-	// defaults to inline so the browser renders images,
-	// text, video, etc. directly.
-	preInfo, preErr := m.cfg.Backend.Stat(r.Context(), root)
-	if preErr == nil {
-		if (preInfo.MimeType == "inode/directory" || preInfo.ContentType == "inode/directory") && q.Get("format") == "" {
-			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
-			return
-		}
-		if preInfo.MimeType != "" && w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", preInfo.MimeType)
-		}
-		// Default filename for Content-Disposition. The
-		// uploader-supplied name wins; falls back to
-		// <mid>.bin. The disposition is set below.
-		name := preInfo.Name
-		if name == "" {
-			name = midStr + ".bin"
-		}
-		disp := "inline"
-		if q.Get("download") == "1" {
-			disp = "attachment"
-			if fn := q.Get("filename"); fn != "" {
-				name = fn
-			}
-		}
-		// Once-only: do not overwrite a header the
-		// caller set explicitly (e.g. tests).
-		if w.Header().Get("Content-Disposition") == "" {
-			w.Header().Set("Content-Disposition",
-				mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(name)}))
-		}
-		// X-Membuss-* mirrors for tooling that cannot
-		// read Content-Disposition reliably.
-		w.Header().Set("X-Membuss-Name", preInfo.Name)
-		w.Header().Set("X-Membuss-MimeType", preInfo.MimeType)
-	}
-
-	switch q.Get("format") {
+	// All metadata and header decisions happen in handleResolved,
+	// which resolves the content (including a network fetch on
+	// first request) BEFORE writing the body. This guarantees the
+	// gateway serves identical metadata to the explorer whether or
+	// not the content was already local.
+	switch r.URL.Query().Get("format") {
 	case "dag-json":
 		m.handleDAGJSON(w, r, root)
 	case "raw":
@@ -680,19 +641,14 @@ func (m *MemGate) handleDescriptor(w http.ResponseWriter, r *http.Request, root 
 
 // handleResolved serves the resolved content. The hot path
 // is: cache hit -> write directly. Miss -> Backend.Resolve ->
-// copy with optional range slicing.
+// copy with optional range slicing. The content is resolved
+// FIRST so its metadata (name, MIME type, size, directory
+// flag) is authoritative even when the content had to be
+// fetched from the network on this very request — the case
+// the gateway used to get wrong.
 func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mid.MID, midStr string) {
 	// RFC 7234 conditional validation
 	if checkETag(w, r, midStr) {
-		return
-	}
-
-	// Cache lookup. LRU is keyed on the public MID string
-	// so that a malicious or buggy caller cannot trigger
-	// cache growth by spamming raw-block requests.
-	cacheKey := "resolved:" + midStr
-	if data, ok := m.lru.get(cacheKey); ok {
-		m.writeBytes(w, r, midStr, data, DetectContentType(midStr, data, ""))
 		return
 	}
 
@@ -703,44 +659,103 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 	}
 	defer rc.Close()
 
-	// If we know the size and the reader is just a chunk
-	// stream, we can stream the response without buffering
-	// the entire content. Cache eligibility: the content
-	// must fit under MaxCacheBytes.
-	stream := true
-	var buf []byte
+	// Directory / website root: mirror the explorer by serving the
+	// directory listing or index.html instead of dumping the raw
+	// MemFS node bytes. Redirect to the trailing-slash route so the
+	// directory handler (which auto-serves index.html) takes over.
+	if info.MimeType == "inode/directory" || info.ContentType == "inode/directory" {
+		if !strings.HasSuffix(r.URL.Path, "/") {
+			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+			return
+		}
+		m.handleDirList(w, r)
+		return
+	}
+
+	// Content-Type: prefer the backend's resolved MIME; fall back
+	// to a content sniff so renderable types (HTML, images, text)
+	// still render correctly when no metadata was supplied.
+	ct := chooseContentType(info.ContentType, DetectContentType(midStr, nil, info.MimeType))
+
+	// Filename + disposition. Inline by default so the browser
+	// renders renderable types; ?download=1 forces attachment.
+	name := info.Name
+	if name == "" {
+		name = defaultFilename(midStr, ct)
+	}
+	disp := "inline"
+	if r.URL.Query().Get("download") == "1" {
+		disp = "attachment"
+		if fn := r.URL.Query().Get("filename"); fn != "" {
+			name = fn
+		}
+	}
+
+	cacheKey := "resolved:" + midStr
+	if data, ok := m.lru.get(cacheKey); ok {
+		m.setResolvedHeaders(w, info, ct, disp, name)
+		m.writeBytes(w, r, midStr, data, ct)
+		return
+	}
+
+	// Cache eligibility: the whole content fits under MaxCacheBytes.
 	if info.Size > 0 && info.Size <= m.cfg.MaxCacheBytes {
-		// Read fully and cache. The whole content fits in
-		// the configured cache envelope.
-		buf = make([]byte, info.Size)
+		buf := make([]byte, info.Size)
 		if _, err := io.ReadFull(rc, buf); err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		m.lru.put(cacheKey, buf)
-		stream = false
-	} else {
-		// Streamed path. Don't cache.
-		w.Header().Set("Content-Type", chooseContentType(info.ContentType, "application/octet-stream"))
-		w.Header().Set("X-Membuss-MID", info.MID)
-		w.Header().Set("X-Membuss-Size", strconv.FormatUint(info.Size, 10))
-		w.Header().Set("X-Membuss-Blocks", strconv.FormatUint(info.Blocks, 10))
-		w.Header().Set("X-Membuss-Sealed", strconv.FormatBool(info.Sealed))
-		w.Header().Set("ETag", `"`+info.MID+`"`)
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
-
-		if m.handleStreamRange(w, r, root, int64(info.Size)) {
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, rc)
+		m.setResolvedHeaders(w, info, ct, disp, name)
+		m.writeBytes(w, r, midStr, buf, ct)
 		return
 	}
 
-	_ = stream
-	m.writeBytes(w, r, midStr, buf, chooseContentType(info.ContentType, DetectContentType(midStr, buf, "")))
+	// Streamed path (too large to cache).
+	m.setResolvedHeaders(w, info, ct, disp, name)
+
+	if m.handleStreamRange(w, r, root, int64(info.Size)) {
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
+}
+
+// setResolvedHeaders applies the common gateway response headers
+// for a resolved content response, including the uploader-supplied
+// name as a renderable (inline) Content-Disposition.
+func (m *MemGate) setResolvedHeaders(w http.ResponseWriter, info ContentInfo, ct, disp, name string) {
+	h := w.Header()
+	h.Set("Content-Type", ct)
+	h.Set("X-Membuss-MID", info.MID)
+	h.Set("X-Membuss-Size", strconv.FormatUint(info.Size, 10))
+	h.Set("X-Membuss-Blocks", strconv.FormatUint(info.Blocks, 10))
+	h.Set("X-Membuss-Sealed", strconv.FormatBool(info.Sealed))
+	h.Set("X-Membuss-Name", info.Name)
+	h.Set("X-Membuss-MimeType", info.MimeType)
+	h.Set("ETag", `"`+info.MID+`"`)
+	h.Set("Accept-Ranges", "bytes")
+	h.Set("Cache-Control", "public, immutable, max-age=31536000")
+	// Once-only: don't overwrite a header the caller set explicitly.
+	if h.Get("Content-Disposition") == "" {
+		h.Set("Content-Disposition",
+			mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(name)}))
+	}
+}
+
+// defaultFilename derives a download filename from the MID and
+// content type when the uploader did not supply a name.
+// 🖖 falls back to <mid>.bin for unknown types.
+func defaultFilename(midStr, ct string) string {
+	base := ct
+	if idx := strings.IndexByte(ct, ';'); idx >= 0 {
+		base = ct[:idx]
+	}
+	if exts, err := mime.ExtensionsByType(strings.TrimSpace(base)); err == nil && len(exts) > 0 {
+		return midStr + exts[0]
+	}
+	return midStr + ".bin"
 }
 
 // writeBytes writes data to w honoring an optional Range

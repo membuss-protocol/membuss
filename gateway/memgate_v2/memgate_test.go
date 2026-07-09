@@ -180,6 +180,109 @@ func TestGet_Raw_Default(t *testing.T) {
 	}
 }
 
+func TestGet_Metadata_Disposition(t *testing.T) {
+	b := newMemBackend()
+	body := []byte("<html><body>site</body></html>")
+	m := mid.FromBytes(body)
+	// 🖂 simulate the uploader-supplied name + mime that the
+	// network fetch populates via ObjectInfo on first request.
+	b.putWithMeta(m, body, "text/html; charset=utf-8", "index.html", "text/html")
+
+	srv := httptest.NewServer(newTestGate(t, b).Router())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/mem/" + m.String())
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if d := resp.Header.Get("Content-Disposition"); d == "" {
+		t.Fatal("missing Content-Disposition")
+	} else if !strings.Contains(d, "inline") {
+		t.Errorf("disposition should be inline: %q", d)
+	} else if !strings.Contains(d, "index.html") {
+		t.Errorf("filename missing: %q", d)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("content-type: %q", ct)
+	}
+	if resp.Header.Get("X-Membuss-Name") != "index.html" {
+		t.Errorf("x-name: %q", resp.Header.Get("X-Membuss-Name"))
+	}
+}
+
+func TestGet_DownloadForcesAttachment(t *testing.T) {
+	b := newMemBackend()
+	body := []byte("hello")
+	m := mid.FromBytes(body)
+	b.putWithMeta(m, body, "text/plain; charset=utf-8", "hello.txt", "text/plain")
+
+	srv := httptest.NewServer(newTestGate(t, b).Router())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/mem/" + m.String() + "?download=1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	d := resp.Header.Get("Content-Disposition")
+	if !strings.Contains(d, "attachment") {
+		t.Errorf("disposition should be attachment: %q", d)
+	}
+	if !strings.Contains(d, "hello.txt") {
+		t.Errorf("filename missing: %q", d)
+	}
+}
+
+func TestGet_DirectoryRedirectsToSlash(t *testing.T) {
+	b := newMemBackend()
+	m := mid.FromBytes([]byte("raw-dir-node"))
+	// 🖂 a MemFS website root resolves as a directory.
+	b.putWithMeta(m, []byte("raw-dir-node-bytes"), "inode/directory", "", "inode/directory")
+
+	srv := httptest.NewServer(newTestGate(t, b).Router())
+	defer srv.Close()
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(srv.URL + "/mem/" + m.String())
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("status: %d (want 301 redirect)", resp.StatusCode)
+	}
+	want := "/mem/" + m.String() + "/"
+	if loc := resp.Header.Get("Location"); loc != want {
+		t.Errorf("location: %q want %q", loc, want)
+	}
+}
+
+func TestGet_NoNameFallsBackToExtension(t *testing.T) {
+	b := newMemBackend()
+	// Minimal valid PNG signature so DetectContentType reports image/png.
+	body := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}
+	m := mid.FromBytes(body)
+	b.put(m, body, "image/png") // no uploader-supplied Name
+
+	srv := httptest.NewServer(newTestGate(t, b).Router())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/mem/" + m.String())
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	d := resp.Header.Get("Content-Disposition")
+	if !strings.Contains(d, "inline") {
+		t.Errorf("disposition: %q", d)
+	}
+	if !strings.Contains(d, ".png") {
+		t.Errorf("filename should contain .png: %q", d)
+	}
+}
+
 func TestGet_Format_Raw(t *testing.T) {
 	b := newMemBackend()
 	body := []byte("\x00\x01\x02binary data")
