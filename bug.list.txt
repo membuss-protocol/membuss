@@ -1,0 +1,6 @@
+# bug.list.txt — Known bugs & issues
+# Format: [status] description
+#   status: OPEN | FIXED | WONTFIX
+# Add new bugs at the top. Move FIXED/WONTFIX to bottom.
+
+[OPEN] (none yet)
