@@ -52,3 +52,12 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## bug.list.txt
+
+Track known bugs in `bug.list.txt` at the repo root.
+
+Format: `[STATUS] description` where status is `OPEN`, `FIXED`, or `WONTFIX`.
+
+When fixing a bug from the list, change its status to `FIXED` and append the commit hash.
+When starting work, check the file for `OPEN` items relevant to the task.

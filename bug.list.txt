@@ -1,0 +1,8 @@
+# bug.list.txt — Known bugs & issues
+# Format: [status] description
+#   status: OPEN | FIXED | WONTFIX
+# Add new bugs at the top. Move FIXED/WONTFIX to bottom.
+
+[FIXED] BUG-001: Root URL serves leaked MID content via RefererTracker state
+  Fixed: 2026-07-09 — skip referer resolution for root, remove cookie fallback,
+  scope recentMIDs per client IP. Commit on features branch.

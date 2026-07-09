@@ -1331,49 +1331,7 @@ func TestRefererResolution_Recursive(t *testing.T) {
 	}
 }
 
-func TestRefererResolution_CookieFallback(t *testing.T) {
-	bs, _ := store.NewMemStore(store.Options{InMemory: true})
-	defer bs.Close()
-	builder := memfs.NewBuilder(bs)
-	root, err := builder.AddDirectoryFromFS(fstest.MapFS{
-		"assets/index.js": &fstest.MapFile{Data: []byte("console.log(1)")},
-	}, ".")
-	if err != nil {
-		t.Fatalf("add dir: %v", err)
-	}
 
-	be := &memfsBackend{
-		memBackend: newMemBackend(),
-		resolver:   memfs.NewResolver(bs),
-		bs:         bs,
-	}
-
-	mg := newTestGate(t, be)
-	srv := httptest.NewServer(mg.Handler())
-	defer srv.Close()
-
-	// Request asset with NO referer header, but WITH the active MID cookie
-	req, _ := http.NewRequest("GET", srv.URL+"/assets/index.js", nil)
-	req.AddCookie(&http.Cookie{
-		Name:  "membuss_gateway_mid",
-		Value: root.MID.String(),
-	})
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		t.Fatalf("status: got %d, want 200", resp.StatusCode)
-	}
-
-	got, _ := io.ReadAll(resp.Body)
-	if string(got) != "console.log(1)" {
-		t.Errorf("body mismatch: got %q, want 'console.log(1)'", string(got))
-	}
-}
 
 func TestSPAFallbackToIndexHTML(t *testing.T) {
 	bs, _ := store.NewMemStore(store.Options{InMemory: true})

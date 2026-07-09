@@ -190,14 +190,14 @@ func (m *MemGate) Router() http.Handler { return m.router }
 func (m *MemGate) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		clientIP := getClientIP(r)
 		_, _, isSubdomain := m.resolveSubdomain(r)
 		systemPath := isSystemPath(path)
 
 		// 1. Subdomain routing (skip for system paths)
 		if !systemPath && isSubdomain {
 			if midStr, innerPath, ok := m.resolveSubdomain(r); ok {
-				m.refererTracker.RecordActiveMID(midStr)
-				setMIDCookie(w, midStr)
+				m.refererTracker.RecordActiveMID(clientIP, midStr)
 				root, err := mid.Parse(midStr)
 				if err == nil {
 					info, err := m.cfg.Backend.MemFSInfo(r.Context(), root)
@@ -221,8 +221,7 @@ func (m *MemGate) Handler() http.Handler {
 			parts := strings.Split(trimmed, "/")
 			if len(parts) > 0 && parts[0] != "" {
 				if _, err := mid.Parse(parts[0]); err == nil {
-					m.refererTracker.RecordActiveMID(parts[0])
-					setMIDCookie(w, parts[0])
+					m.refererTracker.RecordActiveMID(clientIP, parts[0])
 				}
 			}
 		} else if strings.HasPrefix(path, "/memns/") {
@@ -236,15 +235,16 @@ func (m *MemGate) Handler() http.Handler {
 						if strings.HasPrefix(midStr, "/mem/") {
 							midStr = midStr[5:]
 						}
-						m.refererTracker.RecordActiveMID(midStr)
-						setMIDCookie(w, midStr)
+						m.refererTracker.RecordActiveMID(clientIP, midStr)
 					}
 				}
 			}
 		}
 
-		// 2. Referer-based path resolution for absolute assets on path-based gateways
-		if !systemPath {
+		// 2. Referer-based path resolution for absolute assets on path-based gateways.
+		//    Skip for root "/" — it must always reach the router so that
+		//    customDomainMiddleware can resolve the hostname properly.
+		if !systemPath && path != "/" {
 			if midStr, innerPath, ok := m.refererTracker.Resolve(r, m.cfg.Backend, m.cfg.MemNSResolver); ok {
 				m.serveMemFSPath(w, r, midStr, innerPath)
 				return
@@ -255,17 +255,7 @@ func (m *MemGate) Handler() http.Handler {
 	})
 }
 
-// setMIDCookie sets a cookie with the active MID to assist in path-based asset resolution.
-func setMIDCookie(w http.ResponseWriter, midStr string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "membuss_gateway_mid",
-		Value:    midStr,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   3600 * 24, // 1 day
-	})
-}
+
 
 // isSystemPath evaluates if a path is a dynamic node control route.
 func isSystemPath(path string) bool {

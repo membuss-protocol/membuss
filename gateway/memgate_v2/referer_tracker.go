@@ -17,11 +17,11 @@ type MemNSResolver interface {
 }
 
 // RefererTracker maps absolute asset request paths to their corresponding MIDs
-// dynamically using the Referer chain, active MIDs list, and cookies.
+// dynamically using the Referer chain, active MIDs list, and per-client state.
 type RefererTracker struct {
 	mu           sync.RWMutex
-	pathMIDs     map[string]string // Key: clientIP + ":" + path, Value: midStr
-	recentMIDs   []string          // MRU list of recently active MIDs
+	pathMIDs     map[string]string    // Key: clientIP + ":" + path, Value: midStr
+	recentMIDs   map[string][]string  // Key: clientIP, Value: MRU list of recently active MIDs
 	maxCacheSize int
 }
 
@@ -29,31 +29,34 @@ type RefererTracker struct {
 func NewRefererTracker() *RefererTracker {
 	return &RefererTracker{
 		pathMIDs:     make(map[string]string),
-		recentMIDs:   make([]string, 0, 20),
+		recentMIDs:   make(map[string][]string),
 		maxCacheSize: 2000,
 	}
 }
 
-// RecordActiveMID registers a MID in the recently active list.
-func (rt *RefererTracker) RecordActiveMID(midStr string) {
-	if midStr == "" {
+// RecordActiveMID registers a MID in the recently active list for a client IP.
+func (rt *RefererTracker) RecordActiveMID(clientIP, midStr string) {
+	if midStr == "" || clientIP == "" {
 		return
 	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
+	list := rt.recentMIDs[clientIP]
+
 	// Move to front if already exists
-	for i, m := range rt.recentMIDs {
+	for i, m := range list {
 		if m == midStr {
-			rt.recentMIDs = append(rt.recentMIDs[:i], rt.recentMIDs[i+1:]...)
+			list = append(list[:i], list[i+1:]...)
 			break
 		}
 	}
 
-	rt.recentMIDs = append([]string{midStr}, rt.recentMIDs...)
-	if len(rt.recentMIDs) > 20 {
-		rt.recentMIDs = rt.recentMIDs[:20]
+	list = append([]string{midStr}, list...)
+	if len(list) > 20 {
+		list = list[:20]
 	}
+	rt.recentMIDs[clientIP] = list
 }
 
 // RecordMapping stores the association of a request path to a MID for a client IP.
@@ -85,12 +88,13 @@ func (rt *RefererTracker) getMapping(clientIP, path string) (string, bool) {
 	return val, ok
 }
 
-// getRecentMIDs returns recently active MIDs.
-func (rt *RefererTracker) getRecentMIDs() []string {
+// getRecentMIDs returns recently active MIDs for a client IP.
+func (rt *RefererTracker) getRecentMIDs(clientIP string) []string {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
-	out := make([]string, len(rt.recentMIDs))
-	copy(out, rt.recentMIDs)
+	list := rt.recentMIDs[clientIP]
+	out := make([]string, len(list))
+	copy(out, list)
 	return out
 }
 
@@ -123,7 +127,7 @@ func (rt *RefererTracker) Resolve(r *http.Request, backend Backend, nsResolver M
 		parts := strings.Split(trimmed, "/")
 		if len(parts) > 0 && parts[0] != "" {
 			if _, err := mid.Parse(parts[0]); err == nil {
-				rt.RecordActiveMID(parts[0])
+				rt.RecordActiveMID(clientIP, parts[0])
 				return parts[0], strings.Join(parts[1:], "/"), true
 			}
 		}
@@ -175,13 +179,13 @@ func (rt *RefererTracker) Resolve(r *http.Request, backend Backend, nsResolver M
 	if candidateMID != "" {
 		if _, err := mid.Parse(candidateMID); err == nil {
 			rt.RecordMapping(clientIP, reqPath, candidateMID)
-			rt.RecordActiveMID(candidateMID)
+			rt.RecordActiveMID(clientIP, candidateMID)
 			return candidateMID, trimmedInnerPath, true
 		}
 	}
 
-	// Fallback 1: check recently active MIDs
-	recent := rt.getRecentMIDs()
+	// Fallback 1: check recently active MIDs for this client
+	recent := rt.getRecentMIDs(clientIP)
 	for _, activeMID := range recent {
 		if activeMID == candidateMID {
 			continue // Already checked
@@ -190,20 +194,6 @@ func (rt *RefererTracker) Resolve(r *http.Request, backend Backend, nsResolver M
 			if _, err := backend.MemFSPathInfo(r.Context(), root, trimmedInnerPath); err == nil {
 				rt.RecordMapping(clientIP, reqPath, activeMID)
 				return activeMID, trimmedInnerPath, true
-			}
-		}
-	}
-
-	// Fallback 2: check Cookie
-	if cookie, err := r.Cookie("membuss_gateway_mid"); err == nil && cookie.Value != "" {
-		cookieMID := cookie.Value
-		if cookieMID != candidateMID {
-			if root, err := mid.Parse(cookieMID); err == nil {
-				if _, err := backend.MemFSPathInfo(r.Context(), root, trimmedInnerPath); err == nil {
-					rt.RecordMapping(clientIP, reqPath, cookieMID)
-					rt.RecordActiveMID(cookieMID)
-					return cookieMID, trimmedInnerPath, true
-				}
 			}
 		}
 	}
