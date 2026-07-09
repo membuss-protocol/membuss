@@ -21,7 +21,8 @@ import {
   CheckForUpdate,
   UpgradeBinaries,
   IsNodeRunningSystemWide,
-  ForceKillNode
+  ForceKillNode,
+  DownloadContent
 } from '../wailsjs/go/main/App';
 
 import * as wailsRuntime from '../wailsjs/runtime/runtime';
@@ -41,7 +42,8 @@ let appState = {
   explorerOnline: false,
   nodeLogs: [],
   selectedDataPath: '',
-  latestReleaseChecked: false
+  latestReleaseChecked: false,
+  updateInfo: null
 };
 
 let logsPollerId = null;
@@ -539,7 +541,10 @@ function renderDashboardTab(container, headerActions) {
     <button class="btn ${isRunning ? 'btn-secondary' : ''}" id="btn-toggle-node" style="padding: 8px 16px;">
       ${isRunning ? '🔴 Stop Node' : '🟢 Start Node'}
     </button>
+    <button class="btn btn-secondary" id="btn-check-updates" style="padding: 8px 16px; margin-left: 8px;">🔄 Check Updates</button>
   `;
+
+  document.getElementById('btn-check-updates').addEventListener('click', () => checkForUpdatesManual());
 
   document.getElementById('btn-toggle-node').addEventListener('click', async () => {
     const btn = document.getElementById('btn-toggle-node');
@@ -590,7 +595,27 @@ function renderDashboardTab(container, headerActions) {
   }
   const addrsCount = addrs.length;
 
+  // Update-available banner (manual check or startup check)
+  const updateInfo = appState.updateInfo;
+  let updateBanner = '';
+  if (updateInfo && updateInfo.has_update) {
+    updateBanner = `
+      <div class="stat-card" style="grid-column: 1 / -1; border-color: var(--primary); background: var(--bg-surface);">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
+          <div>
+            <span class="stat-label">Update Available</span>
+            <div style="font-size: 13px; color: var(--text-main); margin-top: 4px;">
+              Version <strong>${updateInfo.latest_version}</strong> is available (you have ${updateInfo.current_version}).
+            </div>
+          </div>
+          <button class="btn" id="btn-update-now" style="white-space: nowrap;">Update Now</button>
+        </div>
+      </div>
+    `;
+  }
+
   container.innerHTML = `
+    ${updateBanner}
     <div class="grid-3">
       <div class="stat-card">
         <span class="stat-label">Process Engine</span>
@@ -640,6 +665,11 @@ function renderDashboardTab(container, headerActions) {
       <span class="stat-value-mono">${appState.config.data_dir}</span>
     </div>
   `;
+
+  const updateNowBtn = document.getElementById('btn-update-now');
+  if (updateNowBtn) {
+    updateNowBtn.addEventListener('click', () => startManualUpdate());
+  }
 }
 
 // --- Tab 2: Explorer --
@@ -651,9 +681,16 @@ async function renderExplorerTab(container) {
   if (online) {
     container.innerHTML = `
       <div class="explorer-container">
+        <div class="download-toolbar" style="display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+          <input id="download-url" class="form-input form-input-mono" style="flex: 1; min-width: 220px;" placeholder="Paste MID, e.g. mem1..." value="http://${appState.config.gateway_addr}/mem/" />
+          <button class="btn btn-secondary" id="btn-pick-dir" style="padding: 8px 14px; white-space: nowrap;">Choose Folder</button>
+          <button class="btn" id="btn-download-to" style="padding: 8px 14px; white-space: nowrap;">⬇ Download to Folder</button>
+          <span id="download-status" style="font-size: 12px; color: var(--text-muted); width: 100%;"></span>
+        </div>
         <iframe src="http://${appState.config.gateway_addr}/explorer/" class="explorer-iframe"></iframe>
       </div>
     `;
+    wireDownloadToolbar();
   } else {
     container.innerHTML = `
       <div class="explorer-offline">
@@ -668,6 +705,57 @@ async function renderExplorerTab(container) {
     `;
     document.getElementById('btn-retry-explorer').addEventListener('click', () => switchTab('explorer'));
   }
+}
+
+// Wires the "Download to Folder" toolbar in the Explorer tab.
+function wireDownloadToolbar() {
+  const urlInput = document.getElementById('download-url');
+  const status = document.getElementById('download-status');
+  const pickBtn = document.getElementById('btn-pick-dir');
+  const dlBtn = document.getElementById('btn-download-to');
+
+  let chosenDir = '';
+
+  pickBtn.addEventListener('click', async () => {
+    try {
+      const dir = await SelectDirectory();
+      if (dir) {
+        chosenDir = dir;
+        status.style.color = 'var(--success)';
+        status.innerText = 'Destination: ' + dir;
+      }
+    } catch (err) {
+      status.style.color = 'var(--error)';
+      status.innerText = 'Folder selection cancelled.';
+    }
+  });
+
+  dlBtn.addEventListener('click', async () => {
+    const target = urlInput.value.trim();
+    if (!target) {
+      status.style.color = 'var(--error)';
+      status.innerText = 'Enter a MID or gateway URL first.';
+      return;
+    }
+    if (!chosenDir) {
+      status.style.color = 'var(--warning)';
+      status.innerText = 'Choose a destination folder first.';
+      return;
+    }
+    dlBtn.disabled = true;
+    status.style.color = 'var(--text-muted)';
+    status.innerText = 'Downloading...';
+    try {
+      const saved = await DownloadContent(target, chosenDir);
+      status.style.color = 'var(--success)';
+      status.innerText = 'Saved to ' + saved;
+    } catch (err) {
+      status.style.color = 'var(--error)';
+      status.innerText = 'Download failed: ' + (err.message || err);
+    } finally {
+      dlBtn.disabled = false;
+    }
+  });
 }
 
 // --- Tab 3: Config Settings (Raw YAML Editor) ---
@@ -1017,11 +1105,61 @@ function showCustomConfirm(title, message) {
   });
 }
 
+// Manual "Check for Updates" button handler.
+async function checkForUpdatesManual() {
+  try {
+    logMessage("Checking for updates (manual)...");
+    const res = await CheckForUpdate();
+    appState.updateInfo = res;
+    if (res && res.has_update) {
+      logMessage(`Update available: ${res.latest_version} (current: ${res.current_version})`);
+    } else {
+      logMessage("Membuss is up to date.");
+      const cur = res ? res.current_version : 'unknown';
+      await showCustomAlert("Up to Date", `You are running the latest version (${cur}).`, "success");
+    }
+    // Re-render dashboard to reflect the banner if we're on it.
+    if (appState.activeTab === 'dashboard') {
+      const body = document.getElementById('panel-body');
+      const headerActions = document.getElementById('header-actions');
+      if (body) renderDashboardTab(body, headerActions);
+    }
+  } catch (err) {
+    console.error("Manual update check failed:", err);
+    await showCustomAlert("Update Check Failed", "Failed to check for updates: " + (err.message || err), "error");
+  }
+}
+
+// Begin a manual update. Before installing, ensure the node daemon is
+// not running (open files would block the binary replacement); if it is,
+// ask the user to disable it first.
+async function startManualUpdate() {
+  const isRunning = await IsNodeRunningSystemWide();
+  if (isRunning) {
+    const ok = await showCustomConfirm(
+      "Node Running",
+      "The node daemon is currently running. Please disable (stop) the node before installing the update, otherwise its binary files may be locked.\n\nStop the node now and continue with the update?"
+    );
+    if (!ok) return;
+    logMessage("Stopping node before update...");
+    await StopNode();
+    // Give the OS a moment to release the locked binary handles.
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  renderUpgradeModal();
+}
+
 // Asynchronously check for updates on startup
 async function triggerUpdateCheck() {
   try {
     logMessage("Checking GitHub releases for updates...");
     const updateResult = await CheckForUpdate();
+    appState.updateInfo = updateResult;
+    if (appState.activeTab === 'dashboard') {
+      const body = document.getElementById('panel-body');
+      const headerActions = document.getElementById('header-actions');
+      if (body) renderDashboardTab(body, headerActions);
+    }
     if (updateResult && updateResult.has_update) {
       logMessage(`New version available: ${updateResult.latest_version} (current: ${updateResult.current_version})`);
       
@@ -1128,9 +1266,10 @@ function renderUpgradeModal() {
       wailsRuntime.EventsOff('upgrade_progress');
       if (percentLabel) percentLabel.style.color = "var(--success)";
       
-      setTimeout(async () => {
-        modal.remove();
-        await showCustomAlert("Upgrade Complete", "Membuss binaries have been upgraded successfully. Starting the node...", "success");
+        setTimeout(async () => {
+          modal.remove();
+          appState.updateInfo = null; // 🖂 stale after upgrade; drop banner
+          await showCustomAlert("Upgrade Complete", "Membuss binaries have been upgraded successfully. Starting the node...", "success");
         
         try {
           // Refresh local configuration
