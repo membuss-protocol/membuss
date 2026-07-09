@@ -414,20 +414,18 @@ func (e *Explorer) serveIndexHTML(w http.ResponseWriter) {
 	}
 	// 🖖 Inject link-interceptor so that when the explorer is loaded inside
 	// the desktop app's iframe, all link clicks are forwarded to the parent
-	// window which opens them in the system browser.
+	// window which opens them in the system browser. When loaded directly
+	// in a normal browser, links behave normally (no interception).
 	inject := []byte(`<script>
 (function(){
+  if(!(window.parent&&window.parent!==window))return;
   document.addEventListener('click',function(ev){
     var a=ev.target.closest('a[href]');
     if(!a)return;
     var h=a.href;
     if(!h||h.startsWith('javascript:'))return;
     ev.preventDefault();
-    if(window.parent&&window.parent!==window){
-      window.parent.postMessage({type:'open-external',url:h},'*');
-    }else{
-      window.open(h,'_blank');
-    }
+    window.parent.postMessage({type:'open-external',url:h},'*');
   });
 })();
 </script></head>`)
