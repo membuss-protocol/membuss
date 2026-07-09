@@ -9,6 +9,7 @@
 package explorer
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -411,6 +412,26 @@ func (e *Explorer) serveIndexHTML(w http.ResponseWriter) {
 		http.Error(w, "SPA index.html not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
+	// 🖖 Inject link-interceptor so that when the explorer is loaded inside
+	// the desktop app's iframe, all link clicks are forwarded to the parent
+	// window which opens them in the system browser.
+	inject := []byte(`<script>
+(function(){
+  document.addEventListener('click',function(ev){
+    var a=ev.target.closest('a[href]');
+    if(!a)return;
+    var h=a.href;
+    if(!h||h.startsWith('javascript:'))return;
+    ev.preventDefault();
+    if(window.parent&&window.parent!==window){
+      window.parent.postMessage({type:'open-external',url:h},'*');
+    }else{
+      window.open(h,'_blank');
+    }
+  });
+})();
+</script></head>`)
+	data = bytes.Replace(data, []byte("</head>"), inject, 1)
 	_, _ = w.Write(data)
 }
 

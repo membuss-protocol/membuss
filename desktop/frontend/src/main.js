@@ -52,6 +52,25 @@ let logsPollerId = null;
 async function init() {
   renderLoadingScreen();
 
+  // 🖖 Open all external links in system browser, never inside the webview.
+  document.addEventListener('click', (ev) => {
+    const a = ev.target.closest('a[href]');
+    if (!a) return;
+    const href = a.href;
+    if (!href || href.startsWith('javascript:')) return;
+    // Let the explorer iframe handle its own internal navigation via postMessage.
+    if (a.closest('.explorer-iframe')) return;
+    ev.preventDefault();
+    wailsRuntime.BrowserOpenURL(href);
+  });
+
+  // 🖖 Listen for link-click messages from the explorer iframe.
+  window.addEventListener('message', (ev) => {
+    if (ev.data && ev.data.type === 'open-external' && ev.data.url) {
+      wailsRuntime.BrowserOpenURL(ev.data.url);
+    }
+  });
+
   try {
     // Load config from Go backend
     appState.config = await GetConfig();
@@ -687,7 +706,7 @@ async function renderExplorerTab(container) {
           <button class="btn" id="btn-download-to" style="padding: 8px 14px; white-space: nowrap;">⬇ Download to Folder</button>
           <span id="download-status" style="font-size: 12px; color: var(--text-muted); width: 100%;"></span>
         </div>
-        <iframe src="http://${appState.config.gateway_addr}/explorer/" class="explorer-iframe"></iframe>
+        <iframe src="http://${appState.config.gateway_addr}/explorer/" class="explorer-iframe" allow="clipboard-read; clipboard-write; fullscreen" referrerpolicy="no-referrer"></iframe>
       </div>
     `;
     wireDownloadToolbar();
