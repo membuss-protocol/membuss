@@ -21,7 +21,6 @@
 // each other without manual peer-ID wiring.
 package main
 
-
 import (
 	"context"
 	cryptoTLS "crypto/tls"
@@ -61,10 +60,10 @@ import (
 	"github.com/nnlgsakib/membuss/net/host"
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	"github.com/nnlgsakib/membuss/net/pex"
+	"github.com/nnlgsakib/membuss/net/tunnel"
 	"github.com/nnlgsakib/membuss/obs/logging"
 	"github.com/nnlgsakib/membuss/obs/metrics"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
-	"github.com/nnlgsakib/membuss/net/tunnel"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -165,13 +164,19 @@ func main() {
 		logger.Warn("MIDVersion=legacy: new content will be emitted in the pre-Phase-14 base58 form")
 	}
 
-	// Pre-parse bootstrap peers so the host can use them
-	// as AutoRelay static candidates.
+	// Bootstrap nodes seed the DHT. Relay nodes are a separate role and feed
+	// AutoRelay; dynamic relay advertisements supplement the configured set.
 	bootstrapPeers, err := parsePeers(cfg.BootstrapPeers)
 	if err != nil {
 		logger.Error("parse bootstrap peers", "err", err.Error())
 		os.Exit(1)
 	}
+	relayPeers, err := parsePeers(cfg.RelayPeers)
+	if err != nil {
+		logger.Error("parse relay peers", "err", err.Error())
+		os.Exit(1)
+	}
+	relaySource := host.NewRelayPeerSource(relayPeers)
 
 	// 2) libp2p host.
 	// Phase 17: when mDNS discovers a peer, also feed it
@@ -195,19 +200,18 @@ func main() {
 		if pi.ID == "" {
 			return
 		}
-		logger.Info("mDNS peer discovered", "peer_id", pi.ID.String(), "addrs", pi.Addrs)
 		dhtBootstrapMu.Lock()
-		defer dhtBootstrapMu.Unlock()
 		if _, ok := dhtSeen[pi.ID]; ok {
+			dhtBootstrapMu.Unlock()
 			return
 		}
 		dhtSeen[pi.ID] = struct{}{}
 		dhtBootstrap = append(dhtBootstrap, pi)
+		dhtBootstrapMu.Unlock()
+		logger.Info("mDNS peer discovered", "peer_id", pi.ID.String(), "addrs", pi.Addrs)
 		// dhtPtr gets set after mdht is built (see below).
-		// Calls that happen before then are silently
-		// dropped from the bootstrap, which is fine - mDNS
-		// will re-announce within seconds and the peer
-		// will be re-discovered.
+		// Calls that happen before then are replayed once DHT construction
+		// completes. Never hold dhtBootstrapMu across network operations.
 		if v := dhtPtr.Load(); v != nil {
 			if mdht, ok := v.(*dht.MemDHT); ok && mdht != nil {
 				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -225,13 +229,13 @@ func main() {
 	}
 
 	hostCfg := host.Config{
-		ListenAddrs:        cfg.ListenAddrs,
-		AnnounceAddrs:      cfg.AnnounceAddrs,
-		DataDir:            cfg.DataDir,
-		UserAgent:          "membuss/" + *build,
-		StaticRelays:       bootstrapPeers,
-		MDNS:               cfg.EnableMDNS || os.Getenv("MEMBUSS_MDNS") == "true",
-		OnPeerFound:        addToBootstrap,
+		ListenAddrs:     cfg.ListenAddrs,
+		AnnounceAddrs:   cfg.AnnounceAddrs,
+		DataDir:         cfg.DataDir,
+		UserAgent:       "membuss/" + *build,
+		RelayPeerSource: relaySource.PeerSource(),
+		MDNS:            cfg.EnableMDNS || os.Getenv("MEMBUSS_MDNS") == "true",
+		OnPeerFound:     addToBootstrap,
 		// --- Phase 11: NAT traversal ---
 		RelayService:         cfg.RelayService,
 		RelayMaxConns:        cfg.RelayMaxConns,
@@ -246,17 +250,6 @@ func main() {
 	}
 	fmt.Fprintf(os.Stdout, "  peer_id:        %s\n", h.ID())
 	fmt.Fprintf(os.Stdout, "  listen_addrs:   %v\n", h.Addrs())
-	// Phase 11: wait for AutoNAT to resolve reachability.
-	wait := time.Duration(cfg.NATWaitSeconds) * time.Second
-	natStatus, natErr := h.WaitForNAT(ctx, wait)
-	if natErr != nil && !errors.Is(natErr, context.DeadlineExceeded) {
-		logger.Warn("nat wait", "err", natErr.Error())
-	}
-	fmt.Fprintf(os.Stdout, "  nat_status:     %s\n", natStatus)
-	if natStatus == "private" {
-		logger.Info("node is behind a NAT; relay addresses will be advertised")
-	}
-
 	// 3) DHT.
 	// Phase 17: provider records propagate cross-node only
 	// when (a) the DHT is willing to act as a server, (b)
@@ -287,14 +280,42 @@ func main() {
 		logger.Error("dht", "err", err.Error())
 		os.Exit(1)
 	}
+	relaySource.SetFinder(mdht.FindRelays)
 	if err := mdht.Bootstrap(ctx, bootstrapPeers); err != nil {
 		logger.Warn("dht bootstrap", "err", err.Error())
+	}
+	if len(bootstrapPeers) > 0 {
+		go func() {
+			successes, retryErr := mdht.BootstrapWithBackoff(ctx, bootstrapPeers, dht.BootstrapConfig{
+				Initial:     cfg.BootstrapBackoff.Initial,
+				Max:         cfg.BootstrapBackoff.Max,
+				Factor:      cfg.BootstrapBackoff.Factor,
+				MaxAttempts: cfg.BootstrapBackoff.MaxAttempts,
+				Logger:      logger,
+			})
+			if retryErr != nil && ctx.Err() == nil {
+				logger.Warn("dht bootstrap retries exhausted", "connected", successes, "err", retryErr.Error())
+			}
+		}()
 	}
 	logger.Info("dht ready",
 		"mode", cfg.DHTMode,
 		"optimistic_provide", cfg.DHTOptimisticProvide,
 		"bootstrap_peers", len(bootstrapPeers),
 	)
+
+	// AutoNAT needs independently reachable peers to probe this host. Waiting
+	// before bootstrap guaranteed an Unknown result; observe it only after the
+	// first connectivity attempt, while the event subscription remains live.
+	wait := time.Duration(cfg.NATWaitSeconds) * time.Second
+	natStatus, natErr := h.WaitForNAT(ctx, wait)
+	if natErr != nil && !errors.Is(natErr, context.DeadlineExceeded) {
+		logger.Warn("nat wait", "err", natErr.Error())
+	}
+	fmt.Fprintf(os.Stdout, "  nat_status:     %s\n", natStatus)
+	if natStatus == "private" {
+		logger.Info("node is behind a NAT; relay addresses will be advertised")
+	}
 	// Phase 17: now that the DHT exists, register it with
 	// the mDNS peer-found callback and replay any peers
 	// that were discovered while the DHT was still being
@@ -655,10 +676,12 @@ func banner(cfg *config.Config, cfgPath string, inMemory, noAnchor bool) {
 			"  in_memory:        %t\n"+
 			"  no_anchor:        %t\n"+
 			"  bootstrap_peers:  %d\n"+
+			"  relay_peers:      %d\n"+
 			"  http_cfg_addrs:   gateway=%s api=%s\n"+
 			"  reprovide:        %s\n",
 		cfgPath, cfg.DataDir, inMemory, noAnchor,
 		len(cfg.BootstrapPeers),
+		len(cfg.RelayPeers),
 		cfg.GatewayAddr, cfg.APIAddr,
 		cfg.ReprovideInterval,
 	)
@@ -743,12 +766,34 @@ func parsePeers(raw []string) ([]peer.AddrInfo, error) {
 		return nil, nil
 	}
 	out := make([]peer.AddrInfo, 0, len(raw))
+	byID := make(map[peer.ID]int, len(raw))
+	seenAddrs := make(map[peer.ID]map[string]struct{}, len(raw))
 	for _, s := range raw {
 		ai, err := parsePeer(s)
 		if err != nil {
 			return nil, fmt.Errorf("parse peer %q: %w", s, err)
 		}
-		out = append(out, ai)
+		if ai.ID == "" {
+			return nil, fmt.Errorf("parse peer %q: multiaddr is missing /p2p/<peer-id>", s)
+		}
+		if len(ai.Addrs) == 0 {
+			return nil, fmt.Errorf("parse peer %q: peer ID has no dial address", s)
+		}
+		idx, ok := byID[ai.ID]
+		if !ok {
+			idx = len(out)
+			byID[ai.ID] = idx
+			out = append(out, peer.AddrInfo{ID: ai.ID})
+			seenAddrs[ai.ID] = make(map[string]struct{}, len(ai.Addrs))
+		}
+		for _, addr := range ai.Addrs {
+			key := string(addr.Bytes())
+			if _, ok := seenAddrs[ai.ID][key]; ok {
+				continue
+			}
+			seenAddrs[ai.ID][key] = struct{}{}
+			out[idx].Addrs = append(out[idx].Addrs, addr)
+		}
 	}
 	return out, nil
 }
@@ -756,7 +801,7 @@ func parsePeers(raw []string) ([]peer.AddrInfo, error) {
 // parsePeer parses a single bootstrap peer string in either of:
 //
 //	/ip4/1.2.3.4/tcp/4001/p2p/<peerID>   (full multiaddr)
-//	<peerID>                              (no addr, skip)
+//	<peerID>                              (parsed for compatibility; rejected by parsePeers)
 func parsePeer(s string) (peer.AddrInfo, error) {
 	if s == "" {
 		return peer.AddrInfo{}, fmt.Errorf("empty peer string")
@@ -865,8 +910,8 @@ func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataD
 		certDir := filepath.Join(dataDir, "certs")
 		_ = os.MkdirAll(certDir, 0700)
 		certManager = &autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			Cache:      autocert.DirCache(certDir),
+			Prompt: autocert.AcceptTOS,
+			Cache:  autocert.DirCache(certDir),
 			HostPolicy: func(ctx context.Context, host string) error {
 				_, err := net.LookupTXT("_memlink." + host)
 				if err != nil {
@@ -1049,7 +1094,7 @@ func ensureGeoIPDatabase(cfg *config.Config, logger *slog.Logger) (string, error
 	}()
 
 	url := "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb"
-	
+
 	// Create client with timeout
 	client := &http.Client{
 		Timeout: 5 * time.Minute,

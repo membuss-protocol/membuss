@@ -13,8 +13,21 @@ import (
 type fakePublisher struct {
 	calls            atomic.Int64
 	err              error
-	routingTableSize int
+	routingTableSize atomic.Int64
 }
+
+type recoveringPublisher struct {
+	calls atomic.Int64
+}
+
+func (p *recoveringPublisher) PublishAsRelay(context.Context) error {
+	if p.calls.Add(1) == 1 {
+		return errors.New("relay service not active")
+	}
+	return nil
+}
+
+func (*recoveringPublisher) RoutingTableSize() int { return 1 }
 
 func (f *fakePublisher) PublishAsRelay(_ context.Context) error {
 	f.calls.Add(1)
@@ -22,13 +35,14 @@ func (f *fakePublisher) PublishAsRelay(_ context.Context) error {
 }
 
 func (f *fakePublisher) RoutingTableSize() int {
-	if f.routingTableSize == -1 {
+	size := f.routingTableSize.Load()
+	if size == -1 {
 		return 0
 	}
-	if f.routingTableSize == 0 {
+	if size == 0 {
 		return 1 // default to 1 so tests run immediately
 	}
-	return f.routingTableSize
+	return int(size)
 }
 
 // TestNewRelayAnnouncer_NilDHT confirms the constructor
@@ -53,6 +67,16 @@ func TestNewRelayAnnouncer_AppliesDefaults(t *testing.T) {
 	}
 	if r.Now == nil {
 		t.Fatal("Now not defaulted")
+	}
+}
+
+func TestNewRelayAnnouncer_CapsIntervalAtProviderTTL(t *testing.T) {
+	r, err := NewRelayAnnouncer(RelayAnnouncer{DHT: &fakePublisher{}, Interval: 12 * time.Hour})
+	if err != nil {
+		t.Fatalf("NewRelayAnnouncer: %v", err)
+	}
+	if r.Interval != MaxRelayAdvertisementInterval {
+		t.Fatalf("Interval = %s, want %s", r.Interval, MaxRelayAdvertisementInterval)
 	}
 }
 
@@ -132,9 +156,8 @@ func TestRelayAnnouncer_PropagatesError(t *testing.T) {
 // TestRelayAnnouncer_Start_DelayedRoutingTable asserts that Start does not
 // announce until the routing table has at least 1 peer.
 func TestRelayAnnouncer_Start_DelayedRoutingTable(t *testing.T) {
-	pub := &fakePublisher{
-		routingTableSize: -1, // initially empty (returns 0)
-	}
+	pub := &fakePublisher{}
+	pub.routingTableSize.Store(-1) // initially empty (returns 0)
 	r, err := NewRelayAnnouncer(RelayAnnouncer{
 		DHT:               pub,
 		Interval:          10 * time.Second,
@@ -155,7 +178,7 @@ func TestRelayAnnouncer_Start_DelayedRoutingTable(t *testing.T) {
 	}
 
 	// Now populate the routing table
-	pub.routingTableSize = 1
+	pub.routingTableSize.Store(1)
 
 	// Wait and check that the announce was made
 	deadline := time.Now().Add(200 * time.Millisecond)
@@ -169,4 +192,52 @@ func TestRelayAnnouncer_Start_DelayedRoutingTable(t *testing.T) {
 	if got := pub.calls.Load(); got < 1 {
 		t.Fatalf("expected call to be made after routing table populated, got %d", got)
 	}
+}
+
+func TestRelayAnnouncer_StartIsIdempotent(t *testing.T) {
+	pub := &fakePublisher{}
+	r, err := NewRelayAnnouncer(RelayAnnouncer{
+		DHT:               pub,
+		Interval:          time.Hour,
+		BootCheckInterval: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayAnnouncer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.Start(ctx)
+	r.Start(ctx)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && pub.calls.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := pub.calls.Load(); got != 1 {
+		t.Fatalf("initial advertisements = %d, want 1", got)
+	}
+}
+
+func TestRelayAnnouncer_RetriesInitialAdvertisement(t *testing.T) {
+	pub := &recoveringPublisher{}
+	r, err := NewRelayAnnouncer(RelayAnnouncer{
+		DHT:               pub,
+		Interval:          time.Hour,
+		BootCheckInterval: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayAnnouncer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	r.Start(ctx)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if pub.calls.Load() >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("initial advertisement attempts = %d, want at least 2", pub.calls.Load())
 }

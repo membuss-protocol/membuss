@@ -21,6 +21,16 @@ listen_addrs:
 bootstrap_peers:
   - /ip4/45.10.162.79/udp/4001/quic-v1/p2p/12D3KooWMNbuDSWaMw7evxzsp9CtaphofzxcEbHisWQQUmg7zfUx
 
+# Dedicated Circuit Relay v2 peers. Dynamic DHT discovery supplements these.
+relay_peers: []
+
+# Additional externally dialable addresses, if this container is behind a
+# static port-forward or public load balancer.
+announce_addrs: []
+
+# Keep multicast discovery off on public container networks.
+enable_mdns: false
+
 # BadgerDB + bloom snapshot live here. The container image declares
 # /var/lib/membuss as a VOLUME so a named volume (membuss-data) or
 # a host bind-mount can be attached.

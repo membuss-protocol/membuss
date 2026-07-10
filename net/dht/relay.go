@@ -1,53 +1,38 @@
-﻿// Phase 11: relay discovery via the Membuss DHT.
+// Phase 11: relay discovery via the Membuss DHT.
 //
-// A node that runs Config.RelayService=true advertises itself
-// under RelaysKey in the Membuss DHT. Other nodes can call
-// FindRelays to get a deduplicated list of candidate relays
-// to feed into the AutoRelay subsystem.
-//
-// The stored value is a JSON-encoded []peer.AddrInfo. The kad-dht
-// "membuss" permissive validator accepts the bytes as-is.
+// A node that runs Config.RelayService=true advertises itself as a provider
+// for RelaysKey. Provider records are independent per peer, so multiple relay
+// operators can advertise concurrently without overwriting one shared value.
 package dht
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
-	"time"
 
+	"github.com/libp2p/go-libp2p/core/discovery"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	routingdiscovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	circuitproto "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/proto"
 )
 
-// RelaysKey is the DHT key under which the local node publishes
-// itself as a relay when Config.RelayService=true. The /v1
-// suffix lets us rev the encoding without breaking existing
-// clients.
+// RelaysKey is the routing-discovery namespace under which relay providers
+// advertise. Its value is stable because changing it partitions discovery.
 const RelaysKey = "/membuss/relays/v1"
+
+// ErrRelayServiceUnavailable means the local hop service has not started.
+// go-libp2p starts it only after the node is known to be publicly reachable.
+var ErrRelayServiceUnavailable = errors.New("dht: circuit relay service is not active")
 
 // anchorsKey is the existing anchor key from Phase 6. Re-
 // declared here for symmetry with the relay helpers so callers
 // do not need to import the anchor package.
 const anchorsKey = "/membuss/anchors/v1"
 
-// relayRecord is the JSON layout stored under RelaysKey.
-//
-// It is a small envelope: a version byte plus a list of
-// peer.AddrInfo. Wrapping the addresses in a struct (instead
-// of a bare JSON array) lets us rev the format later without
-// breaking the validator path.
-type relayRecord struct {
-	Version uint          `json:"v"`
-	Peers   []peer.AddrInfo `json:"peers"`
-}
-
-// PublishAsRelay writes the local node's AddrInfo under
-// RelaysKey in the DHT. It is a no-op for in-process test
-// hosts that have no listen addrs. Callers should rate-limit
-// the call; the herald's relay announcer does so at one
-// publish per ReprovideInterval.
+// PublishAsRelay creates or refreshes this node's provider record for the relay
+// namespace. Routing discovery caps the returned advertisement TTL at three
+// hours, so callers should refresh at least that often.
 func (m *MemDHT) PublishAsRelay(ctx context.Context) error {
 	if m == nil || m.dht == nil {
 		return errors.New("dht: nil")
@@ -63,15 +48,18 @@ func (m *MemDHT) PublishAsRelay(ctx context.Context) error {
 		// an error.
 		return nil
 	}
-	rec := relayRecord{
-		Version: 1,
-		Peers:   []peer.AddrInfo{{ID: h.ID(), Addrs: addrs}},
+	active := false
+	for _, id := range h.Mux().Protocols() {
+		if id == circuitproto.ProtoIDv2Hop {
+			active = true
+			break
+		}
 	}
-	buf, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("dht: marshal relay record: %w", err)
+	if !active {
+		return ErrRelayServiceUnavailable
 	}
-	return m.dht.PutValue(ctx, RelaysKey, buf)
+	_, err := routingdiscovery.NewRoutingDiscovery(m.dht).Advertise(ctx, RelaysKey)
+	return err
 }
 
 // FindRelays queries the DHT for the relay list and returns a
@@ -86,26 +74,21 @@ func (m *MemDHT) FindRelays(ctx context.Context, max int) ([]peer.AddrInfo, erro
 	if max <= 0 {
 		max = 32
 	}
-	buf, err := m.dht.GetValue(ctx, RelaysKey)
+	findCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	peers, err := routingdiscovery.NewRoutingDiscovery(m.dht).FindPeers(
+		findCtx,
+		RelaysKey,
+		discovery.Limit(max+1), // allow room to discard our own provider record
+	)
 	if err != nil {
-		// "no peers" / "not found" is the common case on
-		// a fresh testnet; return an empty slice rather
-		// than an error so the caller can fall back to
-		// the static config list.
-		return nil, nil
-	}
-	var rec relayRecord
-	if err := json.Unmarshal(buf, &rec); err != nil {
-		return nil, fmt.Errorf("dht: decode relay record: %w", err)
-	}
-	if len(rec.Peers) == 0 {
-		return nil, nil
+		return nil, err
 	}
 	// Dedupe by peer.ID and sort for deterministic output.
-	seen := make(map[peer.ID]struct{}, len(rec.Peers))
-	out := make([]peer.AddrInfo, 0, len(rec.Peers))
-	for _, p := range rec.Peers {
-		if p.ID == "" {
+	seen := make(map[peer.ID]struct{}, max)
+	out := make([]peer.AddrInfo, 0, max)
+	for p := range peers {
+		if p.ID == "" || p.ID == m.dht.PeerID() || len(p.Addrs) == 0 {
 			continue
 		}
 		if _, ok := seen[p.ID]; ok {
@@ -116,6 +99,9 @@ func (m *MemDHT) FindRelays(ctx context.Context, max int) ([]peer.AddrInfo, erro
 		if len(out) >= max {
 			break
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -131,8 +117,3 @@ func AddrInfoFromHost(h host.Host) peer.AddrInfo {
 	}
 	return peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()}
 }
-
-// quiet time import (testing the periodic republish cadence
-// uses time-based scheduling in the herald, not here, but
-// keep the import visible for future expansion).
-var _ = time.Second

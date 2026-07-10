@@ -66,7 +66,7 @@ func TestParsePeers_Empty(t *testing.T) {
 func TestParsePeers_Mixed(t *testing.T) {
 	out, err := parsePeers([]string{
 		"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X",
-		"12D3KooWA51FHYMd93Wpna8ypLo4D7YUgfipJVsiyfgUi4zAjaAQ",
+		"/ip4/5.6.7.8/tcp/4001/p2p/12D3KooWA51FHYMd93Wpna8ypLo4D7YUgfipJVsiyfgUi4zAjaAQ",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +76,32 @@ func TestParsePeers_Mixed(t *testing.T) {
 	}
 	if out[0].ID.String() != "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X" {
 		t.Errorf("peer 0 id: %s", out[0].ID)
+	}
+}
+
+func TestParsePeers_RejectsUndialableEntries(t *testing.T) {
+	for _, raw := range []string{
+		"/ip4/1.2.3.4/tcp/4001",
+		"12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X",
+	} {
+		if _, err := parsePeers([]string{raw}); err == nil {
+			t.Fatalf("parsePeers(%q) succeeded, want dial-address error", raw)
+		}
+	}
+}
+
+func TestParsePeers_MergesTransportAddresses(t *testing.T) {
+	id := "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X"
+	out, err := parsePeers([]string{
+		"/ip4/1.2.3.4/tcp/4001/p2p/" + id,
+		"/ip4/1.2.3.4/udp/4001/quic-v1/p2p/" + id,
+		"/ip4/1.2.3.4/tcp/4001/p2p/" + id,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || len(out[0].Addrs) != 2 {
+		t.Fatalf("peers = %v, want one peer with TCP and QUIC", out)
 	}
 }
 

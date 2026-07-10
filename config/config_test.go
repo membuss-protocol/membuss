@@ -24,6 +24,22 @@ func TestDefault(t *testing.T) {
 	if len(cfg.ListenAddrs) == 0 {
 		t.Fatal("default ListenAddrs must be non-empty")
 	}
+	hasIPv6 := false
+	for _, addr := range cfg.ListenAddrs {
+		if len(addr) >= 5 && addr[:5] == "/ip6/" {
+			hasIPv6 = true
+			break
+		}
+	}
+	if !hasIPv6 {
+		t.Fatal("default ListenAddrs must include IPv6")
+	}
+	if cfg.EnableMDNS {
+		t.Fatal("mDNS must be opt-in in the production default")
+	}
+	if len(cfg.BootstrapPeers) != 0 {
+		t.Fatalf("default BootstrapPeers = %v, want no volatile public endpoint", cfg.BootstrapPeers)
+	}
 }
 
 func TestValidateRejectsZeroGroups(t *testing.T) {
@@ -55,6 +71,10 @@ listen_addrs:
   - /ip4/127.0.0.1/tcp/9999
 bootstrap_peers:
   - /ip4/1.2.3.4/tcp/4001/p2p/QmExample
+relay_peers:
+  - /ip4/5.6.7.8/tcp/4001/p2p/QmRelay
+announce_addrs:
+  - /dns4/node.example/tcp/4001
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -82,6 +102,12 @@ bootstrap_peers:
 	}
 	if len(cfg.BootstrapPeers) != 1 {
 		t.Errorf("BootstrapPeers len = %d, want 1", len(cfg.BootstrapPeers))
+	}
+	if len(cfg.RelayPeers) != 1 {
+		t.Errorf("RelayPeers len = %d, want 1", len(cfg.RelayPeers))
+	}
+	if len(cfg.AnnounceAddrs) != 1 {
+		t.Errorf("AnnounceAddrs len = %d, want 1", len(cfg.AnnounceAddrs))
 	}
 }
 

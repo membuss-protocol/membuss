@@ -8,11 +8,27 @@
 listen_addrs:
   - /ip4/0.0.0.0/tcp/4001
   - /ip4/0.0.0.0/udp/4001/quic-v1
+  - /ip4/0.0.0.0/tcp/4002/ws
+  - /ip6/::/tcp/4001
+  - /ip6/::/udp/4001/quic-v1
+  - /ip6/::/tcp/4002/ws
+
+# Additional public addresses are added to interface, observed, and NAT-mapped
+# addresses. Leave empty unless this node has a stable, externally dialable IP
+# or DNS name.
+announce_addrs: []
 
 # libp2p peer IDs (as multiaddrs) the DHT attempts to connect to on
 # startup. Leave empty for a fresh testnet or a single-node run.
 bootstrap_peers:
   - /ip4/45.10.162.79/udp/4001/quic-v1/p2p/12D3KooWMNbuDSWaMw7evxzsp9CtaphofzxcEbHisWQQUmg7zfUx
+
+# Dedicated Circuit Relay v2 nodes. Dynamic providers discovered through the
+# DHT supplement this list; bootstrap peers are not assumed to be relays.
+relay_peers: []
+
+# Enable only on trusted LANs or private clusters.
+enable_mdns: false
 
 # Directory used by BadgerDB and the local block store. Created on
 # startup if it does not exist.

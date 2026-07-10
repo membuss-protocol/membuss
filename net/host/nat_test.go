@@ -1,10 +1,14 @@
-﻿package host
+package host
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/network"
 )
 
 // TestHost_NATStatus_DefaultUnknown checks that a freshly
@@ -87,12 +91,12 @@ func TestHost_WaitForNAT_TimeoutFires(t *testing.T) {
 func TestHost_PersistentIdentity_NATFieldsDontBreak(t *testing.T) {
 	dir := t.TempDir()
 	h, err := NewHost(Config{
-		DataDir:             dir,
-		RelayService:        false,
-		RelayMaxConns:       128,
+		DataDir:              dir,
+		RelayService:         false,
+		RelayMaxConns:        128,
 		RelayMaxReservations: 128,
-		RelayBandwidthMB:    16,
-		ForceRelay:          false,
+		RelayBandwidthMB:     16,
+		ForceRelay:           false,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -100,5 +104,101 @@ func TestHost_PersistentIdentity_NATFieldsDontBreak(t *testing.T) {
 	defer h.Close()
 	if h.ID().String() == "" {
 		t.Fatal("empty peer id")
+	}
+}
+
+func TestHost_ForceRelayReportsPrivate(t *testing.T) {
+	h, err := NewHost(Config{
+		DataDir:     t.TempDir(),
+		ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+		ForceRelay:  true,
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	defer h.Close()
+
+	status, err := h.WaitForNAT(context.Background(), time.Second)
+	if err != nil {
+		t.Fatalf("WaitForNAT: %v", err)
+	}
+	if status != "private" || !h.IsPrivate() {
+		t.Fatalf("status = %q, private = %v", status, h.IsPrivate())
+	}
+}
+
+func TestHost_WaitForNATObservesTransition(t *testing.T) {
+	h, err := NewHost(Config{InProcess: true})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	defer h.Close()
+
+	done := make(chan string, 1)
+	go func() {
+		status, _ := h.WaitForNAT(context.Background(), time.Second)
+		done <- status
+	}()
+	h.setReachability(network.ReachabilityPublic)
+
+	select {
+	case status := <-done:
+		if status != "public" {
+			t.Fatalf("status = %q, want public", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitForNAT did not observe reachability event")
+	}
+}
+
+func TestHost_NATStatusTracksAllTransitions(t *testing.T) {
+	h, err := NewHost(Config{InProcess: true})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	defer h.Close()
+
+	for _, step := range []struct {
+		reachability network.Reachability
+		status       string
+	}{
+		{network.ReachabilityUnknown, "unknown"},
+		{network.ReachabilityPrivate, "private"},
+		{network.ReachabilityPublic, "public"},
+	} {
+		h.setReachability(step.reachability)
+		if got := h.NATStatus(); got != step.status {
+			t.Fatalf("NATStatus = %q, want %q", got, step.status)
+		}
+	}
+}
+
+func TestBuildNATOptions_EnablesProductionTraversalStack(t *testing.T) {
+	opts, err := buildNATOptions(Config{RelayService: true})
+	if err != nil {
+		t.Fatalf("buildNATOptions: %v", err)
+	}
+	var cfg libp2p.Config
+	if err := cfg.Apply(opts...); err != nil {
+		t.Fatalf("apply NAT options: %v", err)
+	}
+	if !cfg.EnableHolePunching {
+		t.Error("DCUtR/hole punching is disabled")
+	}
+	if !cfg.EnableAutoNATv2 {
+		t.Error("AutoNAT v2 is disabled")
+	}
+	if cfg.NATManager == nil {
+		t.Error("UPnP/NAT-PMP port mapping is disabled")
+	}
+	if !cfg.EnableRelayService {
+		t.Error("Circuit Relay v2 service is disabled")
+	}
+}
+
+func TestBuildNATOptions_RejectsRelayBudgetOverflow(t *testing.T) {
+	_, err := buildNATOptions(Config{RelayService: true, RelayBandwidthMB: math.MaxInt})
+	if err == nil {
+		t.Fatal("expected relay bandwidth overflow error")
 	}
 }

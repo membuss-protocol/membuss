@@ -1,8 +1,8 @@
 // Phase 11: Mem-Herald relay announcer.
 //
 // Anchor nodes and any node with RelayService=true re-publish
-// their presence under the DHT's /membuss/relays/v1 key on
-// every ReprovideInterval. This keeps the relay list fresh in
+// their presence as providers of the DHT's relay discovery namespace. This
+// keeps the relay set fresh in
 // the face of DHT churn and gives freshly bootstrapping nodes
 // a non-empty candidate set for AutoRelay.
 //
@@ -17,8 +17,11 @@ import (
 	"errors"
 	"sync"
 	"time"
-
 )
+
+// MaxRelayAdvertisementInterval matches routing discovery's advertised TTL.
+// Refreshing less often creates avoidable gaps when provider records expire.
+const MaxRelayAdvertisementInterval = 3 * time.Hour
 
 // RelayAnnouncer periodically publishes the local node to
 // the DHT's relay list. The lifecycle is Start/Stop; Start
@@ -28,7 +31,7 @@ type RelayAnnouncer struct {
 	// DHT is the local DHT facade. Required.
 	DHT RelayPublisher
 	// Interval is the time between republishes. Zero
-	// defaults to 12 hours (same as the regular herald).
+	// defaults to three hours and is capped at that value.
 	Interval time.Duration
 	// BootCheckInterval is the polling interval for checking
 	// DHT routing table size before the first publish. Zero
@@ -40,6 +43,8 @@ type RelayAnnouncer struct {
 	// Logger is an optional structured logger; nil means
 	// silent. The daemon wires its slog logger here.
 	Logger AnnouncerLogger
+
+	state *relayAnnouncerState
 }
 
 // RelayPublisher is the slice of *dht.MemDHT that the relay
@@ -60,14 +65,11 @@ type AnnouncerLogger interface {
 }
 
 type relayAnnouncerState struct {
-	mu       sync.Mutex
-	lastRun  time.Time
-	stopOnce sync.Once
-	stopCh   chan struct{}
+	startOnce sync.Once
 }
 
 func newRelayAnnouncerState() *relayAnnouncerState {
-	return &relayAnnouncerState{stopCh: make(chan struct{})}
+	return &relayAnnouncerState{}
 }
 
 // NewRelayAnnouncer validates the config and returns a ready-
@@ -78,8 +80,8 @@ func NewRelayAnnouncer(cfg RelayAnnouncer) (*RelayAnnouncer, error) {
 	if cfg.DHT == nil {
 		return nil, errors.New("herald: relay announcer: nil DHT")
 	}
-	if cfg.Interval <= 0 {
-		cfg.Interval = 12 * time.Hour
+	if cfg.Interval <= 0 || cfg.Interval > MaxRelayAdvertisementInterval {
+		cfg.Interval = MaxRelayAdvertisementInterval
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -90,6 +92,7 @@ func NewRelayAnnouncer(cfg RelayAnnouncer) (*RelayAnnouncer, error) {
 		BootCheckInterval: cfg.BootCheckInterval,
 		Now:               cfg.Now,
 		Logger:            cfg.Logger,
+		state:             newRelayAnnouncerState(),
 	}, nil
 }
 
@@ -98,27 +101,27 @@ func NewRelayAnnouncer(cfg RelayAnnouncer) (*RelayAnnouncer, error) {
 // routing table is non-empty before performing the first
 // publish and starting the interval loop.
 func (r *RelayAnnouncer) Start(ctx context.Context) {
-	go func() {
-		bootCheckInterval := r.BootCheckInterval
-		if bootCheckInterval <= 0 {
-			bootCheckInterval = 5 * time.Second
-		}
-		ticker := time.NewTicker(bootCheckInterval)
-		defer ticker.Stop()
-		for {
-			if r.DHT.RoutingTableSize() > 0 {
-				break
+	r.state.startOnce.Do(func() {
+		go func() {
+			bootCheckInterval := r.BootCheckInterval
+			if bootCheckInterval <= 0 {
+				bootCheckInterval = 5 * time.Second
 			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
+			ticker := time.NewTicker(bootCheckInterval)
+			defer ticker.Stop()
+			for {
+				if r.DHT.RoutingTableSize() > 0 && r.RunOnce(ctx) == nil {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
 			}
-		}
-
-		r.RunOnce(ctx)
-		r.loop(ctx)
-	}()
+			r.loop(ctx)
+		}()
+	})
 }
 
 // loop is the long-lived ticker.
