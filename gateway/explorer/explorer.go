@@ -412,21 +412,34 @@ func (e *Explorer) serveIndexHTML(w http.ResponseWriter) {
 		http.Error(w, "SPA index.html not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
-	// 🖖 Inject link-interceptor so that when the explorer is loaded inside
-	// the desktop app's iframe, all link clicks are forwarded to the parent
-	// window which opens them in the system browser. When loaded directly
-	// in a normal browser, links behave normally (no interception).
+	// 🖖 Inject link-interceptor for when the explorer is loaded inside the
+	// desktop app's iframe:
+	//   - Same-origin /explorer/* SPA routes stay inside the iframe
+	//   - External URLs, target=_blank, download links, and non-explorer
+	//     paths (e.g. /mem/... gateway content) open in the system browser
+	// When loaded directly in a normal browser, this script no-ops.
 	inject := []byte(`<script>
 (function(){
   if(!(window.parent&&window.parent!==window))return;
   document.addEventListener('click',function(ev){
-    var a=ev.target.closest('a[href]');
+    if(ev.defaultPrevented||ev.button!==0||ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey)return;
+    var t=ev.target;
+    if(t&&t.nodeType===3)t=t.parentElement;
+    var a=t&&t.closest?t.closest('a[href]'):null;
     if(!a)return;
-    var h=a.href;
-    if(!h||h.startsWith('javascript:'))return;
+    var raw=a.getAttribute('href');
+    if(!raw||raw.charAt(0)==='#'||raw.indexOf('javascript:')===0)return;
+    var url;
+    try{url=new URL(a.href,window.location.href);}catch(e){return;}
+    var sameOrigin=url.origin===window.location.origin;
+    var path=url.pathname;
+    var isExplorer=sameOrigin&&(path==='/explorer'||path.indexOf('/explorer/')===0);
+    var forceExt=a.target==='_blank'||a.hasAttribute('download');
+    if(isExplorer&&!forceExt)return;
     ev.preventDefault();
-    window.parent.postMessage({type:'open-external',url:h},'*');
-  });
+    ev.stopPropagation();
+    window.parent.postMessage({type:'open-external',url:url.href},'*');
+  },true);
 })();
 </script></head>`)
 	data = bytes.Replace(data, []byte("</head>"), inject, 1)

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,7 +31,8 @@ func NewApp() *App {
 }
 
 // startup is called when the app starts. The context is saved
-// so we can call the runtime methods
+// so we can call the runtime methods.
+// The daemon is NOT auto-started — the user must click Start Node.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	cfg, err := LoadConfig()
@@ -42,17 +42,6 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.config = cfg
 	a.daemonManager = NewDaemonManager(cfg)
-
-	// If setup is complete and auto_start is true, start the daemon
-	if cfg.SetupComplete && cfg.AutoStart {
-		wailsRuntime.LogInfo(ctx, "automatically starting daemon process...")
-		go func() {
-			err := a.daemonManager.Start(cfg.DataDir)
-			if err != nil {
-				wailsRuntime.LogErrorf(ctx, "failed to auto-start daemon: %v", err)
-			}
-		}()
-	}
 }
 
 // GetConfig returns the current desktop config settings.
@@ -189,6 +178,10 @@ func (a *App) StartNode() error {
 	if a.config.DataDir == "" {
 		return errors.New("no data directory configured")
 	}
+	// If a keep-alive instance is already healthy, treat as success.
+	if _, err := a.daemonManager.CheckStatus(a.config.APIAddr); err == nil {
+		return nil
+	}
 	return a.daemonManager.Start(a.config.DataDir)
 }
 
@@ -199,18 +192,25 @@ func (a *App) StopNode() error {
 
 // CheckNodeStatus checks if the daemon is online and queries Node Info.
 func (a *App) CheckNodeStatus() (map[string]any, error) {
-	isRunning := a.daemonManager.IsRunning()
-	
+	// Tracked child OR system-wide daemon (keep-alive after GUI restart).
+	isRunning := a.daemonManager.IsRunning() || isProcessRunning("membuss")
+
 	// Probe the HTTP API
 	info, err := a.daemonManager.CheckStatus(a.config.APIAddr)
-	statusMap := map[string]any{
-		"process_running": isRunning,
-		"api_online":      err == nil,
+	apiOnline := err == nil
+	// If API answers, the node is effectively running even if process scan missed it.
+	if apiOnline {
+		isRunning = true
 	}
 
-	if err == nil {
+	statusMap := map[string]any{
+		"process_running": isRunning,
+		"api_online":      apiOnline,
+	}
+
+	if apiOnline {
 		statusMap["info"] = info
-	} else {
+	} else if err != nil {
 		statusMap["error"] = err.Error()
 	}
 
@@ -312,17 +312,18 @@ func (a *App) domReady(ctx context.Context) {
 }
 
 // beforeClose is triggered when the window is closed.
-// If the daemon is running, emit an event to the frontend to confirm close.
+// KeepAlive: leave the daemon running in the background (no stop, no prompt).
+// Otherwise: stop the daemon (if any) and allow the window to close.
 func (a *App) beforeClose(ctx context.Context) bool {
-	if a.config.KeepAlive && a.config.SetupComplete && a.daemonManager.IsRunning() {
-		// Emit event to frontend to handle close confirmation
-		wailsRuntime.EventsEmit(ctx, "request-close")
-		return true // Block close, let frontend handle it
+	if a.config != nil && a.config.KeepAlive && a.config.SetupComplete {
+		// Detached daemon continues; do not kill on GUI exit.
+		wailsRuntime.LogInfo(ctx, "keep_alive enabled — closing GUI without stopping daemon")
+		return false
 	}
 
-	// If not keeping alive or node not running, stop daemon and allow close
+	// Stop tracked + any system-wide daemon when keep-alive is off.
 	_ = a.daemonManager.Stop()
-	return false // Allow app termination
+	return false
 }
 
 // UpdateCheckResult holds the version check status.
@@ -333,6 +334,8 @@ type UpdateCheckResult struct {
 }
 
 // CheckForUpdate queries GitHub for the latest release and compares with the installed version.
+// Uses the REST API with an automatic /releases/latest redirect fallback so anonymous
+// clients still work after API rate limits (HTTP 403).
 func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	// 1. Determine current version
 	currentVer := a.config.InstalledVersion
@@ -349,38 +352,29 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	}
 	currentVer = strings.TrimPrefix(currentVer, "v")
 
-	// 2. Fetch latest release info from GitHub API
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/nnlgsakib/membuss/releases/latest", nil)
+	// 2. Fetch latest release (API → HTML redirect fallback)
+	info, err := fetchLatestRelease()
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Membuss-Desktop-App")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch latest release: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github api returned status %s", resp.Status)
+		return nil, fmt.Errorf("failed to check for updates: %w", err)
 	}
 
-	var release map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, fmt.Errorf("failed to decode release JSON: %w", err)
+	latestVer := info.TagName
+	if latestVer == "" {
+		return nil, fmt.Errorf("failed to check for updates: empty release tag")
 	}
-
-	latestVer, _ := release["tag_name"].(string)
 	latestVerClean := strings.TrimPrefix(latestVer, "v")
-
 	hasUpdate := isVersionNewer(currentVer, latestVerClean)
+
+	// Normalize latest for display (always v-prefixed).
+	displayLatest := latestVer
+	if !strings.HasPrefix(displayLatest, "v") {
+		displayLatest = "v" + displayLatest
+	}
 
 	return &UpdateCheckResult{
 		HasUpdate:      hasUpdate,
 		CurrentVersion: "v" + currentVer,
-		LatestVersion:  latestVer,
+		LatestVersion:  displayLatest,
 	}, nil
 }
 

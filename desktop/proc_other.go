@@ -6,3 +6,6 @@ import "os/exec"
 
 // hideConsoleWindow is a no-op on non-Windows platforms.
 func hideConsoleWindow(cmd *exec.Cmd) {}
+
+// hideConsoleWindowSimple is a no-op on non-Windows platforms.
+func hideConsoleWindowSimple(cmd *exec.Cmd) {}
