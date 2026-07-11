@@ -15,8 +15,8 @@
 // default. AutoNAT reports reachability via the host event bus;
 // DCUtR attempts direct connection upgrades through a relay;
 // Circuit Relay v2 is enabled when Config.RelayService is true;
-// AutoRelay picks up a static relay set from BootstrapPeers
-// (or DHT-discovered relays). The returned *Host wrapper exposes
+// AutoRelay consumes dedicated static and DHT-discovered relays through a
+// dynamic peer source. The returned *Host wrapper exposes
 // reachability helpers and a WaitForNAT helper used by the
 // daemon at startup.
 package host
@@ -26,10 +26,13 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"math"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	ds "github.com/ipfs/go-datastore"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/event"
@@ -38,15 +41,16 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
+	"github.com/libp2p/go-libp2p/p2p/net/conngater"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
-	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
-	ds "github.com/ipfs/go-datastore"
-	"github.com/libp2p/go-libp2p/p2p/net/conngater"
 	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
@@ -54,9 +58,8 @@ import (
 // private key. It lives directly under DataDir.
 const IdentityFilename = "identity.key"
 
-// DefaultNATWait is the default time NewHost waits for
-// AutoNAT to produce a reachability verdict before the
-// daemon continues startup. Used when Config.NATWait is zero.
+// DefaultNATWait is retained for API compatibility. Callers should wait only
+// after establishing initial peer connectivity; NewHost itself does not wait.
 const DefaultNATWait = 10 * time.Second
 
 // Config configures a libp2p host construction.
@@ -95,19 +98,20 @@ type Config struct {
 	// relay will budget for forwarded traffic. 0 disables
 	// the cap. Default 16.
 	RelayBandwidthMB int
-	// ForceRelay, when true, makes this node always use a
-	// relay for outbound dials, skipping hole-punch. Useful
-	// for debugging.
+	// ForceRelay forces private reachability so AutoRelay obtains relay
+	// reservations immediately. Direct dialing and DCUtR remain enabled.
 	ForceRelay bool
 	// StaticRelays is the set of relay peers the AutoRelay
 	// subsystem uses as initial candidates. Bootstrap peers
 	// are a sensible default when this is empty.
 	StaticRelays []peer.AddrInfo
-	// NATWait is how long NewHost waits for AutoNAT to
-	// produce a reachability verdict after constructing the
-	// host. Zero means DefaultNATWait. A negative value
-	// disables waiting entirely (NewHost returns
-	// immediately with NATStatus "unknown").
+	// RelayPeerSource supplies dynamic relay candidates to AutoRelay. When
+	// configured it takes precedence over StaticRelays. The callback may be
+	// backed by DHT routing discovery and is queried again when a reservation
+	// fails or the candidate cache expires.
+	RelayPeerSource autorelay.PeerSource
+	// NATWait is deprecated and ignored. Use WaitForNAT after connecting to
+	// bootstrap peers; AutoNAT cannot determine reachability without observers.
 	NATWait time.Duration
 
 	// MDNS enables libp2p mDNS discovery. When true the
@@ -143,9 +147,10 @@ type Host struct {
 	// reported by the AutoNAT subsystem. The event-bus
 	// subscription updates it asynchronously after New
 	// returns.
-	mu           sync.RWMutex
-	reachability network.Reachability
-	eventSub     event.Subscription
+	mu                  sync.RWMutex
+	reachability        network.Reachability
+	eventSub            event.Subscription
+	reachabilityChanged chan struct{}
 
 	// mdns, when non-nil, is the libp2p mDNS discovery
 	// service. It is closed by Host.Close.
@@ -174,11 +179,8 @@ type Host struct {
 // AutoRelay. When Config.RelayService is true the host also
 // runs the Circuit Relay v2 hop service.
 //
-// NewHost waits up to Config.NATWait (or DefaultNATWait) for
-// the AutoNAT subsystem to produce a reachability verdict and
-// logs the result. The wait is best-effort: if the verdict
-// does not arrive in time, the host still returns and callers
-// can poll NATStatus() later.
+// NewHost returns immediately after the host is ready. Callers may invoke
+// WaitForNAT after connecting to peers that can act as AutoNAT observers.
 //
 // The returned host is ready to have stream handlers attached.
 // The caller MUST call host.Close() when done.
@@ -196,7 +198,11 @@ func NewHost(cfg Config) (*Host, error) {
 		if err != nil {
 			return nil, err
 		}
-		wh := wrapHost(h, true)
+		wh, err := wrapHost(h, true)
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
 		wh.gater = cg
 		return wh, nil
 	}
@@ -215,6 +221,9 @@ func NewHost(cfg Config) (*Host, error) {
 			"/ip4/0.0.0.0/tcp/4001",
 			"/ip4/0.0.0.0/udp/4001/quic-v1",
 			"/ip4/0.0.0.0/tcp/4002/ws",
+			"/ip6/::/tcp/4001",
+			"/ip6/::/udp/4001/quic-v1",
+			"/ip6/::/tcp/4002/ws",
 		}
 	}
 
@@ -241,6 +250,11 @@ func NewHost(cfg Config) (*Host, error) {
 		libp2p.Transport(libp2pws.New),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer(yamux.ID, yamux.DefaultTransport),
+		// DefaultDialRanker implements Happy Eyeballs across IPv4/IPv6,
+		// prefers QUIC when it is available, and delays circuit-relay dials
+		// behind direct addresses. Keep this explicit so transport behavior
+		// cannot change if libp2p constructor defaults are refactored.
+		libp2p.SwarmOpts(swarm.WithDialRanker(swarm.DefaultDialRanker)),
 	}
 	opts = append(opts, natOpts...)
 	if cfg.UserAgent != "" {
@@ -258,24 +272,27 @@ func NewHost(cfg Config) (*Host, error) {
 		}
 	}
 
-	opts = append(opts, libp2p.AddrsFactory(func(listenAddrs []ma.Multiaddr) []ma.Multiaddr {
-		var addrs []ma.Multiaddr
-		if len(announceAddrs) > 0 {
-			addrs = append(addrs, announceAddrs...)
-		} else {
-			addrs = append(addrs, listenAddrs...)
-		}
+	opts = append(opts, libp2p.AddrsFactory(func(hostAddrs []ma.Multiaddr) []ma.Multiaddr {
+		// Preserve libp2p's observed and NAT-mapped addresses, then add any
+		// operator-supplied addresses. Replacing hostAddrs here would disable
+		// automatic address advertisement whenever announce_addrs is set.
+		addrs := append([]ma.Multiaddr(nil), hostAddrs...)
+		addrs = append(addrs, announceAddrs...)
 		if ngAddr := tunnel.GetNgrokAddress(); ngAddr != nil {
 			addrs = append(addrs, ngAddr)
 		}
-		return addrs
+		return dedupeAddrs(addrs)
 	}))
 
 	h, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("host: build libp2p host: %w", err)
 	}
-	wh := wrapHost(h, false)
+	wh, err := wrapHost(h, false)
+	if err != nil {
+		_ = h.Close()
+		return nil, err
+	}
 	wh.bwc = bwc
 	wh.gater = cg
 	if cfg.MDNS {
@@ -296,10 +313,16 @@ func NewHost(cfg Config) (*Host, error) {
 // or the in-process path is used.
 func buildNATOptions(cfg Config) ([]libp2p.Option, error) {
 	opts := []libp2p.Option{
+		// v1 emits the aggregate reachability event consumed by AutoRelay and
+		// the daemon. v2 supplements it with per-address reachability probes.
 		// AutoNAT responder: lets other peers probe us to
 		// determine their own reachability. Required for
 		// AutoNAT to function across the network.
 		libp2p.EnableNATService(),
+		libp2p.EnableAutoNATv2(),
+		// Ask UPnP/NAT-PMP gateways for explicit mappings. Failure is handled
+		// internally and leaves AutoNAT, hole punching and relay fallback active.
+		libp2p.NATPortMap(),
 		// DCUtR: even when the connection initially goes
 		// through a relay, DCUtR attempts a direct
 		// connection upgrade in the background. Spec
@@ -319,28 +342,43 @@ func buildNATOptions(cfg Config) ([]libp2p.Option, error) {
 		if cfg.RelayMaxConns > 0 {
 			resources.MaxCircuits = cfg.RelayMaxConns
 		}
+		if cfg.RelayBandwidthMB > 0 {
+			// RelayLimit is a byte budget over Duration, not a token-bucket rate.
+			// Convert the configured MiB/s budget over libp2p's default window.
+			windowBytes := int64(1024*1024) * int64(resources.Limit.Duration/time.Second)
+			if int64(cfg.RelayBandwidthMB) > math.MaxInt64/windowBytes {
+				return nil, errors.New("host: relay bandwidth limit overflows int64")
+			}
+			resources.Limit.Data = int64(cfg.RelayBandwidthMB) * windowBytes
+		}
 		resources.BufferSize = 4096
 		opts = append(opts, libp2p.EnableRelayService(
 			relay.WithResources(resources),
 		))
 	}
 
-	// AutoRelay: when the node discovers it is not publicly
-	// reachable, AutoRelay rewrites advertised addresses to
-	// include a relay circuit. StaticRelays wins over
-	// BootstrapPeers (caller pre-resolves the right thing).
-	if len(cfg.StaticRelays) > 0 {
+	// AutoRelay rewrites advertised addresses to include circuit addresses
+	// whenever no direct public address is known. A dynamic source takes
+	// precedence over the legacy static-only configuration.
+	if cfg.RelayPeerSource != nil {
+		opts = append(opts, libp2p.EnableAutoRelayWithPeerSource(
+			cfg.RelayPeerSource,
+			autorelay.WithMinCandidates(1),
+			autorelay.WithMaxCandidates(20),
+			autorelay.WithNumRelays(2),
+			autorelay.WithBootDelay(30*time.Second),
+			autorelay.WithBackoff(time.Minute),
+			autorelay.WithMaxCandidateAge(30*time.Minute),
+		))
+	} else if len(cfg.StaticRelays) > 0 {
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(cfg.StaticRelays))
 	}
 
 	if cfg.ForceRelay {
-		// ForceReachabilityPublic makes AutoNAT lie to
-		// itself, which is useful when running on a
-		// publicly reachable host that happens to be
-		// behind a hostile firewall. The "Force" prefix
-		// matches the libp2p API name; the behaviour is
-		// the libp2p team-shipped semantics.
-		opts = append(opts, libp2p.ForceReachabilityPublic())
+		// Force private reachability so AutoRelay acquires reservations
+		// immediately. Direct dials and DCUtR remain enabled; libp2p has no
+		// supported option that forces every outbound stream through a relay.
+		opts = append(opts, libp2p.ForceReachabilityPrivate())
 	}
 
 	return opts, nil
@@ -350,13 +388,14 @@ func buildNATOptions(cfg Config) ([]libp2p.Option, error) {
 // subscription, reachability tracking) to a freshly built
 // libp2p host. When skipNAT is true the NAT wait is skipped
 // entirely (used by the in-process test path).
-func wrapHost(h host.Host, skipNAT bool) *Host {
+func wrapHost(h host.Host, skipNAT bool) (*Host, error) {
 	wh := &Host{
-		Host:          h,
-		reachability:  network.ReachabilityUnknown,
+		Host:                h,
+		reachability:        network.ReachabilityUnknown,
+		reachabilityChanged: make(chan struct{}),
 	}
 	if skipNAT {
-		return wh
+		return wh, nil
 	}
 	// Subscribe to local reachability changes. The
 	// subscription is held for the lifetime of the host;
@@ -364,30 +403,36 @@ func wrapHost(h host.Host, skipNAT bool) *Host {
 	// closed and watchReachability exits.
 	sub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
 	if err != nil {
-		// Non-fatal: the host still works, NATStatus just
-		// stays "unknown".
-		return wh
+		return nil, fmt.Errorf("host: subscribe to reachability events: %w", err)
 	}
 	wh.eventSub = sub
-	go wh.watchReachability()
-	return wh
+	go wh.watchReachability(sub)
+	return wh, nil
 }
 
 // watchReachability consumes EvtLocalReachabilityChanged
 // events and updates the cached reachability. It exits when
 // the subscription closes (host shutdown).
-func (h *Host) watchReachability() {
-	if h.eventSub == nil {
+func (h *Host) watchReachability(sub event.Subscription) {
+	if sub == nil {
 		return
 	}
-	defer h.eventSub.Close()
-	for ev := range h.eventSub.Out() {
+	for ev := range sub.Out() {
 		if rc, ok := ev.(event.EvtLocalReachabilityChanged); ok {
-			h.mu.Lock()
-			h.reachability = rc.Reachability
-			h.mu.Unlock()
+			h.setReachability(rc.Reachability)
 		}
 	}
+}
+
+func (h *Host) setReachability(reachability network.Reachability) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reachability == reachability {
+		return
+	}
+	h.reachability = reachability
+	close(h.reachabilityChanged)
+	h.reachabilityChanged = make(chan struct{})
 }
 
 // NATStatus returns the most recent AutoNAT verdict as a
@@ -398,7 +443,7 @@ func (h *Host) watchReachability() {
 func (h *Host) NATStatus() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.reachability.String()
+	return strings.ToLower(h.reachability.String())
 }
 
 // WaitForNAT blocks up to timeout for the AutoNAT subsystem
@@ -412,17 +457,18 @@ func (h *Host) WaitForNAT(ctx context.Context, timeout time.Duration) (string, e
 	}
 	wctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	t := time.NewTicker(100 * time.Millisecond)
-	defer t.Stop()
 	for {
-		s := h.NATStatus()
-		if s != network.ReachabilityUnknown.String() {
-			return s, nil
+		h.mu.RLock()
+		reachability := h.reachability
+		changed := h.reachabilityChanged
+		h.mu.RUnlock()
+		if reachability != network.ReachabilityUnknown {
+			return strings.ToLower(reachability.String()), nil
 		}
 		select {
 		case <-wctx.Done():
 			return h.NATStatus(), wctx.Err()
-		case <-t.C:
+		case <-changed:
 		}
 	}
 }
@@ -430,13 +476,30 @@ func (h *Host) WaitForNAT(ctx context.Context, timeout time.Duration) (string, e
 // IsPublic reports whether AutoNAT currently considers this
 // node publicly reachable.
 func (h *Host) IsPublic() bool {
-	return h.NATStatus() == network.ReachabilityPublic.String()
+	return h.Reachability() == network.ReachabilityPublic
 }
 
 // IsPrivate reports whether AutoNAT currently considers this
 // node behind a NAT / not publicly reachable.
 func (h *Host) IsPrivate() bool {
-	return h.NATStatus() == network.ReachabilityPrivate.String()
+	return h.Reachability() == network.ReachabilityPrivate
+}
+
+func dedupeAddrs(addrs []ma.Multiaddr) []ma.Multiaddr {
+	seen := make(map[string]struct{}, len(addrs))
+	out := make([]ma.Multiaddr, 0, len(addrs))
+	for _, addr := range addrs {
+		if addr == nil {
+			continue
+		}
+		key := string(addr.Bytes())
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
 }
 
 // Reachability returns the raw network.Reachability value.
@@ -487,7 +550,9 @@ func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = n.h.Host.Connect(ctx, pi)
+		if err := n.h.Host.Connect(ctx, pi); err != nil {
+			return
+		}
 		if n.h.onPeerFound != nil {
 			n.h.onPeerFound(pi)
 		}
@@ -518,7 +583,9 @@ func (h *Host) Close() error {
 		return h.Host.Close()
 	}
 	return nil
-}// DialResultListener is called when a dial outcome is determined.
+}
+
+// DialResultListener is called when a dial outcome is determined.
 type DialResultListener func(peer.ID, error)
 
 func (h *Host) AddDialListener(l DialResultListener) {

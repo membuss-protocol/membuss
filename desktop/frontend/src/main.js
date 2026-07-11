@@ -52,23 +52,29 @@ let logsPollerId = null;
 async function init() {
   renderLoadingScreen();
 
-  // 🖖 Open all external links in system browser, never inside the webview.
+  // 🖖 Open shell-level <a> links in the system browser (never navigate the
+  // Wails webview away from the desktop UI). Explorer iframe content is a
+  // separate document — its clicks do not reach this handler; it posts
+  // open-external messages for true external/content URLs only.
   document.addEventListener('click', (ev) => {
-    const a = ev.target.closest('a[href]');
+    const a = ev.target.closest?.('a[href]');
     if (!a) return;
     const href = a.href;
-    if (!href || href.startsWith('javascript:')) return;
-    // Let the explorer iframe handle its own internal navigation via postMessage.
-    if (a.closest('.explorer-iframe')) return;
+    if (!href || href.startsWith('javascript:') || href.startsWith('#')) return;
+    // Ignore links that live inside the explorer frame element itself (rare).
+    if (a.closest('.explorer-iframe, .explorer-container iframe')) return;
     ev.preventDefault();
     wailsRuntime.BrowserOpenURL(href);
   });
 
-  // 🖖 Listen for link-click messages from the explorer iframe.
+  // 🖖 Explorer iframe → system browser for non-SPA links only.
+  // Internal /explorer/* routes are intentionally not posted (see gateway inject).
   window.addEventListener('message', (ev) => {
-    if (ev.data && ev.data.type === 'open-external' && ev.data.url) {
-      wailsRuntime.BrowserOpenURL(ev.data.url);
-    }
+    const data = ev.data;
+    if (!data || data.type !== 'open-external' || typeof data.url !== 'string') return;
+    const url = data.url.trim();
+    if (!/^https?:\/\//i.test(url) && !/^mailto:/i.test(url)) return;
+    wailsRuntime.BrowserOpenURL(url);
   });
 
   try {
@@ -81,9 +87,9 @@ async function init() {
       if (checks.valid) {
         renderDashboardLayout();
         startStatusPolling();
-
-        // Check for updates asynchronously after startup
-        setTimeout(triggerUpdateCheck, 1000);
+        // Daemon is NOT auto-started — user clicks Start Node.
+        // Quiet update check in background (uses non-API GitHub paths).
+        setTimeout(triggerUpdateCheck, 1500);
       } else {
         renderBrokenInstallationScreen(checks);
       }
@@ -98,20 +104,10 @@ async function init() {
   }
 }
 
-// Listen for close confirmation from Go backend (registered once at startup)
+// Keep-alive close: Go allows the window to exit without killing the daemon.
+// Stop only via the dashboard Start/Stop button.
 wailsRuntime.EventsOn('request-close', async () => {
-  const ok = await showCustomConfirm(
-    "Node Running",
-    "The daemon node is still running. Stop the node and close the portal?"
-  );
-  if (ok) {
-    try {
-      await StopNode();
-    } catch (e) {
-      // Ignore stop errors, proceed with close
-    }
-    wailsRuntime.Quit();
-  }
+  // no-op
 });
 
 // Global error helper
@@ -439,11 +435,12 @@ async function renderWizardConfigStep() {
       const currentCfg = await GetConfig();
       currentCfg.setup_complete = true;
       currentCfg.keep_alive = keepAlive;
+      currentCfg.auto_start = false; // never auto-start; Start/Stop only
       await SaveConfig(currentCfg);
 
       appState.config = currentCfg;
 
-      // Start the daemon process
+      // User clicked "Finish & Start Node" — start once now, not on future launches.
       logMessage("Starting node daemon process...");
       await StartNode();
       
@@ -1126,12 +1123,22 @@ function showCustomConfirm(title, message) {
 
 // Manual "Check for Updates" button handler.
 async function checkForUpdatesManual() {
+  const btn = document.getElementById('btn-check-updates');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Checking…';
+  }
   try {
     logMessage("Checking for updates (manual)...");
     const res = await CheckForUpdate();
     appState.updateInfo = res;
     if (res && res.has_update) {
       logMessage(`Update available: ${res.latest_version} (current: ${res.current_version})`);
+      await showCustomAlert(
+        "Update Available",
+        `Version ${res.latest_version} is available (you have ${res.current_version}). Use Update Now on the dashboard to install.`,
+        "success"
+      );
     } else {
       logMessage("Membuss is up to date.");
       const cur = res ? res.current_version : 'unknown';
@@ -1145,7 +1152,17 @@ async function checkForUpdatesManual() {
     }
   } catch (err) {
     console.error("Manual update check failed:", err);
-    await showCustomAlert("Update Check Failed", "Failed to check for updates: " + (err.message || err), "error");
+    await showCustomAlert(
+      "Update Check Failed",
+      "Failed to check for updates: " + (err.message || err),
+      "error"
+    );
+  } finally {
+    const b = document.getElementById('btn-check-updates');
+    if (b) {
+      b.disabled = false;
+      b.innerText = '🔄 Check Updates';
+    }
   }
 }
 

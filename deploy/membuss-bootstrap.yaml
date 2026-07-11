@@ -14,6 +14,13 @@ listen_addrs:
 
 bootstrap_peers: []
 
+# Relay candidates are a separate role from DHT bootstrap peers. This node
+# explicitly combines both roles by enabling relay_service below.
+relay_peers: []
+
+announce_addrs: []
+enable_mdns: false
+
 # --- Storage ---
 data_dir: /var/lib/membuss
 
@@ -40,7 +47,8 @@ dht_optimistic_provide: true
 
 # --- Relay service (circuit v2) ---
 # Accepts and forwards relay traffic for NATed peers.
-# A bootstrap node should always be a relay.
+# Combining roles is convenient for this all-in-one deployment, but production
+# networks should also operate independent relays in separate failure domains.
 relay_service: true
 relay_max_conns: 256
 relay_max_reservations: 256

@@ -9,9 +9,11 @@
 package host
 
 import (
-	"context"
 	"testing"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // TestMDNSDiscovery spins up two hosts with mDNS enabled and
@@ -26,8 +28,8 @@ func TestMDNSDiscovery(t *testing.T) {
 		ListenAddrs: []string{
 			"/ip4/127.0.0.1/tcp/0",
 		},
-		MDNS:             true,
-		MDNSServiceName:  "_p2p-mdns-test._udp",
+		MDNS:            true,
+		MDNSServiceName: "_p2p-mdns-test._udp",
 	})
 	if err != nil {
 		t.Fatalf("host a: %v", err)
@@ -38,8 +40,8 @@ func TestMDNSDiscovery(t *testing.T) {
 		ListenAddrs: []string{
 			"/ip4/127.0.0.1/tcp/0",
 		},
-		MDNS:             true,
-		MDNSServiceName:  "_p2p-mdns-test._udp",
+		MDNS:            true,
+		MDNSServiceName: "_p2p-mdns-test._udp",
 	})
 	if err != nil {
 		t.Fatalf("host b: %v", err)
@@ -50,16 +52,48 @@ func TestMDNSDiscovery(t *testing.T) {
 	// a's peer table (and vice versa).
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if a.Peerstore().Addrs(b.ID()) != nil &&
-			b.Peerstore().Addrs(a.ID()) != nil {
-			// Found. Force a real connection so the
-			// test exits the loop on a stable state.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = a.Connect(ctx, b.Peerstore().PeerInfo(b.ID()))
-			cancel()
+		if a.Network().Connectedness(b.ID()) == network.Connected &&
+			b.Network().Connectedness(a.ID()) == network.Connected {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("mDNS did not discover peer within 30s: a.ID=%s b.ID=%s", a.ID(), b.ID())
+}
+
+func TestMDNSNotifee_OnlyNotifiesAfterSuccessfulDial(t *testing.T) {
+	newHost := func(cfg Config) *Host {
+		if !cfg.InProcess {
+			cfg.DataDir = t.TempDir()
+			cfg.ListenAddrs = []string{"/ip4/127.0.0.1/tcp/0"}
+		}
+		h, err := NewHost(cfg)
+		if err != nil {
+			t.Fatalf("NewHost: %v", err)
+		}
+		t.Cleanup(func() { _ = h.Close() })
+		return h
+	}
+
+	dialer, reachable := newHost(Config{}), newHost(Config{})
+	notified := make(chan peer.AddrInfo, 1)
+	dialer.onPeerFound = func(info peer.AddrInfo) { notified <- info }
+	notifee := &mdnsNotifee{h: dialer}
+	notifee.HandlePeerFound(peer.AddrInfo{ID: reachable.ID(), Addrs: reachable.Addrs()})
+	select {
+	case info := <-notified:
+		if info.ID != reachable.ID() {
+			t.Fatalf("notified peer = %s, want %s", info.ID, reachable.ID())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("successful mDNS dial did not notify callback")
+	}
+
+	unreachable := newHost(Config{InProcess: true})
+	notifee.HandlePeerFound(peer.AddrInfo{ID: unreachable.ID()})
+	select {
+	case info := <-notified:
+		t.Fatalf("failed mDNS dial notified callback for %s", info.ID)
+	case <-time.After(200 * time.Millisecond):
+	}
 }

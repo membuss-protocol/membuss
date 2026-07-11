@@ -20,15 +20,15 @@ import (
 	"sync"
 	"time"
 
-	ds "github.com/ipfs/go-datastore"
 	"github.com/ipfs/go-cid"
+	ds "github.com/ipfs/go-datastore"
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
+	dhtrecords "github.com/libp2p/go-libp2p-kad-dht/records"
+	record "github.com/libp2p/go-libp2p-record"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/metrics"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	record "github.com/libp2p/go-libp2p-record"
-	dhtrecords "github.com/libp2p/go-libp2p-kad-dht/records"
 	"github.com/libp2p/go-libp2p/p2p/net/conngater"
 	"github.com/multiformats/go-multihash"
 
@@ -55,7 +55,7 @@ type MemDHT struct {
 
 // Config configures a MemDHT.
 type Config struct {
-	Host host.Host
+	Host           host.Host
 	BootstrapPeers []peer.AddrInfo
 	// Mode overrides the kad-dht operating mode. The
 	// default is kaddht.ModeAuto, which lets kad-dht pick
@@ -342,26 +342,27 @@ func (m *MemDHT) Bootstrap(ctx context.Context, peers []peer.AddrInfo) error {
 		return fmt.Errorf("dht: bootstrap: %w", err)
 	}
 
+	peers = dedupeAddrInfo(peers)
 	if len(peers) == 0 {
 		return nil
 	}
 
 	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		lastErr error
-		success int
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		failures []error
+		success  int
 	)
 
 	for _, p := range peers {
 		wg.Add(1)
 		go func(p peer.AddrInfo) {
 			defer wg.Done()
-			dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			dialCtx, cancel := context.WithTimeout(ctx, DefaultBootstrapTimeout)
 			defer cancel()
 			if err := m.dht.Host().Connect(dialCtx, p); err != nil {
 				mu.Lock()
-				lastErr = err
+				failures = append(failures, fmt.Errorf("peer %s (%v): %w", p.ID, p.Addrs, err))
 				mu.Unlock()
 			} else {
 				mu.Lock()
@@ -374,8 +375,8 @@ func (m *MemDHT) Bootstrap(ctx context.Context, peers []peer.AddrInfo) error {
 	wg.Wait()
 
 	if success == 0 {
-		if lastErr != nil {
-			return fmt.Errorf("dht: all bootstrap peers unreachable: %w", lastErr)
+		if len(failures) > 0 {
+			return fmt.Errorf("dht: all bootstrap peers unreachable: %w", errors.Join(failures...))
 		}
 		return errors.New("dht: all bootstrap peers unreachable")
 	}
@@ -421,6 +422,7 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 	if cfg.Factor < 1 {
 		cfg.Factor = 2.0
 	}
+	peers = dedupeAddrInfo(peers)
 	// Background the DHT's own bootstrap so our retry loop
 	// is the only thing the caller waits on.
 	bgCtx, bgCancel := context.WithCancel(ctx)
@@ -432,7 +434,7 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 
 	var (
 		mu        sync.Mutex
-		lastErr   error
+		failures  = make(map[peer.ID]error)
 		successes int
 		wg        sync.WaitGroup
 	)
@@ -446,12 +448,13 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 				if ctx.Err() != nil {
 					return
 				}
-				connectCtx, cancel := context.WithTimeout(hostCtx(), 10*time.Second)
+				connectCtx, cancel := context.WithTimeout(hostCtx(), DefaultBootstrapTimeout)
 				err := h.Connect(connectCtx, p)
 				cancel()
 				if err == nil {
 					mu.Lock()
 					successes++
+					delete(failures, p.ID)
 					mu.Unlock()
 					if cfg.Logger != nil {
 						cfg.Logger.Info("dht bootstrap peer connected",
@@ -462,7 +465,7 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 					break
 				}
 				mu.Lock()
-				lastErr = err
+				failures[p.ID] = fmt.Errorf("peer %s (%v): %w", p.ID, p.Addrs, err)
 				mu.Unlock()
 				if cfg.Logger != nil {
 					cfg.Logger.Warn("dht bootstrap peer connect failed",
@@ -480,35 +483,69 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 				maxDelay := float64(delay) + jitter
 				actualDelay := time.Duration(minDelay + rand.Float64()*(maxDelay-minDelay))
 
+				timer := time.NewTimer(actualDelay)
 				select {
 				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
 					return
-				case <-time.After(actualDelay):
+				case <-timer.C:
 				}
-				delay = time.Duration(float64(delay) * cfg.Factor)
-				if delay > cfg.Max {
+				next := float64(delay) * cfg.Factor
+				if next > float64(cfg.Max) {
 					delay = cfg.Max
+				} else {
+					delay = time.Duration(next)
 				}
 			}
 		}(p)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-ctx.Done():
-		mu.Lock()
-		defer mu.Unlock()
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if ctx.Err() != nil {
 		return successes, ctx.Err()
-	case <-done:
-		mu.Lock()
-		defer mu.Unlock()
-		return successes, lastErr
 	}
+	joined := make([]error, 0, len(failures))
+	for _, err := range failures {
+		joined = append(joined, err)
+	}
+	return successes, errors.Join(joined...)
+}
+
+func dedupeAddrInfo(peers []peer.AddrInfo) []peer.AddrInfo {
+	indexes := make(map[peer.ID]int, len(peers))
+	seenAddrs := make(map[peer.ID]map[string]struct{}, len(peers))
+	out := make([]peer.AddrInfo, 0, len(peers))
+	for _, info := range peers {
+		if info.ID == "" {
+			continue
+		}
+		idx, ok := indexes[info.ID]
+		if !ok {
+			idx = len(out)
+			indexes[info.ID] = idx
+			out = append(out, peer.AddrInfo{ID: info.ID})
+			seenAddrs[info.ID] = make(map[string]struct{}, len(info.Addrs))
+		}
+		for _, addr := range info.Addrs {
+			if addr == nil {
+				continue
+			}
+			key := string(addr.Bytes())
+			if _, ok := seenAddrs[info.ID][key]; ok {
+				continue
+			}
+			seenAddrs[info.ID][key] = struct{}{}
+			out[idx].Addrs = append(out[idx].Addrs, addr)
+		}
+	}
+	return out
 }
 
 // Close releases the DHT's resources.

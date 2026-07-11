@@ -30,6 +30,12 @@ type Config struct {
 	// testnet or single-node run.
 	BootstrapPeers []string `yaml:"bootstrap_peers"`
 
+	// RelayPeers are dedicated Circuit Relay v2 nodes used as immediate
+	// AutoRelay candidates. They are intentionally separate from bootstrap
+	// peers: a DHT rendezvous node need not expose or fund a relay service.
+	// Additional relays are discovered dynamically through the DHT.
+	RelayPeers []string `yaml:"relay_peers"`
+
 	// DataDir is the directory used by BadgerDB and the local block
 	// store. The directory is created on startup if it does not exist.
 	DataDir string `yaml:"data_dir"`
@@ -96,9 +102,8 @@ type Config struct {
 	// relay will budget for forwarded traffic. 0 disables the
 	// cap. Default 16.
 	RelayBandwidthMB int `yaml:"relay_bandwidth_mb"`
-	// ForceRelay, when true, makes this node always use a relay
-	// for outbound dials, skipping hole-punch. Useful for
-	// debugging.
+	// ForceRelay forces private reachability so AutoRelay obtains relay
+	// reservations immediately. Direct dialing and DCUtR remain enabled.
 	ForceRelay bool `yaml:"force_relay"`
 	// NATWaitSeconds is how long the daemon waits on startup
 	// for AutoNAT to resolve reachability before continuing.
@@ -214,11 +219,13 @@ func Default() *Config {
 			"/ip4/0.0.0.0/tcp/4001",
 			"/ip4/0.0.0.0/udp/4001/quic-v1",
 			"/ip4/0.0.0.0/tcp/4002/ws",
+			"/ip6/::/tcp/4001",
+			"/ip6/::/udp/4001/quic-v1",
+			"/ip6/::/tcp/4002/ws",
 		},
 		AnnounceAddrs:     []string{},
-		BootstrapPeers: []string{
-			"/dns4/0.tcp.ap.ngrok.io/tcp/26362/p2p/12D3KooWDFogLYszFtPFuy72RqYuktFaHSapKSFotgN4BDnuNvJw",
-		},
+		BootstrapPeers:    []string{},
+		RelayPeers:        []string{},
 		DataDir:           "./data",
 		GatewayAddr:       "127.0.0.1:8080",
 		APIAddr:           "127.0.0.1:5001",
@@ -263,7 +270,7 @@ func Default() *Config {
 		DHTProviderAddrTTL:            24 * time.Hour,
 		DHTProviderCleanupInterval:    1 * time.Hour,
 		EnableGeolocation:             true,
-		EnableMDNS:                    true,
+		EnableMDNS:                    false,
 		Tunnel: TunnelConfig{
 			Enabled:   false,
 			Authtoken: "",

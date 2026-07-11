@@ -32,7 +32,7 @@ type DesktopConfig struct {
 	APIAddr          string `json:"api_addr"`
 	GatewayAddr      string `json:"gateway_addr"`
 	KeepAlive        bool   `json:"keep_alive"` // Keep daemon running when GUI closes
-	AutoStart        bool   `json:"auto_start"` // Start daemon on GUI start
+	AutoStart        bool   `json:"auto_start"` // Deprecated: ignored; node starts only via Start Node
 	InstalledVersion string `json:"installed_version"`
 }
 
@@ -63,7 +63,7 @@ func LoadConfig() (*DesktopConfig, error) {
 		APIAddr:     "127.0.0.1:5001",
 		GatewayAddr: "127.0.0.1:8080",
 		KeepAlive:   true,
-		AutoStart:   true,
+		AutoStart:   false, // never auto-start; Start/Stop button only
 	}
 
 	data, err := os.ReadFile(path)
@@ -77,6 +77,8 @@ func LoadConfig() (*DesktopConfig, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	// Force off: daemon is only started via the dashboard Start Node button.
+	cfg.AutoStart = false
 	return cfg, nil
 }
 
@@ -140,20 +142,35 @@ func (dm *DaemonManager) Start(dataDir string) error {
 
 	configPath := filepath.Join(dataDir, "config.yaml")
 
-	// Spawn the daemon
-	cmd := exec.Command(binaryPath, "-datadir", dataDir, "-config", configPath)
-	hideConsoleWindow(cmd)
-	
 	// Create a log file inside the data directory
 	logDir := filepath.Join(dataDir, "logs")
 	_ = os.MkdirAll(logDir, 0755)
 	logFile, err := os.OpenFile(filepath.Join(logDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err == nil {
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+	if err != nil {
+		logFile = nil
 	}
 
-	if err := cmd.Start(); err != nil {
+	startCmd := func(detached bool) (*exec.Cmd, error) {
+		c := exec.Command(binaryPath, "-datadir", dataDir, "-config", configPath)
+		if detached {
+			hideConsoleWindow(c)
+		} else {
+			hideConsoleWindowSimple(c)
+		}
+		if logFile != nil {
+			c.Stdout = logFile
+			c.Stderr = logFile
+		}
+		return c, c.Start()
+	}
+
+	// Prefer a breakaway/detached child so keep-alive survives GUI exit.
+	cmd, err := startCmd(true)
+	if err != nil {
+		// Some Windows job policies reject CREATE_BREAKAWAY_FROM_JOB.
+		cmd, err = startCmd(false)
+	}
+	if err != nil {
 		if logFile != nil {
 			logFile.Close()
 		}
@@ -162,7 +179,8 @@ func (dm *DaemonManager) Start(dataDir string) error {
 
 	dm.cmd = cmd
 
-	// Monitor process termination in a separate goroutine
+	// Monitor process termination in a separate goroutine.
+	// Close the log handle after wait; do not treat Wait failure as fatal.
 	go func() {
 		_ = cmd.Wait()
 		if logFile != nil {
@@ -175,6 +193,8 @@ func (dm *DaemonManager) Start(dataDir string) error {
 		dm.mu.Unlock()
 	}()
 
+	// Brief settle so the OS registers the process before callers probe status.
+	time.Sleep(200 * time.Millisecond)
 	return nil
 }
 
@@ -347,84 +367,27 @@ func findNextFreePort(addr string) (string, error) {
 func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func(percent int, msg string)) (string, error) {
 	progressCb(5, "Checking GitHub for latest releases...")
 
-	// Make HTTP Client with timeout
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/nnlgsakib/membuss/releases/latest", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Membuss-Desktop-App")
-
-	var apiErr error
-	resp, err := client.Do(req)
-	var latestRelease map[string]any
-	if err != nil {
-		apiErr = fmt.Errorf("failed to fetch latest release from GitHub: %w", err)
-	} else {
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			apiErr = fmt.Errorf("GitHub API returned status %s", resp.Status)
-		} else {
-			_ = json.NewDecoder(resp.Body).Decode(&latestRelease)
-		}
-	}
 
 	var downloadUrl string
 	var versionTag string
-	if latestRelease != nil {
-		versionTag, _ = latestRelease["tag_name"].(string)
-		assets, _ := latestRelease["assets"].([]any)
+	var releaseErr error
 
-		// Search for platform-specific asset
-		archiveExt := ".zip"
-		if runtime.GOOS != "windows" {
-			archiveExt = ".tar.gz"
-		}
-		expectedSuffix := fmt.Sprintf("-%s-%s%s", runtime.GOOS, runtime.GOARCH, archiveExt)
-		for _, a := range assets {
-			assetMap, ok := a.(map[string]any)
-			if !ok {
-				continue
-			}
-			name, _ := assetMap["name"].(string)
-			if strings.HasSuffix(name, expectedSuffix) {
-				downloadUrl, _ = assetMap["browser_download_url"].(string)
-				break
-			}
+	info, err := fetchLatestRelease()
+	if err != nil {
+		releaseErr = err
+		progressCb(10, "GitHub API unavailable; will try local binaries if needed...")
+	} else {
+		versionTag = info.TagName
+		downloadUrl = findPlatformAssetURL(info)
+		if !info.FromAPI {
+			progressCb(12, "Resolved latest tag via release page (API rate-limit fallback)...")
 		}
 	}
 
 	binDir := filepath.Join(targetDir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {
 		return "", err
-	}
-
-	// Fallback: If GitHub API query failed or didn't yield a downloadUrl, try getting the tag via HTML redirect.
-	if downloadUrl == "" {
-		progressCb(15, "GitHub API rate limit or error encountered. Retrying via release redirection...")
-		redirClient := &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
-		rresp, rerr := redirClient.Get("https://github.com/nnlgsakib/membuss/releases/latest")
-		if rerr == nil {
-			defer rresp.Body.Close()
-			loc := rresp.Header.Get("Location")
-			if loc != "" {
-				parts := strings.Split(loc, "/tag/")
-				if len(parts) == 2 {
-					versionTag = parts[1]
-					archiveExt := "zip"
-					if runtime.GOOS != "windows" {
-						archiveExt = "tar.gz"
-					}
-					downloadUrl = fmt.Sprintf("https://github.com/nnlgsakib/membuss/releases/download/%s/membuss-%s-%s-%s.%s", versionTag, versionTag, runtime.GOOS, runtime.GOARCH, archiveExt)
-					apiErr = nil // Clear API error since redirect fallback succeeded!
-				}
-			}
-		}
 	}
 
 	// Fallback implementation: If download URL is empty, we look for locally built binaries.
@@ -434,8 +397,8 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 
 		rootBin, err := findLocalBinaries()
 		if err != nil {
-			if apiErr != nil {
-				return "", fmt.Errorf("GitHub release query failed: %w (and local fallback failed: %v)", apiErr, err)
+			if releaseErr != nil {
+				return "", fmt.Errorf("GitHub release query failed: %w (and local fallback failed: %v)", releaseErr, err)
 			}
 			return "", fmt.Errorf("no compatible asset found in GitHub release (and local fallback failed: %w)", err)
 		}

@@ -3,6 +3,21 @@
 #   status: OPEN | FIXED | WONTFIX
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
+[FIXED] BUG-005: Desktop must not auto-start daemon; Start/Stop button only
+  Fixed: 2026-07-11 — removed Go autoStartDaemon + frontend ensureAutoStart;
+  AutoStart forced false on load.
+
+[FIXED] BUG-004: Desktop auto-start daemon on GUI launch unreliable
+  Superseded by BUG-005 (auto-start removed by design).
+
+[FIXED] BUG-003: Desktop "Check Updates" fails with GitHub API rate limit
+  Fixed: 2026-07-11 — non-API-first (redirect → atom → API last) + 30m cache.
+
+[FIXED] BUG-002: Desktop explorer iframe opened every link in system browser
+  (including in-app /explorer/* SPA route changes). Interceptor now only
+  forwards external / target=_blank / download / non-explorer URLs.
+  Fixed: 2026-07-11 — gateway/explorer/explorer.go inject + desktop main.js.
+
 [FIXED] BUG-001: Root URL serves leaked MID content via RefererTracker state
   Fixed: 2026-07-09 — skip referer resolution for root, remove cookie fallback,
   scope recentMIDs per client IP. Commit on features branch.

@@ -597,6 +597,36 @@ func TestStatic(t *testing.T) {
 	}
 }
 
+// TestSPALinkInterceptor ensures the desktop-iframe inject keeps
+// /explorer/* SPA navigation in-app and only opens external links outside.
+func TestSPALinkInterceptor(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// Prefer Accept: text/html so we get the SPA shell (not JSON API stubs).
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	rr := httptest.NewRecorder()
+	srv.Config.Handler.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		"open-external",
+		"isExplorer",
+		"path.indexOf('/explorer/')",
+		"forceExt",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SPA index missing interceptor fragment %q", want)
+		}
+	}
+	// Must NOT blindly preventDefault every link (old bug).
+	if strings.Contains(body, "if(!h||h.startsWith('javascript:'))return;\n    ev.preventDefault();") {
+		t.Error("SPA index still uses the old intercept-all-links script")
+	}
+}
+
 func TestHumanBytes(t *testing.T) {
 	cases := []struct {
 		in   uint64
