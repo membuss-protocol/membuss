@@ -21,6 +21,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -28,7 +29,7 @@ import (
 	"sync"
 
 	"github.com/bits-and-blooms/bloom/v3"
-	"github.com/dgraph-io/badger/v4"
+	"github.com/nnlgsakib/membuss/core/db"
 
 	"github.com/nnlgsakib/membuss/core/mid"
 )
@@ -124,8 +125,8 @@ func newBloomIndex(cfg BloomConfig) (*bloomIndex, error) {
 // when no snapshot file is available. This is a
 // one-time, blocking operation; the caller is expected
 // to invoke it from a constructor.
-func (b *bloomIndex) fromDB(db *badger.DB) error {
-	if db == nil {
+func (b *bloomIndex) fromDB(database *db.DB) error {
+	if database == nil {
 		return errors.New("bloom: nil db")
 	}
 	b.mu.Lock()
@@ -134,25 +135,20 @@ func (b *bloomIndex) fromDB(db *badger.DB) error {
 	if b.filter == nil {
 		b.filter = bloom.NewWithEstimates(b.capacity, b.fpRate)
 	}
-	err := db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for _, prefix := range []string{prefixBlock, prefixDAG} {
-			p := []byte(prefix)
-			for it.Seek(p); it.ValidForPrefix(p); it.Next() {
-				raw := append([]byte(nil), it.Item().Key()...)
-				if len(raw) <= len(p) {
-					continue
-				}
-				b.filter.Add(raw[len(p):])
-			}
-		}
-		return nil
-	})
+	it, err := database.NewIter()
 	if err != nil {
-		return fmt.Errorf("bloom: rebuild from db: %w", err)
+		return err
+	}
+	defer it.Close()
+	for _, prefix := range []string{db.PrefixBlock, db.PrefixDAG} {
+		p := []byte(prefix)
+		for it.SeekGE(p); it.Valid() && bytes.HasPrefix(it.Key(), p); it.Next() {
+			raw := append([]byte(nil), it.Key()...)
+			if len(raw) <= len(p) {
+				continue
+			}
+			b.filter.Add(raw[len(p):])
+		}
 	}
 	return nil
 }
@@ -190,30 +186,25 @@ func (b *bloomIndex) add(m mid.MID) {
 // is bounded by the number of MIDs in the store, which
 // is acceptable because Delete is rare and operates
 // out-of-band from the request path.
-func (b *bloomIndex) rebuildFromDB(db *badger.DB) error {
-	if db == nil {
+func (b *bloomIndex) rebuildFromDB(database *db.DB) error {
+	if database == nil {
 		return errors.New("bloom: nil db")
 	}
 	fresh := bloom.NewWithEstimates(b.capacity, b.fpRate)
-	err := db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for _, prefix := range []string{prefixBlock, prefixDAG} {
-			p := []byte(prefix)
-			for it.Seek(p); it.ValidForPrefix(p); it.Next() {
-				raw := append([]byte(nil), it.Item().Key()...)
-				if len(raw) <= len(p) {
-					continue
-				}
-				fresh.Add(raw[len(p):])
-			}
-		}
-		return nil
-	})
+	it, err := database.NewIter()
 	if err != nil {
 		return err
+	}
+	defer it.Close()
+	for _, prefix := range []string{db.PrefixBlock, db.PrefixDAG} {
+		p := []byte(prefix)
+		for it.SeekGE(p); it.Valid() && bytes.HasPrefix(it.Key(), p); it.Next() {
+			raw := append([]byte(nil), it.Key()...)
+			if len(raw) <= len(p) {
+				continue
+			}
+			fresh.Add(raw[len(p):])
+		}
 	}
 	b.mu.Lock()
 	b.filter = fresh

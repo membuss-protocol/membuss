@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/badger/v4"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/nnlgsakib/membuss/core/db"
 	"github.com/nnlgsakib/membuss/core/mid"
 
 	membusspb "github.com/nnlgsakib/membuss/proto"
@@ -616,9 +616,6 @@ func TestMemStoreValueLogGC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemStore: %v", err)
 	}
-	if s.stopGC == nil {
-		t.Error("expected stopGC channel to be initialized")
-	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -706,12 +703,7 @@ func TestMemStoreTimestampsWrittenOnPut(t *testing.T) {
 	}
 
 	// Verify a timestamp was stored.
-	var ts uint64
-	err := s.db.View(func(txn *badger.Txn) error {
-		var err error
-		ts, err = readTimestamp(txn, m)
-		return err
-	})
+	ts, err := db.ReadTimestamp(s.db, m)
 	if err != nil {
 		t.Fatalf("readTimestamp: %v", err)
 	}
@@ -733,12 +725,7 @@ func TestMemStoreTimestampsWrittenOnPutDAG(t *testing.T) {
 		t.Fatalf("PutDAG: %v", err)
 	}
 
-	var ts uint64
-	err := s.db.View(func(txn *badger.Txn) error {
-		var err error
-		ts, err = readTimestamp(txn, m)
-		return err
-	})
+	ts, err := db.ReadTimestamp(s.db, m)
 	if err != nil {
 		t.Fatalf("readTimestamp: %v", err)
 	}

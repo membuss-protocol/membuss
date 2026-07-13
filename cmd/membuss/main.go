@@ -687,7 +687,7 @@ func banner(cfg *config.Config, cfgPath string, inMemory, noAnchor bool) {
 	)
 }
 
-// openStore opens the local BadgerDB block store. When
+// openStore opens the local block store. When
 // inMemory is true, the store is backed by RAM and discards
 // its contents on Close. The data dir is still passed through
 // to subsystems that need it (host identity, etc.).
@@ -709,7 +709,30 @@ func openStore(cfg *config.Config, inMemory bool) (store.Store, error) {
 		return nil, fmt.Errorf("store migration: %w", err)
 	}
 
-	return store.NewMemStore(store.Options{Path: filepath.Join(cfg.DataDir, "datastore"), Bloom: bloom})
+	datastorePath := filepath.Join(cfg.DataDir, "datastore")
+	if isBadgerDbDir(datastorePath) {
+		slog.Info("Legacy BadgerDB detected. Removing old datastore to initialize Pebble...", "path", datastorePath)
+		_ = os.RemoveAll(datastorePath)
+	}
+
+	return store.NewMemStore(store.Options{Path: datastorePath, Bloom: bloom})
+}
+
+func isBadgerDbDir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "DISCARD" || name == "KEYREGISTRY" || filepath.Ext(name) == ".vlog" {
+			return true
+		}
+	}
+	return false
 }
 
 // migrateBadgerFiles moves BadgerDB files from the root of dataDir to the
