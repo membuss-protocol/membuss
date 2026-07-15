@@ -1108,20 +1108,51 @@ func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
 
 func (e *Explorer) handleConnectPeer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Multiaddr string `json:"multiaddr"`
+		Multiaddr  string   `json:"multiaddr"`
+		Multiaddrs []string `json:"multiaddrs"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Multiaddr == "" {
-		http.Error(w, `{"ok":false,"error":"multiaddr required"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"ok":false,"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
-	if err := e.cfg.Backend.ConnectPeer(r.Context(), req.Multiaddr); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusFailedDependency)
-		errJSON, _ := json.Marshal(err.Error())
-		fmt.Fprintf(w, `{"ok":false,"error":%s}`, errJSON)
+
+	addrs := req.Multiaddrs
+	if len(addrs) == 0 && req.Multiaddr != "" {
+		addrs = []string{req.Multiaddr}
+	}
+
+	if len(addrs) == 0 {
+		http.Error(w, `{"ok":false,"error":"multiaddr or multiaddrs required"}`, http.StatusBadRequest)
 		return
 	}
+
+	var errors []string
+	var successCount int
+
+	for _, addr := range addrs {
+		if addr == "" {
+			continue
+		}
+		if err := e.cfg.Backend.ConnectPeer(r.Context(), addr); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %s", addr, err.Error()))
+		} else {
+			successCount++
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	if len(errors) > 0 {
+		errJSON, _ := json.Marshal(errors)
+		if successCount > 0 {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"ok":true,"success_count":%d,"errors":%s}`, successCount, errJSON)
+		} else {
+			w.WriteHeader(http.StatusFailedDependency)
+			fmt.Fprintf(w, `{"ok":false,"error":"All connections failed","errors":%s}`, errJSON)
+		}
+		return
+	}
+
 	fmt.Fprint(w, `{"ok":true}`)
 }
 

@@ -391,38 +391,29 @@
 		connectStatus = 'loading';
 		connectError = '';
 
-		let successCount = 0;
-		let lastError = '';
-
-		for (const addr of parsedAddrs) {
-			try {
-				const data = await apiFetch('/peers/connect', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ multiaddr: addr })
-				});
-				if (data.ok) {
-					successCount++;
+		try {
+			const data = await apiFetch('/peers/connect', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ multiaddrs: parsedAddrs })
+			});
+			if (data.ok) {
+				if (data.errors && data.errors.length > 0) {
+					connectStatus = 'ok';
+					connectAddr = '';
+					connectError = `Connected to ${data.success_count}/${parsedAddrs.length} peers. Errors: ${data.errors.join('; ')}`;
 				} else {
-					lastError = data.error || `Failed to connect to ${addr}`;
+					connectStatus = 'ok';
+					connectAddr = '';
 				}
-			} catch (e) {
-				lastError = e instanceof Error ? e.message : `Request failed for ${addr}`;
+				loadPeers();
+			} else {
+				connectStatus = 'error';
+				connectError = data.error || 'Connection failed';
 			}
-		}
-
-		if (successCount === parsedAddrs.length) {
-			connectStatus = 'ok';
-			connectAddr = '';
-			loadPeers();
-		} else if (successCount > 0) {
-			connectStatus = 'ok';
-			connectAddr = '';
-			connectError = `Connected to ${successCount}/${parsedAddrs.length} peers. Last error: ${lastError}`;
-			loadPeers();
-		} else {
+		} catch (e) {
 			connectStatus = 'error';
-			connectError = lastError;
+			connectError = e instanceof Error ? e.message : 'Request failed';
 		}
 	}
 
