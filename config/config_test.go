@@ -37,8 +37,8 @@ func TestDefault(t *testing.T) {
 	if cfg.EnableMDNS {
 		t.Fatal("mDNS must be opt-in in the production default")
 	}
-	if len(cfg.BootstrapPeers) != 0 {
-		t.Fatalf("default BootstrapPeers = %v, want no volatile public endpoint", cfg.BootstrapPeers)
+	if len(cfg.BootstrapPeers) != 2 {
+		t.Fatalf("default BootstrapPeers = %v, want 2 bootstrap peers", cfg.BootstrapPeers)
 	}
 }
 

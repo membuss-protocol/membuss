@@ -224,7 +224,10 @@ func Default() *Config {
 			"/ip6/::/tcp/4002/ws",
 		},
 		AnnounceAddrs:     []string{},
-		BootstrapPeers:    []string{},
+		BootstrapPeers: []string{
+			"/ip4/37.60.239.84/tcp/4001/p2p/12D3KooWBDGfrVVLz8cG34jYUNTSghg9ZCV5hyM4b55jBWnYPDVd",
+			"/ip4/45.10.162.79/tcp/4001/p2p/12D3KooWPJHURqoqd9NYknBSBb6XZ79BedmunDZQ4QA9b6u2v9in",
+		},
 		RelayPeers:        []string{},
 		DataDir:           "./data",
 		GatewayAddr:       "127.0.0.1:8080",
