@@ -202,7 +202,7 @@
 					selfHasGeo = true;
 				}
 
-				const peersList = data.Peers.map((p, idx) => {
+				const peersList: DisplayPeer[] = data.Peers.map((p, idx) => {
 					let transport = 'QUIC (UDP)';
 					if (p.Addrs && p.Addrs.length > 0) {
 						if (p.Addrs[0].includes('/tcp/')) transport = 'TCP';
@@ -297,6 +297,70 @@
 			return 0;
 		});
 	});
+
+	let copiedAll = $state(false);
+
+	function copyAllPublicAddrs() {
+		const publicAddrs: string[] = [];
+		displayPeers.forEach((p) => {
+			if (p.isSelf) return;
+			if (!p.addrs) return;
+			p.addrs.forEach((addr) => {
+				const lower = addr.toLowerCase();
+				const isPrivate = 
+					lower.includes('/127.0.0.1') ||
+					lower.includes('/::1') ||
+					lower.includes('/localhost') ||
+					lower.includes('/192.168.') ||
+					lower.includes('/10.') ||
+					lower.includes('/172.16.') ||
+					lower.includes('/172.17.') ||
+					lower.includes('/172.18.') ||
+					lower.includes('/172.19.') ||
+					lower.includes('/172.20.') ||
+					lower.includes('/172.21.') ||
+					lower.includes('/172.22.') ||
+					lower.includes('/172.23.') ||
+					lower.includes('/172.24.') ||
+					lower.includes('/172.25.') ||
+					lower.includes('/172.26.') ||
+					lower.includes('/172.27.') ||
+					lower.includes('/172.28.') ||
+					lower.includes('/172.29.') ||
+					lower.includes('/172.30.') ||
+					lower.includes('/172.31.') ||
+					lower.includes('/0.0.0.0') ||
+					lower.includes('/fe80::') ||
+					lower.includes('/p2p-circuit') ||
+					lower.includes('mdns') ||
+					lower.includes('local');
+				
+				if (!isPrivate) {
+					let fullAddr = addr;
+					if (!fullAddr.includes('/p2p/')) {
+						if (fullAddr.endsWith('/')) {
+							fullAddr = fullAddr.slice(0, -1);
+						}
+						fullAddr = `${fullAddr}/p2p/${p.peerId}`;
+					}
+					publicAddrs.push(fullAddr);
+				}
+			});
+		});
+
+		if (publicAddrs.length === 0) {
+			alert('No public swarm addresses found.');
+			return;
+		}
+
+		const text = publicAddrs.join('\n');
+		navigator.clipboard.writeText(text).then(() => {
+			copiedAll = true;
+			setTimeout(() => {
+				copiedAll = false;
+			}, 2000);
+		});
+	}
 
 	function copyToClipboard(text: string, id: string) {
 		navigator.clipboard.writeText(text).then(() => {
@@ -478,7 +542,17 @@
 				<div
 					class="px-6 py-4 bg-slate-950/40 border-b border-white/[0.04] flex flex-col sm:flex-row sm:items-center justify-between gap-4"
 				>
-					<h3 class="font-bold text-sm text-slate-350 font-mono">Swarm Connections</h3>
+					<div class="flex items-center gap-3">
+						<h3 class="font-bold text-sm text-slate-350 font-mono">Swarm Connections</h3>
+						<button
+							onclick={copyAllPublicAddrs}
+							class="text-[10px] text-cyan-400 hover:text-cyan-300 active:text-cyan-550 transition-colors font-mono cursor-pointer bg-slate-900/60 hover:bg-slate-900/90 border border-cyan-500/20 px-2 py-0.5 rounded-lg flex items-center gap-1 shadow-sm"
+							title="Copy all public multiaddresses to clipboard"
+						>
+							<Icon icon="ph:copy" class="w-3.5 h-3.5 text-cyan-400" />
+							{copiedAll ? 'Copied Swarm!' : 'Copy Public Addrs'}
+						</button>
+					</div>
 					<div class="relative w-full sm:w-64">
 						<input
 							type="text"
