@@ -38,6 +38,32 @@ func (f *fakeStore) AllBlocks() ([]mid.MID, error) {
 	return out, nil
 }
 
+func (f *fakeStore) IterateSealed(fn func(mid.MID) error) error {
+	f.mu.Lock()
+	mids := make([]mid.MID, len(f.sealed))
+	copy(mids, f.sealed)
+	f.mu.Unlock()
+	for _, m := range mids {
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) IterateBlocks(fn func(mid.MID) error) error {
+	f.mu.Lock()
+	mids := make([]mid.MID, len(f.blocks))
+	copy(mids, f.blocks)
+	f.mu.Unlock()
+	for _, m := range mids {
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *fakeStore) Get(m mid.MID) ([]byte, error) {
 	return nil, errors.New("not found")
 }

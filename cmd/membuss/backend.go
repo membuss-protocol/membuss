@@ -108,6 +108,8 @@ func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize
 	switch chunker {
 	case "rabin":
 		factory = chunk.NewRabin()
+	case "fastcdc":
+		factory = chunk.NewFastCDC()
 	default:
 		size := int(chunkSize)
 		if size <= 0 {
@@ -158,9 +160,11 @@ func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize
 		}
 		// Announce to the DHT so other nodes can find this MID.
 		if b.dht != nil {
-			announceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			provideRecursive(announceCtx, b.dht, b.store, root)
-			cancel()
+			go func(r mid.MID) {
+				announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				provideRecursive(announceCtx, b.dht, b.store, r)
+			}(root)
 		}
 	}
 
@@ -344,9 +348,11 @@ func (b *daemonBackend) Seal(ctx context.Context, midStr string, recursive bool)
 	}
 	// Announce.
 	if b.dht != nil {
-		announceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		provideRecursive(announceCtx, b.dht, b.store, root)
-		cancel()
+		go func(r mid.MID) {
+			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			provideRecursive(announceCtx, b.dht, b.store, r)
+		}(root)
 	}
 	return serverpkg.SealResult{Pinned: blocks, Already: false}, nil
 }

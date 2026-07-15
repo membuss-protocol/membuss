@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -101,14 +102,22 @@ func (s *MemStore) IsSealed(m mid.MID) (bool, error) {
 
 // AllSealed returns every MID with a direct seal record.
 func (s *MemStore) AllSealed() ([]mid.MID, error) {
+	var out []mid.MID
+	err := s.IterateSealed(func(m mid.MID) error {
+		out = append(out, m)
+		return nil
+	})
+	return out, err
+}
+
+func (s *MemStore) IterateSealed(fn func(mid.MID) error) error {
 	if err := s.enter(); err != nil {
-		return nil, err
+		return err
 	}
 	defer s.exit()
-	var out []mid.MID
 	it, err := s.db.NewIter()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer it.Close()
 	prefix := []byte(db.PrefixSeal)
@@ -133,9 +142,11 @@ func (s *MemStore) AllSealed() ([]mid.MID, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, m)
+		if err := fn(m); err != nil {
+			return err
+		}
 	}
-	return out, nil
+	return nil
 }
 
 // GC walks every sealed root, collects the reachable MID set,
@@ -155,7 +166,20 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 		ctx = context.Background()
 	}
 
-	reachable := make(map[string]struct{})
+	// Create a temporary disk-backed Pebble DB to track reachability.
+	// This keeps memory usage O(1) even with millions of blocks.
+	tmpDir, err := os.MkdirTemp("", "membuss-gc-*")
+	if err != nil {
+		return 0, fmt.Errorf("store: gc tmpdir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpDB, err := db.Open(db.Options{Path: tmpDir})
+	if err != nil {
+		return 0, fmt.Errorf("store: gc tmpdb open: %w", err)
+	}
+	defer tmpDB.Close()
+
 	roots, err := s.AllSealed()
 	if err != nil {
 		return 0, err
@@ -167,18 +191,13 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 		if root.IsZero() {
 			continue
 		}
-		reachable[string(root.Bytes())] = struct{}{}
+		_ = tmpDB.Set(root.Bytes(), []byte{1})
 		_ = Walk(s, root, func(m mid.MID, _ bool) error {
-			reachable[string(m.Bytes())] = struct{}{}
+			_ = tmpDB.Set(m.Bytes(), []byte{1})
 			return nil
 		})
 	}
 
-	type pendingDelete struct {
-		key   []byte
-		bytes uint64
-	}
-	var toDelete []pendingDelete
 	var minAgeTs uint64
 	if minAge > 0 {
 		minAgeTs = uint64(time.Now().Add(-minAge).Unix())
@@ -190,64 +209,66 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 	}
 	defer it.Close()
 
-	for it.First(); it.Valid(); it.Next() {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		k := it.Key()
-		ks := string(k)
-		if len(ks) > len(db.PrefixMeta) && ks[:len(db.PrefixMeta)] == db.PrefixMeta {
-			continue
-		}
-		if len(ks) > len(db.PrefixSeal) && ks[:len(db.PrefixSeal)] == db.PrefixSeal {
-			continue
-		}
-		isBlock := len(ks) > len(db.PrefixBlock) && ks[:len(db.PrefixBlock)] == db.PrefixBlock
-		isDAG := len(ks) > len(db.PrefixDAG) && ks[:len(db.PrefixDAG)] == db.PrefixDAG
-		if !isBlock && !isDAG {
-			continue
-		}
-		raw := k
-		if isBlock {
-			raw = k[len(db.PrefixBlock):]
-		} else {
-			raw = k[len(db.PrefixDAG):]
-		}
-		if _, ok := reachable[string(raw)]; ok {
-			continue
-		}
-		if minAgeTs > 0 {
-			m, merr := mid.FromMultihash(mid.CodecRaw, raw)
-			if merr == nil {
-				if ts, terr := db.ReadTimestamp(s.db, m); terr == nil && ts >= minAgeTs {
-					continue
+	var freed uint64
+	batch := s.db.NewBatch()
+	defer batch.Close()
+	count := 0
+
+	// GC Phase 2: only scan PrefixBlock and PrefixDAG keys to avoid reading metadata and seals
+	for _, prefix := range [][]byte{[]byte(db.PrefixBlock), []byte(db.PrefixDAG)} {
+		for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return freed, err
+			}
+			k := it.Key()
+			raw := k[len(prefix):]
+
+			// Check if key is reachable
+			isReachable, err := tmpDB.Has(raw)
+			if err == nil && isReachable {
+				continue
+			}
+
+			// Check if key is older than minAge
+			if minAgeTs > 0 {
+				m, merr := mid.FromMultihash(mid.CodecRaw, raw)
+				if merr == nil {
+					if ts, terr := db.ReadTimestamp(s.db, m); terr == nil && ts >= minAgeTs {
+						continue
+					}
 				}
 			}
-		}
-		toDelete = append(toDelete, pendingDelete{
-			key:   append([]byte(nil), k...),
-			bytes: uint64(len(k) + len(it.Value())),
-		})
-	}
-	_ = it.Close()
 
-	var freed uint64
-	const batchSize = 100
-	for i := 0; i < len(toDelete); i += batchSize {
-		end := i + batchSize
-		if end > len(toDelete) {
-			end = len(toDelete)
+			valSize := uint64(len(it.Value()))
+			if s.blocksPath != "" && len(it.Value()) == 8 {
+				valSize = binary.BigEndian.Uint64(it.Value())
+			}
+			_ = batch.Delete(k)
+			freed += uint64(len(k)) + valSize
+
+			if s.blocksPath != "" {
+				m, merr := mid.FromMultihash(mid.CodecRaw, raw)
+				if merr == nil {
+					_ = os.Remove(s.blockPath(m))
+				}
+			}
+			count++
+
+			if count >= 1000 {
+				if err := batch.Commit(); err != nil {
+					return freed, fmt.Errorf("store: gc batch delete failed: %w", err)
+				}
+				batch.Close()
+				batch = s.db.NewBatch()
+				count = 0
+			}
 		}
-		batch := s.db.NewBatch()
-		for _, pd := range toDelete[i:end] {
-			_ = batch.Delete(pd.key)
-			freed += pd.bytes
-		}
+	}
+
+	if count > 0 {
 		if err := batch.Commit(); err != nil {
-			batch.Close()
-			return freed, err
+			return freed, fmt.Errorf("store: gc final batch delete failed: %w", err)
 		}
-		batch.Close()
 	}
 
 	return freed, nil
@@ -381,7 +402,11 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 			for _, key := range [][]byte{db.BlockKey(m), db.DagKey(m)} {
 				val, err := s.db.Get(key)
 				if err == nil {
-					size += uint64(len(val))
+					if s.blocksPath != "" && len(val) == 8 {
+						size += binary.BigEndian.Uint64(val)
+					} else {
+						size += uint64(len(val))
+					}
 					_ = batch.Delete(key)
 					deletedThisBlock = true
 				}
@@ -389,6 +414,9 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 			if deletedThisBlock {
 				blocksDeleted++
 				bytesFreed += size
+				if s.blocksPath != "" {
+					_ = os.Remove(s.blockPath(m))
+				}
 			}
 
 			_ = batch.Delete(db.MetaKey("obj/" + m.String()))

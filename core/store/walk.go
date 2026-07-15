@@ -71,9 +71,30 @@ func Walk(bs BlockGetter, root mid.MID, visit func(m mid.MID, leaf bool) error) 
 		}
 		visited[key] = struct{}{}
 
+		var size int64 = -1
+		if checker, ok := bs.(interface {
+			GetSize(mid.MID) (int64, error)
+		}); ok {
+			var err error
+			size, err = checker.GetSize(m)
+			if err != nil {
+				return fmt.Errorf("store: walk size %s: %w", m.String(), err)
+			}
+		}
+
+		if m.Codec() == mid.CodecRaw && size > 16384 {
+			// Large raw data block is a leaf node; skip loading payload
+			return visit(m, true)
+		}
+
 		data, err := bs.Get(m)
 		if err != nil {
 			return fmt.Errorf("store: walk get %s: %w", m.String(), err)
+		}
+
+		if m.Codec() == mid.CodecRaw && int64(len(data)) > 16384 {
+			// Fallback case: large raw block loaded, skip parsing, it is a leaf
+			return visit(m, true)
 		}
 
 		var childMIDs []mid.MID

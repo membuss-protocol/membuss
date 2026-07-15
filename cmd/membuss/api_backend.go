@@ -12,8 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,40 +35,45 @@ func newAPIAdapter(b *daemonBackend) *apiAdapter { return &apiAdapter{b: b} }
 // bytes to a temp file because daemonBackend.Add takes a
 // path. The temp file is removed on return.
 func (a *apiAdapter) Add(ctx context.Context, name string, r io.Reader) (api.AddResult, error) {
-	b := a.b
-	if b == nil || b.store == nil {
+	if a == nil || a.b == nil || a.b.store == nil {
 		return api.AddResult{}, errors.New("api: no backend")
 	}
 	if r == nil {
 		return api.AddResult{}, errors.New("api: nil reader")
 	}
-	f, err := os.CreateTemp("", "membuss-api-add-*")
+
+	b := a.memFSBuilder()
+	if chunker, ok := ctx.Value(api.ChunkerKey).(string); ok && chunker != "" {
+		b = b.WithChunker(chunker)
+	}
+
+	mime := store.SniffMime(name)
+	res, err := b.AddFile(name, r, 0o644, time.Time{}, mime)
 	if err != nil {
 		return api.AddResult{}, err
 	}
-	tmpPath := f.Name()
-	defer os.Remove(tmpPath)
-	// Stream the upload to disk. The HTTP handler caps the
-	// body with MaxBytesReader; here we just copy.
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return api.AddResult{}, err
+
+	// Update ObjectInfo for the root MID to set IsRoot: true.
+	if oi, err := store.GetObjectInfo(a.b.store, res.MID); err == nil {
+		oi.IsRoot = true
+		_ = store.SetObjectInfo(a.b.store, res.MID, oi)
 	}
-	if err := f.Close(); err != nil {
-		return api.AddResult{}, err
+
+	_ = a.b.store.Seal(res.MID, true)
+	if a.b.dht != nil {
+		go func(r mid.MID) {
+			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			provideRecursive(announceCtx, a.b.dht, a.b.store, r)
+		}(res.MID)
 	}
-	// Phase 19: forward the caller-supplied name so the
-	// daemon can persist it as the per-MID ObjectInfo.
-	res, err := b.Add(ctx, tmpPath, "", 0, true, name, "")
-	if err != nil {
-		return api.AddResult{}, err
-	}
+
 	return api.AddResult{
-		MID:      res.MID,
+		MID:      res.MID.String(),
 		Size:     res.Size,
-		Blocks:   res.Blocks,
-		Name:     res.Name,
-		MimeType: res.MimeType,
+		Blocks:   res.Block,
+		Name:     name,
+		MimeType: mime,
 	}, nil
 }
 
@@ -225,14 +228,11 @@ func (a *apiAdapter) AddFile(ctx context.Context, name string, r io.Reader, wrap
 	if r == nil {
 		return api.AddResult{}, errors.New("api: nil reader")
 	}
-	// Read the body fully so we can both MemFS-add and
-	// (when needed) fall through to the legacy store.
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return api.AddResult{}, err
-	}
 	b := a.memFSBuilder()
-	res, err := b.AddFile(name, bytes.NewReader(data), 0o644, time.Time{}, "")
+	if chunker, ok := ctx.Value(api.ChunkerKey).(string); ok && chunker != "" {
+		b = b.WithChunker(chunker)
+	}
+	res, err := b.AddFile(name, r, 0o644, time.Time{}, "")
 	if err != nil {
 		return api.AddResult{}, err
 	}
@@ -248,9 +248,11 @@ func (a *apiAdapter) AddFile(ctx context.Context, name string, r io.Reader, wrap
 	// Seal and announce, mirroring the legacy Add path.
 	_ = a.b.store.Seal(res.MID, true)
 	if a.b.dht != nil {
-		announceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		provideRecursive(announceCtx, a.b.dht, a.b.store, res.MID)
-		cancel()
+		go func(r mid.MID) {
+			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			provideRecursive(announceCtx, a.b.dht, a.b.store, r)
+		}(res.MID)
 	}
 	// Update ObjectInfo for the root MID to set IsRoot: true.
 	if oi, err := store.GetObjectInfo(a.b.store, res.MID); err == nil {
@@ -275,12 +277,6 @@ func (a *apiAdapter) AddDirectory(ctx context.Context, name string, parts []api.
 	if len(parts) == 0 {
 		return api.AddResult{}, errors.New("api: no parts")
 	}
-	tmp, err := os.MkdirTemp("", "membuss-api-add-dir-*")
-	if err != nil {
-		return api.AddResult{}, err
-	}
-	defer os.RemoveAll(tmp)
-
 	commonPrefix := ""
 	if len(parts) > 0 {
 		first := strings.ReplaceAll(parts[0].Path, "\\", "/")
@@ -301,36 +297,24 @@ func (a *apiAdapter) AddDirectory(ctx context.Context, name string, parts []api.
 		}
 	}
 
+	var streamEntries []memfs.StreamEntry
 	for _, p := range parts {
-		// Normalize separators: accept both "/" and the
-		// OS-specific separator. fs.FS uses "/".
-		rel := strings.ReplaceAll(p.Path, string(filepath.Separator), "/")
+		rel := strings.ReplaceAll(p.Path, "\\", "/")
 		if commonPrefix != "" {
 			rel = strings.TrimPrefix(rel, commonPrefix)
 		}
-		rel = path.Clean("/" + rel)
-		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" || rel == "." {
-			continue
-		}
-		full := filepath.Join(tmp, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return api.AddResult{}, err
-		}
-		f, err := os.Create(full)
-		if err != nil {
-			return api.AddResult{}, err
-		}
-		if _, err := f.Write(p.Data); err != nil {
-			f.Close()
-			return api.AddResult{}, err
-		}
-		if err := f.Close(); err != nil {
-			return api.AddResult{}, err
-		}
+		streamEntries = append(streamEntries, memfs.StreamEntry{
+			Path: rel,
+			Size: p.Size,
+			R:    bytes.NewReader(p.Data),
+		})
 	}
+
 	b := a.memFSBuilder()
-	res, err := b.AddDirectoryFromFS(os.DirFS(tmp), ".")
+	if chunker, ok := ctx.Value(api.ChunkerKey).(string); ok && chunker != "" {
+		b = b.WithChunker(chunker)
+	}
+	res, err := b.AddDirectoryStream(streamEntries)
 	if err != nil {
 		return api.AddResult{}, err
 	}
@@ -356,9 +340,11 @@ func (a *apiAdapter) AddDirectory(ctx context.Context, name string, parts []api.
 	})
 	_ = a.b.store.Seal(res.MID, true)
 	if a.b.dht != nil {
-		announceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		provideRecursive(announceCtx, a.b.dht, a.b.store, res.MID)
-		cancel()
+		go func(r mid.MID) {
+			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			provideRecursive(announceCtx, a.b.dht, a.b.store, r)
+		}(res.MID)
 	}
 	return api.AddResult{
 		MID:    res.MID.String(),

@@ -295,6 +295,18 @@ func (a *memexBlockstoreAdapter) Put(m mid.MID, data []byte) error { return a.b.
 func (a *memexBlockstoreAdapter) Get(m mid.MID) ([]byte, error)    { return a.b.Get(m) }
 func (a *memexBlockstoreAdapter) Has(m mid.MID) (bool, error)      { return a.b.Has(m) }
 func (a *memexBlockstoreAdapter) Delete(m mid.MID) error           { return nil }
+func (a *memexBlockstoreAdapter) GetSize(m mid.MID) (int64, error) {
+	if checker, ok := a.b.(interface {
+		GetSize(mid.MID) (int64, error)
+	}); ok {
+		return checker.GetSize(m)
+	}
+	data, err := a.b.Get(m)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(data)), nil
+}
 
 // PutMeta / GetMeta are not part of the narrower
 // memex.Blockstore contract. They are added here so

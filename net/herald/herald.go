@@ -78,6 +78,10 @@ type SealedLister interface {
 	AllBlocks() ([]mid.MID, error)
 	// Get returns the block payload for the given MID.
 	Get(mid.MID) ([]byte, error)
+	// IterateBlocks invokes fn for every block/DAG MID.
+	IterateBlocks(fn func(mid.MID) error) error
+	// IterateSealed invokes fn for every sealed root MID.
+	IterateSealed(fn func(mid.MID) error) error
 }
 
 // Provider announces that this node is a provider of m. The
@@ -446,7 +450,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 		if h.cfg.ReprovideGroups > 1 {
 			hVal := deterministicHash(m)
 			if hVal%uint32(h.cfg.ReprovideGroups) != uint32(cycle%h.cfg.ReprovideGroups) {
-				return nil // skip this MID in this cycle
+return nil // skip this MID in this cycle
 			}
 		}
 		return fn(m)
@@ -454,47 +458,28 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 
 	switch h.cfg.Strategy {
 	case StrategyAll:
-		mids, err := h.cfg.Store.AllBlocks()
-		if err != nil {
-			return err
-		}
-		for _, m := range mids {
+		err := h.cfg.Store.IterateBlocks(func(m mid.MID) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if err := filterFn(m); err != nil {
-				return err
-			}
-		}
-		return nil
+			return filterFn(m)
+		})
+		return err
 
 	case StrategyShards:
-		sealed, err := h.cfg.Store.AllSealed()
-		if err != nil {
-			return err
-		}
-		if h.cfg.ShardRing == nil || h.cfg.PeerID == "" {
-			for _, m := range sealed {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				if err := filterFn(m); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-
-		for _, m := range sealed {
+		err := h.cfg.Store.IterateSealed(func(m mid.MID) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if h.cfg.ShardRing == nil || h.cfg.PeerID == "" {
+				return filterFn(m)
+			}
 			if m.IsZero() {
-				continue
+				return nil
 			}
 			peers, err := h.cfg.ShardRing.Assign(m, h.cfg.Replicas)
 			if err != nil {
-				continue
+				return nil
 			}
 			for _, p := range peers {
 				if p == h.cfg.PeerID {
@@ -504,49 +489,45 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 					break
 				}
 			}
-		}
-		return nil
+			return nil
+		})
+		return err
 
 	case StrategyRoots, "":
-		roots, err := h.cfg.Store.AllSealed()
-		if err != nil {
-			return err
-		}
 		seen := make(map[string]struct{})
-		for _, r := range roots {
+		err := h.cfg.Store.IterateSealed(func(r mid.MID) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			if r.IsZero() {
-				continue
+				return nil
 			}
-			if _, ok := seen[r.String()]; !ok {
-				seen[r.String()] = struct{}{}
-				if err := filterFn(r); err != nil {
-					return err
+			// Pin root itself
+			if err := filterFn(r); err != nil {
+				return err
+			}
+
+			// Traverse DAG and announce components
+			walkErr := store.Walk(h.cfg.Store, r, func(m mid.MID, _ bool) error {
+				if m.Equal(r) {
+					return nil
 				}
-			}
-			
-			// Walk recursively to find all sub-files/directories
-			walkErr := store.Walk(h.cfg.Store, r, func(m mid.MID, leaf bool) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if m.Codec() == mid.CodecMemFS {
-					if _, ok := seen[m.String()]; !ok {
-						seen[m.String()] = struct{}{}
-						if err := filterFn(m); err != nil {
-							return err
-						}
-					}
+				mStr := m.String()
+				if _, ok := seen[mStr]; ok {
+					return nil
 				}
-				return nil
+				seen[mStr] = struct{}{}
+				return filterFn(m)
 			})
 			if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
 				log.Printf("herald: walk error for root %s: %v", r, walkErr)
 			}
-		}
-		return nil
+			return nil
+		})
+		return err
 
 	default:
 		return fmt.Errorf("herald: unknown strategy %q", h.cfg.Strategy)

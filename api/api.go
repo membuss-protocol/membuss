@@ -36,6 +36,10 @@ import (
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
+type contextKey string
+
+const ChunkerKey contextKey = "chunker"
+
 // Backend is the contract the Node API depends on. The
 // daemon supplies a real implementation; tests inject a
 // memBackend.
@@ -368,7 +372,11 @@ func (a *NodeAPI) handleAdd(w http.ResponseWriter, r *http.Request) {
 	// /mem/{mid}/ gateway path.
 	wrap := r.URL.Query().Get("wrap") == "dir"
 	name = sanitizePath(name)
-	res, err := a.cfg.Backend.AddFile(r.Context(), name, reader, wrap)
+	ctx := r.Context()
+	if chunker := r.URL.Query().Get("chunker"); chunker != "" {
+		ctx = context.WithValue(ctx, ChunkerKey, chunker)
+	}
+	res, err := a.cfg.Backend.AddFile(ctx, name, reader, wrap)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
@@ -448,7 +456,11 @@ func (a *NodeAPI) handleAddDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("name")
-	res, err := a.cfg.Backend.AddDirectory(r.Context(), name, parts)
+	ctx := r.Context()
+	if chunker := r.URL.Query().Get("chunker"); chunker != "" {
+		ctx = context.WithValue(ctx, ChunkerKey, chunker)
+	}
+	res, err := a.cfg.Backend.AddDirectory(ctx, name, parts)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return

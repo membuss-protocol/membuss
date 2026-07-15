@@ -5,8 +5,10 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -66,12 +68,19 @@ type Store interface {
 
 	// DropAll deletes every key and value in the store, resetting it to empty.
 	DropAll() error
+
+	// IterateBlocks invokes fn for every block/DAG MID in the store.
+	IterateBlocks(fn func(mid.MID) error) error
+
+	// IterateSealed invokes fn for every sealed root MID in the store.
+	IterateSealed(fn func(mid.MID) error) error
 }
 
 // MemStore is the db-backed Store implementation.
 type MemStore struct {
-	db    *db.DB
-	bloom *bloomIndex
+	db         *db.DB
+	bloom      *bloomIndex
+	blocksPath string
 
 	mu       sync.RWMutex
 	wg       sync.WaitGroup
@@ -84,6 +93,11 @@ type Options struct {
 	// Path is the on-disk directory DB will use. Required
 	// unless InMemory is true.
 	Path string
+
+	// BlocksPath is the on-disk directory where block payloads are stored
+	// in an IPFS-like flat directory structure. If empty and Path is set,
+	// defaults to filepath.Join(filepath.Dir(Path), "blocks").
+	BlocksPath string
 
 	// InMemory, if true, makes DB use an in-memory VFS
 	// backend and ignores Path. Used for tests.
@@ -117,11 +131,32 @@ func NewMemStore(opts Options) (*MemStore, error) {
 	}
 
 	s := &MemStore{db: pdb}
+	if !opts.InMemory {
+		if opts.BlocksPath != "" {
+			s.blocksPath = opts.BlocksPath
+		} else if opts.Path != "" {
+			s.blocksPath = filepath.Join(filepath.Dir(filepath.Clean(opts.Path)), "blocks")
+		}
+	}
+
 	if err := s.initBloom(opts.Bloom); err != nil {
 		_ = pdb.Close()
 		return nil, fmt.Errorf("store: init bloom: %w", err)
 	}
 	return s, nil
+}
+
+func (s *MemStore) blockPath(m mid.MID) string {
+	if s.blocksPath == "" {
+		return ""
+	}
+	mStr := m.String()
+	if len(mStr) < 3 {
+		return filepath.Join(s.blocksPath, "xx", mStr+".data")
+	}
+	// next-to-last two characters
+	prefix := mStr[len(mStr)-3 : len(mStr)-1]
+	return filepath.Join(s.blocksPath, prefix, mStr+".data")
 }
 
 // initBloom brings up the bloom index.
@@ -156,9 +191,35 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 
 	b := s.db.NewBatch()
 	defer b.Close()
-	if err := b.Set(db.BlockKey(m), data); err != nil {
-		return err
+
+	if s.blocksPath != "" {
+		// Write block data to flat file on disk
+		fpath := s.blockPath(m)
+		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+			return fmt.Errorf("store: create block dir: %w", err)
+		}
+		// Write atomically to avoid corrupted files on crash
+		tmpFile := fpath + ".tmp"
+		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+			return fmt.Errorf("store: write block file: %w", err)
+		}
+		if err := os.Rename(tmpFile, fpath); err != nil {
+			_ = os.Remove(tmpFile)
+			return fmt.Errorf("store: rename block file: %w", err)
+		}
+
+		// Store length as 8-byte uint64 in Pebble value
+		valBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(valBytes, uint64(len(data)))
+		if err := b.Set(db.BlockKey(m), valBytes); err != nil {
+			return err
+		}
+	} else {
+		if err := b.Set(db.BlockKey(m), data); err != nil {
+			return err
+		}
 	}
+
 	if err := db.PutTimestamp(b, m); err != nil {
 		return err
 	}
@@ -187,9 +248,35 @@ func (s *MemStore) PutDAG(m mid.MID, data []byte) error {
 
 	b := s.db.NewBatch()
 	defer b.Close()
-	if err := b.Set(db.DagKey(m), data); err != nil {
-		return err
+
+	if s.blocksPath != "" {
+		// Write block data to flat file on disk
+		fpath := s.blockPath(m)
+		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+			return fmt.Errorf("store: create block dir: %w", err)
+		}
+		// Write atomically to avoid corrupted files on crash
+		tmpFile := fpath + ".tmp"
+		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+			return fmt.Errorf("store: write block file: %w", err)
+		}
+		if err := os.Rename(tmpFile, fpath); err != nil {
+			_ = os.Remove(tmpFile)
+			return fmt.Errorf("store: rename block file: %w", err)
+		}
+
+		// Store length as 8-byte uint64 in Pebble value
+		valBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(valBytes, uint64(len(data)))
+		if err := b.Set(db.DagKey(m), valBytes); err != nil {
+			return err
+		}
+	} else {
+		if err := b.Set(db.DagKey(m), data); err != nil {
+			return err
+		}
 	}
+
 	if err := db.PutTimestamp(b, m); err != nil {
 		return err
 	}
@@ -216,6 +303,29 @@ func (s *MemStore) Get(m mid.MID) ([]byte, error) {
 	if s.bloom != nil && !s.bloom.maybeTest(m) {
 		return nil, ErrNotFound
 	}
+
+	if s.blocksPath != "" {
+		hasBlock, err := s.db.Has(db.BlockKey(m))
+		if err != nil {
+			return nil, err
+		}
+		hasDag, err := s.db.Has(db.DagKey(m))
+		if err != nil {
+			return nil, err
+		}
+		if !hasBlock && !hasDag {
+			return nil, ErrNotFound
+		}
+		data, err := os.ReadFile(s.blockPath(m))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		return data, nil
+	}
+
 	if b, err := s.db.Get(db.BlockKey(m)); err == nil {
 		return b, nil
 	} else if !errors.Is(err, db.ErrNotFound) {
@@ -235,6 +345,28 @@ func (s *MemStore) GetDAG(m mid.MID) ([]byte, error) {
 		return nil, err
 	}
 	defer s.exit()
+	if m.IsZero() {
+		return nil, errors.New("store: zero MID")
+	}
+
+	if s.blocksPath != "" {
+		hasDag, err := s.db.Has(db.DagKey(m))
+		if err != nil {
+			return nil, err
+		}
+		if !hasDag {
+			return nil, ErrNotFound
+		}
+		data, err := os.ReadFile(s.blockPath(m))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		return data, nil
+	}
+
 	val, err := s.db.Get(db.DagKey(m))
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, ErrNotFound
@@ -295,6 +427,10 @@ func (s *MemStore) Delete(m mid.MID) error {
 		return err
 	}
 
+	if s.blocksPath != "" {
+		_ = os.Remove(s.blockPath(m))
+	}
+
 	if s.bloom != nil {
 		if rerr := s.bloom.rebuildFromDB(s.db); rerr != nil {
 			return fmt.Errorf("store: bloom rebuild after delete: %w", rerr)
@@ -318,6 +454,10 @@ func (s *MemStore) DeleteDAG(m mid.MID) error {
 
 	if err := b.Commit(); err != nil {
 		return err
+	}
+
+	if s.blocksPath != "" {
+		_ = os.Remove(s.blockPath(m))
 	}
 
 	if s.bloom != nil {
@@ -356,7 +496,7 @@ func (s *MemStore) Close() error {
 
 	var snapErr error
 	if s.bloom != nil {
-		snapErr = s.bloom.saveSnapshot()
+		snapErr = s.bloom.Close()
 	}
 	dbErr := s.db.Close()
 	s.db = nil
@@ -396,6 +536,11 @@ func (s *MemStore) DropAll() error {
 
 	err = batch.Commit()
 
+	if err == nil && s.blocksPath != "" {
+		_ = os.RemoveAll(s.blocksPath)
+		_ = os.MkdirAll(s.blocksPath, 0755)
+	}
+
 	if err == nil && s.bloom != nil {
 		err = s.bloom.rebuildFromDB(s.db)
 	}
@@ -424,7 +569,14 @@ func (s *MemStore) Size() (uint64, error) {
 	defer it.Close()
 	prefix := []byte(db.PrefixBlock)
 	for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
-		total += uint64(len(it.Value()))
+		val := it.Value()
+		if s.blocksPath != "" {
+			if len(val) == 8 {
+				total += binary.BigEndian.Uint64(val)
+			}
+		} else {
+			total += uint64(len(val))
+		}
 	}
 	return total, nil
 }
@@ -446,17 +598,46 @@ func verifyContent(m mid.MID, data []byte) error {
 	return nil
 }
 
+func (s *MemStore) GetSize(m mid.MID) (int64, error) {
+	if err := s.enter(); err != nil {
+		return 0, err
+	}
+	defer s.exit()
+	val, err := s.db.Get(db.BlockKey(m))
+	if errors.Is(err, db.ErrNotFound) {
+		val, err = s.db.Get(db.DagKey(m))
+	}
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if s.blocksPath != "" && len(val) == 8 {
+		return int64(binary.BigEndian.Uint64(val)), nil
+	}
+	return int64(len(val)), nil
+}
+
 // AllBlocks returns every MID that has a block or DAG record in the store.
 func (s *MemStore) AllBlocks() ([]mid.MID, error) {
+	var out []mid.MID
+	err := s.IterateBlocks(func(m mid.MID) error {
+		out = append(out, m)
+		return nil
+	})
+	return out, err
+}
+
+func (s *MemStore) IterateBlocks(fn func(mid.MID) error) error {
 	if err := s.enter(); err != nil {
-		return nil, err
+		return err
 	}
 	defer s.exit()
 	seen := make(map[string]struct{})
-	var out []mid.MID
 	it, err := s.db.NewIter()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer it.Close()
 	for _, prefix := range [][]byte{[]byte(db.PrefixBlock), []byte(db.PrefixDAG)} {
@@ -472,10 +653,12 @@ func (s *MemStore) AllBlocks() ([]mid.MID, error) {
 				continue
 			}
 			seen[key] = struct{}{}
-			out = append(out, m)
+			if err := fn(m); err != nil {
+				return err
+			}
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // PutMeta stores an arbitrary key/value pair under the "/m/" namespace.

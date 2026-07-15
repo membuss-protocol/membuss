@@ -1,9 +1,9 @@
-﻿package erasure
+package erasure
 
 import (
 	"bytes"
 	"crypto/rand"
-	"fmt"
+	"io"
 	"testing"
 
 	"github.com/nnlgsakib/membuss/core/mid"
@@ -249,5 +249,139 @@ func TestManifestRoundTrip(t *testing.T) {
 			t.Fatalf("shard %d manifest MID %s != shards[%d].ShardMID %s", i, smid, i, out.Shards[i].ShardMID)
 		}
 	}
-	_ = fmt.Sprint
+}
+
+func TestAdaptiveConfig(t *testing.T) {
+	cases := []struct {
+		size   int64
+		data   int
+		parity int
+	}{
+		{0, DefaultDataShards, DefaultParityShards},
+		{-10, DefaultDataShards, DefaultParityShards},
+		{10 * 1024, 2, 1},
+		{500 * 1024, 4, 2},
+		{5 * 1024 * 1024, 8, 3},
+		{50 * 1024 * 1024, DefaultDataShards, DefaultParityShards},
+	}
+	for _, c := range cases {
+		cfg := AdaptiveConfig(c.size)
+		if cfg.DataShards != c.data || cfg.ParityShards != c.parity {
+			t.Errorf("AdaptiveConfig(%d) = (%d, %d), want (%d, %d)", c.size, cfg.DataShards, cfg.ParityShards, c.data, c.parity)
+		}
+	}
+}
+
+func TestVerifyPartial(t *testing.T) {
+	enc, _ := NewEncoder(DefaultConfig())
+	data := make([]byte, 1024)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	out, _ := enc.Encode(data)
+
+	// Case 1: Complete set
+	shards := make([][]byte, len(out.Shards))
+	for i, s := range out.Shards {
+		shards[i] = s.Data
+	}
+	ok, err := enc.VerifyPartial(shards)
+	if err != nil || !ok {
+		t.Fatalf("VerifyPartial complete set failed: %v (ok=%v)", err, ok)
+	}
+
+	// Case 2: Incomplete but sufficient (drop 3 shards)
+	shards[1] = nil
+	shards[5] = nil
+	shards[12] = nil
+	ok, err = enc.VerifyPartial(shards)
+	if err != nil || !ok {
+		t.Fatalf("VerifyPartial with 3 missing failed: %v (ok=%v)", err, ok)
+	}
+
+	// Case 3: Too few shards (drop 5 shards)
+	shards[2] = nil
+	shards[9] = nil
+	ok, err = enc.VerifyPartial(shards)
+	if err == nil {
+		t.Fatal("VerifyPartial with 5 missing should fail")
+	}
+}
+
+func TestVerifyShardAndInlineValidator(t *testing.T) {
+	enc, _ := NewEncoder(DefaultConfig())
+	data := []byte("inline validation test data")
+	out, _ := enc.Encode(data)
+
+	validator := NewInlineValidator(out.Manifest)
+
+	// Check correct shard
+	if !validator.Verify(0, out.Shards[0].Data) {
+		t.Error("Verify correct shard failed")
+	}
+
+	// Check tampered shard
+	tampered := append([]byte(nil), out.Shards[0].Data...)
+	tampered[0] ^= 0xFF
+	if validator.Verify(0, tampered) {
+		t.Error("Verify accepted tampered shard data")
+	}
+
+	// Check out of range
+	if validator.Verify(-1, out.Shards[0].Data) {
+		t.Error("Verify accepted out of range index")
+	}
+}
+
+func TestEncodeDecodeStreamRoundTrip(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2}
+	enc, err := NewEncoder(cfg)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	// 500 KB random block
+	const size = 500 * 1024
+	originalData := make([]byte, size)
+	if _, err := rand.Read(originalData); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	// Writers for 6 output streams (shards)
+	var shardBuffers [6]bytes.Buffer
+	writers := make([]io.Writer, 6)
+	for i := range shardBuffers {
+		writers[i] = &shardBuffers[i]
+	}
+
+	// Stream Encode
+	manifest, err := enc.EncodeStream(bytes.NewReader(originalData), writers)
+	if err != nil {
+		t.Fatalf("EncodeStream: %v", err)
+	}
+
+	if manifest.OriginalSize != size {
+		t.Fatalf("manifest OriginalSize = %d, want %d", manifest.OriginalSize, size)
+	}
+
+	// Setup Readers
+	readers := make([]io.Reader, 6)
+	for i := range shardBuffers {
+		readers[i] = bytes.NewReader(shardBuffers[i].Bytes())
+	}
+
+	// Drop 2 shards (parity shards)
+	readers[4] = nil
+	readers[5] = nil
+
+	// Stream Decode
+	var decodedBuf bytes.Buffer
+	err = enc.DecodeStream(readers, &decodedBuf, manifest)
+	if err != nil {
+		t.Fatalf("DecodeStream: %v", err)
+	}
+
+	if !bytes.Equal(decodedBuf.Bytes(), originalData) {
+		t.Fatal("decoded stream does not match original stream data")
+	}
 }

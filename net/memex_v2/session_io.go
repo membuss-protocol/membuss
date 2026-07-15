@@ -51,6 +51,19 @@ func (a *memexBlockstoreAdapter) Delete(m mid.MID) error {
 	return nil
 }
 
+func (a *memexBlockstoreAdapter) GetSize(m mid.MID) (int64, error) {
+	if checker, ok := a.bs.(interface {
+		GetSize(mid.MID) (int64, error)
+	}); ok {
+		return checker.GetSize(m)
+	}
+	data, err := a.Get(m)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(data)), nil
+}
+
 func (a *memexBlockstoreAdapter) PutMeta(key string, value []byte) error {
 	return nil
 }

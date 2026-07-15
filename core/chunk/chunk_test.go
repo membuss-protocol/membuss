@@ -1,4 +1,4 @@
-﻿package chunk
+package chunk
 
 import (
 	"bytes"
@@ -214,6 +214,99 @@ func TestRabinChunkerDeduplicatesAppend(t *testing.T) {
 		t.Fatal("expected non-empty chunk sequences")
 	}
 	// At least one block whose MID appears in both sequences.
+	found := false
+	for _, ba := range ga {
+		for _, bb := range gb {
+			if ba.MID().Equal(bb.MID()) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected at least one shared block MID between the two shifted inputs")
+	}
+}
+
+func TestFastCDCChunkerSmallInput(t *testing.T) {
+	data := []byte("hello, fastcdc")
+	c, err := NewFastCDC()(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("NewFastCDC: %v", err)
+	}
+	blocks := readAll(t, c)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if !bytes.Equal(blocks[0].Data(), data) {
+		t.Fatalf("block data = %q, want %q", blocks[0].Data(), data)
+	}
+}
+
+func TestFastCDCChunkerMultipleBlocks(t *testing.T) {
+	payload := make([]byte, 2*1024*1024)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
+
+	c, err := NewFastCDC()(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("NewFastCDC: %v", err)
+	}
+	blocks := readAll(t, c)
+	if len(blocks) <= 1 {
+		t.Fatalf("expected multiple blocks for 2MB payload, got %d", len(blocks))
+	}
+
+	var joined []byte
+	for _, b := range blocks {
+		if b.Size() < fastcdcMin && b.Size() != len(blocks[len(blocks)-1].Data()) {
+			t.Errorf("block size %d below minimum %d", b.Size(), fastcdcMin)
+		}
+		if b.Size() > fastcdcMax {
+			t.Errorf("block size %d above maximum %d", b.Size(), fastcdcMax)
+		}
+		joined = append(joined, b.Data()...)
+	}
+	if !bytes.Equal(joined, payload) {
+		t.Fatal("rejoined blocks do not match input")
+	}
+}
+
+func TestFastCDCChunkerDeduplicatesAppend(t *testing.T) {
+	prefix := bytes.Repeat([]byte{0xAA}, 1024)
+	core := bytes.Repeat([]byte{0x00}, 512*1024)
+	suffix := bytes.Repeat([]byte{0xBB}, 1024)
+
+	mk := func(off int) []byte {
+		out := make([]byte, 0, len(prefix)+1+len(core)+len(suffix))
+		out = append(out, prefix...)
+		out = append(out, 0xFE)
+		out = append(out, core...)
+		out = append(out, suffix...)
+		for i := 0; i < off && i < len(out); i++ {
+			out[i] = 0xFF
+		}
+		return out
+	}
+
+	a, err := NewFastCDC()(bytes.NewReader(mk(0)))
+	if err != nil {
+		t.Fatalf("NewFastCDC a: %v", err)
+	}
+	b, err := NewFastCDC()(bytes.NewReader(mk(8)))
+	if err != nil {
+		t.Fatalf("NewFastCDC b: %v", err)
+	}
+	ga := readAll(t, a)
+	gb := readAll(t, b)
+
+	if len(ga) == 0 || len(gb) == 0 {
+		t.Fatal("expected non-empty chunk sequences")
+	}
 	found := false
 	for _, ba := range ga {
 		for _, bb := range gb {

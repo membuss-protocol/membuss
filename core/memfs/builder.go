@@ -29,8 +29,9 @@ const DefaultBlockSize = chunk.DefaultBlockSize
 // and the existing Blockstore Put path for everything else,
 // so the dedup, walk, seal and GC machinery all just work.
 type Builder struct {
-	bs  store.Blockstore
-	blk int
+	bs      store.Blockstore
+	blk     int
+	chunker string
 }
 
 // NewBuilder returns a Builder that writes into bs. The
@@ -51,6 +52,14 @@ func (b *Builder) WithBlockSize(n int) *Builder {
 	}
 	cp := *b
 	cp.blk = n
+	return &cp
+}
+
+// WithChunker returns a copy of b with a different chunker
+// strategy (e.g. "fixed", "rabin", "fastcdc").
+func (b *Builder) WithChunker(chunker string) *Builder {
+	cp := *b
+	cp.chunker = chunker
 	return &cp
 }
 
@@ -96,7 +105,17 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 		return AddResult{}, errors.New("memfs: nil reader")
 	}
 
-	chunker, err := chunk.NewFixed(b.blk)(r)
+	var factory chunk.ChunkerFactory
+	switch b.chunker {
+	case "rabin":
+		factory = chunk.NewRabin()
+	case "fastcdc":
+		factory = chunk.NewFastCDC()
+	default:
+		factory = chunk.NewFixed(b.blk)
+	}
+
+	chunker, err := factory(r)
 	if err != nil {
 		return AddResult{}, fmt.Errorf("memfs: chunker: %w", err)
 	}
@@ -497,4 +516,127 @@ func hasPathPrefix(s, prefix string) bool {
 		return true
 	}
 	return s[len(prefix)] == '/'
+}
+
+// StreamEntry is one file to ingest during a streaming directory upload.
+type StreamEntry struct {
+	Path string
+	Size int64
+	R    io.Reader
+}
+
+// AddDirectoryStream ingests a directory tree directly from a stream of files.
+// It constructs and stores all file nodes in real-time, eliminating the need to write
+// files to a temporary directory on disk.
+func (b *Builder) AddDirectoryStream(entries []StreamEntry) (AddResult, error) {
+	if b.bs == nil {
+		return AddResult{}, errors.New("memfs: nil blockstore")
+	}
+	if len(entries) == 0 {
+		return AddResult{}, errors.New("memfs: no entries")
+	}
+
+	type treeNode struct {
+		name     string
+		isDir    bool
+		mid      mid.MID
+		size     uint64
+		children map[string]*treeNode
+	}
+
+	root := &treeNode{
+		name:     "",
+		isDir:    true,
+		children: make(map[string]*treeNode),
+	}
+
+	// 1. Process each file entry, chunk and store it, and insert it into the in-memory tree.
+	for _, entry := range entries {
+		rel := strings.ReplaceAll(entry.Path, "\\", "/")
+		rel = path.Clean("/" + rel)
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" || rel == "." {
+			continue
+		}
+
+		parts := strings.Split(rel, "/")
+		if len(parts) == 0 {
+			continue
+		}
+
+		mime := store.SniffMime(parts[len(parts)-1])
+		res, err := b.AddFile(parts[len(parts)-1], entry.R, 0o644, time.Time{}, mime)
+		if err != nil {
+			return AddResult{}, fmt.Errorf("memfs: add file %q: %w", rel, err)
+		}
+
+		// Traverse and build tree nodes
+		curr := root
+		for i, part := range parts {
+			isLast := i == len(parts)-1
+			if isLast {
+				curr.children[part] = &treeNode{
+					name:  part,
+					isDir: false,
+					mid:   res.MID,
+					size:  res.Size,
+				}
+			} else {
+				child, ok := curr.children[part]
+				if !ok {
+					child = &treeNode{
+						name:     part,
+						isDir:    true,
+						children: make(map[string]*treeNode),
+					}
+					curr.children[part] = child
+				}
+				curr = child
+			}
+		}
+	}
+
+	// 2. Bottom-up post-order traversal to build directory nodes.
+	var buildDir func(n *treeNode) (mid.MID, uint64, uint64, error)
+	buildDir = func(n *treeNode) (mid.MID, uint64, uint64, error) {
+		if !n.isDir {
+			return n.mid, n.size, 1, nil
+		}
+
+		dirEntries := make([]DirEntry, 0, len(n.children))
+		for _, child := range n.children {
+			childMID, childSize, _, err := buildDir(child)
+			if err != nil {
+				return mid.MID{}, 0, 0, err
+			}
+			t := TypeFile
+			if child.isDir {
+				t = TypeDir
+			}
+			dirEntries = append(dirEntries, DirEntry{
+				Name: child.name,
+				Mid:  childMID,
+				Type: t,
+				Size: childSize,
+			})
+		}
+
+		res, err := b.AddDir(n.name, dirEntries, 0o755, time.Time{})
+		if err != nil {
+			return mid.MID{}, 0, 0, err
+		}
+		return res.MID, res.Size, res.Block, nil
+	}
+
+	// Build from root directory
+	resMID, resSize, resBlock, err := buildDir(root)
+	if err != nil {
+		return AddResult{}, err
+	}
+
+	return AddResult{
+		MID:   resMID,
+		Size:  resSize,
+		Block: resBlock,
+	}, nil
 }

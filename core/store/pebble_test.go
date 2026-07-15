@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -838,6 +839,67 @@ func TestWalkSelfCycle(t *testing.T) {
 	// dag + selfMID = 2 nodes visited.
 	if visited != 2 {
 		t.Fatalf("Walk visited %d nodes, want 2", visited)
+	}
+}
+
+func TestFlatFileStore(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "datastore")
+	blocksPath := filepath.Join(tempDir, "blocks")
+
+	s, err := NewMemStore(Options{
+		Path:       dbPath,
+		BlocksPath: blocksPath,
+	})
+	if err != nil {
+		t.Fatalf("NewMemStore failed: %v", err)
+	}
+	defer s.Close()
+
+	// Put a block
+	data1 := []byte("hello flat file blockstore")
+	m1 := mid.FromBytes(data1)
+	if err := s.Put(m1, data1); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// Verify the flat file exists on disk in the correct folder structure
+	fpath := s.blockPath(m1)
+	if _, err := os.Stat(fpath); err != nil {
+		t.Fatalf("Expected block file to exist at %s: %v", fpath, err)
+	}
+
+	// Read block back
+	got1, err := s.Get(m1)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !bytes.Equal(got1, data1) {
+		t.Fatalf("Get data mismatch: got %q, want %q", got1, data1)
+	}
+
+	// Verify Size() returns the size of the block
+	sz, err := s.Size()
+	if err != nil {
+		t.Fatalf("Size failed: %v", err)
+	}
+	if sz != uint64(len(data1)) {
+		t.Fatalf("Size got %d, want %d", sz, len(data1))
+	}
+
+	// Delete block
+	if err := s.Delete(m1); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Verify file is removed from disk
+	if _, err := os.Stat(fpath); !os.IsNotExist(err) {
+		t.Fatalf("Expected block file to be deleted: %v", err)
+	}
+
+	// Verify block is not in store
+	if has, _ := s.Has(m1); has {
+		t.Fatal("Store still reports block exists after delete")
 	}
 }
 
