@@ -353,13 +353,19 @@
 			return;
 		}
 
-		const text = publicAddrs.join('\n');
+		const text = publicAddrs.join(', ');
 		navigator.clipboard.writeText(text).then(() => {
 			copiedAll = true;
 			setTimeout(() => {
 				copiedAll = false;
 			}, 2000);
 		});
+	}
+
+	function parseMultiaddrs(input: string): string[] {
+		let normalized = input.replace(/[,;\r\n]+/g, ' ');
+		normalized = normalized.replace(/([^\s])(\/(ip4|ip6|dns|dns4|dns6|dnsaddr)\/)/g, '$1 $2');
+		return normalized.split(/\s+/).map(p => p.trim()).filter(p => p.startsWith('/'));
 	}
 
 	function copyToClipboard(text: string, id: string) {
@@ -372,26 +378,51 @@
 	}
 
 	async function connectToPeer() {
-		if (!connectAddr.trim()) return;
+		const rawInput = connectAddr.trim();
+		if (!rawInput) return;
+
+		const parsedAddrs = parseMultiaddrs(rawInput);
+		if (parsedAddrs.length === 0) {
+			connectStatus = 'error';
+			connectError = 'No valid multiaddress found (must start with /)';
+			return;
+		}
+
 		connectStatus = 'loading';
 		connectError = '';
-		try {
-			const data = await apiFetch('/peers/connect', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ multiaddr: connectAddr.trim() })
-			});
-			if (data.ok) {
-				connectStatus = 'ok';
-				connectAddr = '';
-				loadPeers();
-			} else {
-				connectStatus = 'error';
-				connectError = data.error || 'Connection failed';
+
+		let successCount = 0;
+		let lastError = '';
+
+		for (const addr of parsedAddrs) {
+			try {
+				const data = await apiFetch('/peers/connect', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ multiaddr: addr })
+				});
+				if (data.ok) {
+					successCount++;
+				} else {
+					lastError = data.error || `Failed to connect to ${addr}`;
+				}
+			} catch (e) {
+				lastError = e instanceof Error ? e.message : `Request failed for ${addr}`;
 			}
-		} catch (e) {
+		}
+
+		if (successCount === parsedAddrs.length) {
+			connectStatus = 'ok';
+			connectAddr = '';
+			loadPeers();
+		} else if (successCount > 0) {
+			connectStatus = 'ok';
+			connectAddr = '';
+			connectError = `Connected to ${successCount}/${parsedAddrs.length} peers. Last error: ${lastError}`;
+			loadPeers();
+		} else {
 			connectStatus = 'error';
-			connectError = e instanceof Error ? e.message : 'Request failed';
+			connectError = lastError;
 		}
 	}
 
