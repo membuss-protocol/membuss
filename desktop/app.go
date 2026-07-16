@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -284,6 +285,8 @@ func (a *App) ResetSetup() error {
 	return a.config.Save()
 }
 
+var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
 // GetDaemonLogs reads the last few lines from the daemon log file.
 func (a *App) GetDaemonLogs() (string, error) {
 	if a.config.DataDir == "" {
@@ -300,10 +303,15 @@ func (a *App) GetDaemonLogs() (string, error) {
 
 	// Limit to last 64KB of log data to keep frontend performance optimal
 	const maxBytes = 64 * 1024
+	var logStr string
 	if len(data) > maxBytes {
-		return string(data[len(data)-maxBytes:]), nil
+		logStr = string(data[len(data)-maxBytes:])
+	} else {
+		logStr = string(data)
 	}
-	return string(data), nil
+
+	cleanLogs := ansiRegexp.ReplaceAllString(logStr, "")
+	return cleanLogs, nil
 }
 
 // domReady is called when the renderer has loaded.
@@ -475,7 +483,7 @@ func (a *App) UpgradeBinaries() error {
 
 // IsNodeRunningSystemWide checks if any membuss daemon process is running on the system.
 func (a *App) IsNodeRunningSystemWide() bool {
-	return isProcessRunning("membuss")
+	return a.daemonManager.IsRunning() || isProcessRunning("membuss")
 }
 
 // DownloadContent fetches a Membuss gateway URL and saves the response

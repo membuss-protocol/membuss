@@ -112,8 +112,24 @@ func NewDaemonManager(cfg *DesktopConfig) *DaemonManager {
 // IsRunning checks if the daemon command is active locally.
 func (dm *DaemonManager) IsRunning() bool {
 	dm.mu.Lock()
-	defer dm.mu.Unlock()
-	return dm.cmd != nil && dm.cmd.Process != nil && dm.cmd.ProcessState == nil
+	cmd := dm.cmd
+	dm.mu.Unlock()
+	if cmd != nil && cmd.Process != nil && cmd.ProcessState == nil {
+		return true
+	}
+	if dm.config != nil && dm.config.DataDir != "" {
+		pidPath := filepath.Join(dm.config.DataDir, "daemon.pid")
+		data, err := os.ReadFile(pidPath)
+		if err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
+				if isPidActive(pid) {
+					return true
+				}
+			}
+		}
+	}
+	return isProcessRunning("membuss")
 }
 
 // Start spawns the daemon in the background.
@@ -145,7 +161,7 @@ func (dm *DaemonManager) Start(dataDir string) error {
 	// Create a log file inside the data directory
 	logDir := filepath.Join(dataDir, "logs")
 	_ = os.MkdirAll(logDir, 0755)
-	logFile, err := os.OpenFile(filepath.Join(logDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := os.OpenFile(filepath.Join(logDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		logFile = nil
 	}
@@ -178,6 +194,8 @@ func (dm *DaemonManager) Start(dataDir string) error {
 	}
 
 	dm.cmd = cmd
+	pidPath := filepath.Join(dataDir, "daemon.pid")
+	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
 
 	// Monitor process termination in a separate goroutine.
 	// Close the log handle after wait; do not treat Wait failure as fatal.
@@ -186,6 +204,7 @@ func (dm *DaemonManager) Start(dataDir string) error {
 		if logFile != nil {
 			logFile.Close()
 		}
+		_ = os.Remove(pidPath)
 		dm.mu.Lock()
 		if dm.cmd == cmd {
 			dm.cmd = nil
@@ -196,7 +215,7 @@ func (dm *DaemonManager) Start(dataDir string) error {
 	// Ensure the process has started and registered in the OS
 	started := false
 	for i := 0; i < 15; i++ {
-		if isProcessRunning("membuss") {
+		if isPidActive(cmd.Process.Pid) {
 			started = true
 			break
 		}
@@ -216,6 +235,17 @@ func (dm *DaemonManager) Stop() error {
 	dm.mu.Unlock()
 
 	if cmd == nil || cmd.Process == nil {
+		if dm.config != nil && dm.config.DataDir != "" {
+			pidPath := filepath.Join(dm.config.DataDir, "daemon.pid")
+			data, err := os.ReadFile(pidPath)
+			if err == nil {
+				var pid int
+				if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
+					_ = killPid(pid)
+					_ = os.Remove(pidPath)
+				}
+			}
+		}
 		_ = killProcess("membuss")
 		_ = killProcess("membuss-cli")
 		return nil
@@ -263,7 +293,7 @@ func (dm *DaemonManager) Stop() error {
 	
 	// Ensure the process is actually gone
 	for i := 0; i < 15; i++ {
-		if !isProcessRunning("membuss") {
+		if !dm.IsRunning() {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -311,7 +341,7 @@ func (dm *DaemonManager) resolveBlockedPorts(dataDir string) error {
 		desktopGateway = daemonGateway
 	}
 
-	changed := false
+	changed := (desktopGRPC != daemonGRPC || desktopAPI != daemonAPI || desktopGateway != daemonGateway)
 
 	// GRPC
 	resolvedGRPC, err := findNextFreePort(desktopGRPC)

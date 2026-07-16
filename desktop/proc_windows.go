@@ -3,7 +3,9 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -31,4 +33,23 @@ func hideConsoleWindowSimple(cmd *exec.Cmd) {
 		CreationFlags: createNoWindow,
 		HideWindow:    true,
 	}
+}
+
+// isPidActive checks if a PID is running on Windows.
+func isPidActive(pid int) bool {
+	// Tasklist eq matches the exact PID
+	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH")
+	hideConsoleWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), fmt.Sprintf("%d", pid))
+}
+
+// killPid kills a process by PID on Windows.
+func killPid(pid int) error {
+	cmd := exec.Command("taskkill", "/F", "/PID", fmt.Sprintf("%d", pid))
+	hideConsoleWindow(cmd)
+	return cmd.Run()
 }
