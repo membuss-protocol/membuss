@@ -652,8 +652,8 @@ func killProcess(name string) error {
 		return cmd.Run()
 	}
 
-	// On non-Windows: run pgrep to find PIDs matching the pattern
-	pgrep := exec.Command("pgrep", "-f", name)
+	// On non-Windows: run pgrep to find PIDs matching the exact process name
+	pgrep := exec.Command("pgrep", "-x", name)
 	out, err := pgrep.Output()
 	if err != nil {
 		return nil // no matching processes or pgrep not found

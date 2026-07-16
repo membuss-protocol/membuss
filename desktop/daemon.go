@@ -193,8 +193,19 @@ func (dm *DaemonManager) Start(dataDir string) error {
 		dm.mu.Unlock()
 	}()
 
-	// Brief settle so the OS registers the process before callers probe status.
-	time.Sleep(200 * time.Millisecond)
+	// Ensure the process has started and registered in the OS
+	started := false
+	for i := 0; i < 15; i++ {
+		if isProcessRunning("membuss") {
+			started = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !started {
+		return errors.New("daemon process failed to start (check logs/config)")
+	}
+
 	return nil
 }
 
@@ -250,6 +261,14 @@ func (dm *DaemonManager) Stop() error {
 	_ = killProcess("membuss")
 	_ = killProcess("membuss-cli")
 	
+	// Ensure the process is actually gone
+	for i := 0; i < 15; i++ {
+		if !isProcessRunning("membuss") {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// Wait a tiny bit for the OS to release the socket bindings
 	time.Sleep(500 * time.Millisecond)
 
