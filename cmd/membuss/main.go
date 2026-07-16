@@ -44,7 +44,7 @@ import (
 	explorerPkg "github.com/nnlgsakib/membuss/gateway/explorer"
 	memgate "github.com/nnlgsakib/membuss/gateway/memgate_v2"
 
-	badgerds "github.com/ipfs/go-ds-badger4"
+	"github.com/nnlgsakib/membuss/core/db"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -255,11 +255,11 @@ func main() {
 	// when (a) the DHT is willing to act as a server, (b)
 	// provider records are persisted into a datastore the
 	// kad-dht ProviderManager can read from, and (c) the
-	// optimistic provide shortcut is on. We use a badger4
+	// optimistic provide shortcut is on. We use a pebble
 	// backed datastore so provider records survive restarts;
 	// the reprovide loop in Mem-Herald keeps them fresh.
 	dhtDir := filepath.Join(cfg.DataDir, "dht")
-	dhtDS, err := badgerds.NewDatastore(dhtDir, nil)
+	dhtDS, err := db.NewPebbleDatastore(dhtDir, false)
 	if err != nil {
 		logger.Error("dht datastore", "err", err.Error())
 		os.Exit(1)

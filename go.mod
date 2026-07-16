@@ -10,7 +10,6 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/ipfs/go-cid v0.6.1
 	github.com/ipfs/go-datastore v0.9.1
-	github.com/ipfs/go-ds-badger4 v0.1.8
 	github.com/klauspost/reedsolomon v1.14.0
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-kad-dht v0.41.0
@@ -44,10 +43,7 @@ require (
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
-	github.com/dgraph-io/badger/v4 v4.9.2 // indirect
-	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
-	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
@@ -56,7 +52,6 @@ require (
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
-	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
