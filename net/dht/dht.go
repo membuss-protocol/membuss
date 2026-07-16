@@ -474,11 +474,19 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 				failures[p.ID] = fmt.Errorf("peer %s (%v): %w", p.ID, p.Addrs, err)
 				mu.Unlock()
 				if cfg.Logger != nil {
-					cfg.Logger.Warn("dht bootstrap peer connect failed",
-						"peer", p.ID.String(),
-						"attempt", attempt,
-						"err", err.Error(),
-					)
+					if attempt < 5 {
+						cfg.Logger.Debug("dht bootstrap peer connect failed (retrying)",
+							"peer", p.ID.String(),
+							"attempt", attempt,
+							"err", err.Error(),
+						)
+					} else if attempt == 5 || (attempt > 5 && attempt%5 == 0) {
+						cfg.Logger.Warn("dht bootstrap peer connect failed",
+							"peer", p.ID.String(),
+							"attempt", attempt,
+							"err", err.Error(),
+						)
+					}
 				}
 				if cfg.MaxAttempts > 0 && attempt >= cfg.MaxAttempts {
 					break

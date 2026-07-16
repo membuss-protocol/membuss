@@ -282,7 +282,7 @@ func main() {
 	}
 	relaySource.SetFinder(mdht.FindRelays)
 	if err := mdht.Bootstrap(ctx, bootstrapPeers); err != nil {
-		logger.Warn("dht bootstrap", "err", err.Error())
+		logger.Debug("dht bootstrap", "err", err.Error())
 	}
 	if len(bootstrapPeers) > 0 {
 		go func() {
@@ -327,7 +327,7 @@ func main() {
 	dhtBootstrapMu.Unlock()
 	if len(replay) > 0 {
 		if err := mdht.Bootstrap(ctx, replay); err != nil {
-			logger.Warn("dht bootstrap (replay)", "err", err.Error())
+			logger.Debug("dht bootstrap (replay)", "err", err.Error())
 		}
 	}
 	defer mdht.Close()
