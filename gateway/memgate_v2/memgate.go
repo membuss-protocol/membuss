@@ -30,7 +30,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Backend is the contract Mem-Gate depends on. The daemon
+// // Backend is the contract Mem-Gate depends on. The daemon
 // supplies a real implementation; tests inject a memBackend.
 type Backend interface {
 	// Resolve returns a streaming reader of the content
@@ -38,6 +38,8 @@ type Backend interface {
 	// the reader. The size is the total content size in
 	// bytes; it is used for Content-Length / Range math.
 	Resolve(ctx context.Context, m mid.MID) (io.ReadCloser, ContentInfo, error)
+	// ResolveWithProgress returns a streaming reader of the content while reporting progress updates.
+	ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(ProgressUpdate)) (io.ReadCloser, ContentInfo, error)
 	// RawBlock returns the bytes of a single block (no DAG
 	// walk). Used by ?format=raw.
 	RawBlock(ctx context.Context, m mid.MID) ([]byte, error)
@@ -150,11 +152,12 @@ type Config struct {
 
 // MemGate is the public HTTP gateway.
 type MemGate struct {
-	cfg            Config
-	router         chi.Router
-	lru            *lru
-	ipLimiter      *ipLimiter
-	refererTracker *RefererTracker
+	cfg             Config
+	router          chi.Router
+	lru             *lru
+	ipLimiter       *ipLimiter
+	refererTracker  *RefererTracker
+	downloadManager *DownloadManager
 }
 
 // New returns a MemGate ready to be served. The returned
@@ -174,9 +177,10 @@ func New(cfg Config) (*MemGate, error) {
 	}
 
 	mg := &MemGate{
-		cfg:            cfg,
-		lru:            newLRU(cfg.MaxCacheBytes),
-		refererTracker: NewRefererTracker(),
+		cfg:             cfg,
+		lru:             newLRU(cfg.MaxCacheBytes),
+		refererTracker:  NewRefererTracker(),
+		downloadManager: NewDownloadManager(),
 	}
 	mg.ipLimiter = newIPLimiter(cfg.RateLimitPerMin, 10*time.Minute)
 	mg.router = mg.buildRouter()
@@ -197,6 +201,10 @@ func (m *MemGate) Handler() http.Handler {
 		// 1. Subdomain routing (skip for system paths)
 		if !systemPath && isSubdomain {
 			if midStr, innerPath, ok := m.resolveSubdomain(r); ok {
+				if innerPath == "~status" {
+					m.handleFetchStatusSSE(w, r)
+					return
+				}
 				m.refererTracker.RecordActiveMID(clientIP, midStr)
 				root, err := mid.Parse(midStr)
 				if err == nil {
@@ -254,8 +262,6 @@ func (m *MemGate) Handler() http.Handler {
 		m.router.ServeHTTP(w, r)
 	})
 }
-
-
 
 // isSystemPath evaluates if a path is a dynamic node control route.
 func isSystemPath(path string) bool {
@@ -356,6 +362,7 @@ func (m *MemGate) buildRouter() chi.Router {
 
 	r.Get("/healthz", m.handleHealth)
 	r.Get("/mem/{mid}", m.handleGet)
+	r.Get("/mem/{mid}/~status", m.handleFetchStatusSSE)
 	r.Head("/mem/{mid}", m.handleHead)
 	// Directory listing (HTML or JSON) when the path
 	// component is empty.
@@ -637,6 +644,31 @@ func (m *MemGate) handleDescriptor(w http.ResponseWriter, r *http.Request, root 
 // fetched from the network on this very request — the case
 // the gateway used to get wrong.
 func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mid.MID, midStr string) {
+	// Check if content is local. If not, and it's a browser request, trigger background fetch and show status page
+	_, statErr := m.cfg.Backend.Stat(r.Context(), root)
+	if statErr != nil {
+		if strings.Contains(r.Header.Get("Accept"), "text/html") &&
+			r.URL.Query().Get("format") == "" &&
+			r.URL.Query().Get("download") != "1" {
+
+			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
+
+			host := r.Host
+			if idx := strings.Index(host, ":"); idx != -1 {
+				host = host[:idx]
+			}
+			isSubdomain := strings.HasSuffix(host, ".localhost")
+			var ssePath string
+			if isSubdomain {
+				ssePath = "/~status"
+			} else {
+				ssePath = fmt.Sprintf("/mem/%s/~status", midStr)
+			}
+			m.renderResolvePage(w, r, midStr, ssePath)
+			return
+		}
+	}
+
 	// RFC 7234 conditional validation
 	if checkETag(w, r, midStr) {
 		return
@@ -674,6 +706,9 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 		name = defaultFilename(midStr, ct)
 	}
 	disp := "inline"
+	if info.Size > MaxRenderSize {
+		disp = "attachment"
+	}
 	if r.URL.Query().Get("download") == "1" {
 		disp = "attachment"
 		if fn := r.URL.Query().Get("filename"); fn != "" {
@@ -1180,6 +1215,31 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		return
 	}
 
+	// Check if root MID is local. If not, and it's a browser request, trigger background fetch and show status page
+	_, statErr := m.cfg.Backend.Stat(r.Context(), root)
+	if statErr != nil {
+		if strings.Contains(r.Header.Get("Accept"), "text/html") &&
+			r.URL.Query().Get("format") == "" &&
+			r.URL.Query().Get("download") != "1" {
+
+			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
+
+			host := r.Host
+			if idx := strings.Index(host, ":"); idx != -1 {
+				host = host[:idx]
+			}
+			isSubdomain := strings.HasSuffix(host, ".localhost")
+			var ssePath string
+			if isSubdomain {
+				ssePath = "/~status"
+			} else {
+				ssePath = fmt.Sprintf("/mem/%s/~status", midStr)
+			}
+			m.renderResolvePage(w, r, midStr, ssePath)
+			return
+		}
+	}
+
 	// Dynamic base path redirect for SvelteKit / framework apps compiled with custom base paths
 	if redirectURL, ok := m.checkBaseRedirect(r, root, innerPath); ok {
 		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
@@ -1318,7 +1378,11 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 			w.Header().Set("X-Membuss-Name", filename)
 			w.Header().Set("X-Membuss-MimeType", cp.Mime)
 			if w.Header().Get("Content-Disposition") == "" {
-				w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": sanitizeFilename(filename)}))
+				disp := "inline"
+				if pathInfo.Size > MaxRenderSize {
+					disp = "attachment"
+				}
+				w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
 			}
 			w.Header().Set("ETag", `"`+etagVal+`"`)
 			if cp.Mime == "text/html" || strings.HasSuffix(filename, ".html") {
@@ -1369,7 +1433,11 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		w.Header().Set("X-Membuss-Name", filename)
 		w.Header().Set("X-Membuss-MimeType", ct)
 		if w.Header().Get("Content-Disposition") == "" {
-			w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": sanitizeFilename(filename)}))
+			disp := "inline"
+			if size > MaxRenderSize {
+				disp = "attachment"
+			}
+			w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
 		}
 		w.Header().Set("ETag", `"`+etagVal+`"`)
 		if ct == "text/html" || strings.HasSuffix(filename, ".html") {
@@ -1387,7 +1455,11 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	w.Header().Set("X-Membuss-Name", filename)
 	w.Header().Set("X-Membuss-MimeType", ct)
 	if w.Header().Get("Content-Disposition") == "" {
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": sanitizeFilename(filename)}))
+		disp := "inline"
+		if size > MaxRenderSize {
+			disp = "attachment"
+		}
+		w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
 	}
 	if size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatUint(size, 10))
@@ -1777,5 +1849,510 @@ func (m *MemGate) getRefererDir(r *http.Request, root mid.MID) string {
 		return ""
 	}
 	return dir
+}
+
+const MaxRenderSize = 50 * 1024 * 1024 // 50MB
+
+func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
+	midStr := chi.URLParam(r, "mid")
+	if midStr == "" {
+		if resolvedMID, _, ok := m.resolveSubdomain(r); ok {
+			midStr = resolvedMID
+		}
+	}
+	root, err := mid.Parse(midStr)
+	if err != nil {
+		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	flusher.Flush()
+
+	job, _ := m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
+
+	listenerID, ch := job.AddListener()
+	defer job.RemoveListener(listenerID)
+
+	state, errMsg, blocksResolved, blocksTotal, bytesDelivered, bytesTotal, throughput, eta := job.GetStatus()
+	fmt.Fprintf(w, "data: {\"mid\":\"%s\",\"state\":\"%s\",\"error\":\"%s\",\"blocks_resolved\":%d,\"blocks_total\":%d,\"bytes_delivered\":%d,\"bytes_total\":%d,\"throughput\":%f,\"eta\":%f}\n\n",
+		midStr, state, errMsg, blocksResolved, blocksTotal, bytesDelivered, bytesTotal, throughput, eta)
+	flusher.Flush()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		case _, ok := <-ch:
+			state, errMsg, blocksResolved, blocksTotal, bytesDelivered, bytesTotal, throughput, eta = job.GetStatus()
+			fmt.Fprintf(w, "data: {\"mid\":\"%s\",\"state\":\"%s\",\"error\":\"%s\",\"blocks_resolved\":%d,\"blocks_total\":%d,\"bytes_delivered\":%d,\"bytes_total\":%d,\"throughput\":%f,\"eta\":%f}\n\n",
+				midStr, state, errMsg, blocksResolved, blocksTotal, bytesDelivered, bytesTotal, throughput, eta)
+			flusher.Flush()
+			if !ok || state == "completed" || state == "failed" {
+				return
+			}
+		}
+	}
+}
+
+func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midStr string, ssePath string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusAccepted)
+
+	fmt.Fprintf(w, `<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Resolving Content | Membuss</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0c10;
+            --card-bg: rgba(22, 26, 35, 0.65);
+            --accent-color: #4f46e5;
+            --accent-glow: rgba(79, 70, 229, 0.4);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        body::before {
+            content: '';
+            position: absolute;
+            width: 400px;
+            height: 400px;
+            border-radius: 50%%;
+            background: radial-gradient(circle, var(--accent-glow) 0%%, transparent 70%%);
+            top: 20%%;
+            left: 20%%;
+            z-index: 0;
+            filter: blur(50px);
+            animation: float 20s ease-in-out infinite alternate;
+        }
+
+        body::after {
+            content: '';
+            position: absolute;
+            width: 450px;
+            height: 450px;
+            border-radius: 50%%;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.15) 0%%, transparent 70%%);
+            bottom: 10%%;
+            right: 15%%;
+            z-index: 0;
+            filter: blur(60px);
+            animation: float 25s ease-in-out infinite alternate-reverse;
+        }
+
+        @keyframes float {
+            0%% { transform: translate(0, 0) scale(1); }
+            100%% { transform: translate(40px, 40px) scale(1.1); }
+        }
+
+        .container {
+            width: 100%%;
+            max-width: 580px;
+            padding: 2rem;
+            z-index: 10;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 3rem 2.5rem;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            transition: border-color 0.5s ease;
+        }
+
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent-color), #818cf8);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 20px var(--accent-glow);
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .logo-text {
+            font-weight: 700;
+            font-size: 1.5rem;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, #ffffff, #d1d5db);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            letter-spacing: -0.02em;
+        }
+
+        .mid-box {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.65rem 1rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            color: var(--text-secondary);
+            margin-bottom: 2.5rem;
+            word-break: break-all;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1.25rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%%;
+            background-color: var(--text-secondary);
+        }
+
+        .status-discovering { color: #f59e0b; border-color: rgba(245, 158, 11, 0.2); background: rgba(245, 158, 11, 0.05); }
+        .status-discovering .status-dot { background-color: #f59e0b; animation: pulse 1.5s infinite; }
+        
+        .status-fetching { color: var(--accent-color); border-color: rgba(79, 70, 229, 0.2); background: rgba(79, 70, 229, 0.05); }
+        .status-fetching .status-dot { background-color: var(--accent-color); animation: pulse 1.5s infinite; }
+        
+        .status-completed { color: var(--success-color); border-color: rgba(16, 185, 129, 0.2); background: rgba(16, 185, 129, 0.05); }
+        .status-completed .status-dot { background-color: var(--success-color); }
+        
+        .status-failed { color: var(--error-color); border-color: rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); }
+        .status-failed .status-dot { background-color: var(--error-color); }
+
+        @keyframes pulse {
+            0%% { transform: scale(0.8); opacity: 0.5; }
+            50%% { transform: scale(1.2); opacity: 1; }
+            100%% { transform: scale(0.8); opacity: 0.5; }
+        }
+
+        .progress-container {
+            margin-bottom: 2.5rem;
+            text-align: left;
+        }
+
+        .progress-track {
+            height: 12px;
+            background-color: rgba(0, 0, 0, 0.4);
+            border-radius: 9999px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            margin-bottom: 0.75rem;
+        }
+
+        .progress-bar {
+            height: 100%%;
+            width: 0%%;
+            background: linear-gradient(90deg, var(--accent-color), #818cf8);
+            border-radius: 9999px;
+            box-shadow: 0 0 10px rgba(79, 70, 229, 0.5);
+            transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .progress-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .progress-percent {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.25rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .stat-card {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            border-radius: 16px;
+            padding: 1.25rem;
+            text-align: left;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.35rem;
+        }
+
+        .stat-value {
+            font-size: 1.125rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .notice-box {
+            font-size: 0.875rem;
+            background: rgba(245, 158, 11, 0.05);
+            border: 1px solid rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+            padding: 1rem;
+            border-radius: 12px;
+            display: none;
+            margin-bottom: 2rem;
+            text-align: left;
+            line-height: 1.5;
+        }
+
+        .error-message {
+            font-size: 0.875rem;
+            background: rgba(239, 68, 68, 0.05);
+            border: 1px solid rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
+            padding: 1.25rem;
+            border-radius: 12px;
+            display: none;
+            margin-bottom: 2rem;
+            text-align: left;
+            word-break: break-word;
+        }
+
+        .footer {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card" id="main-card">
+            <div class="logo">
+                <div class="logo-icon">M</div>
+                <div class="logo-text">MEMBUSS</div>
+            </div>
+            
+            <h1 id="title-text">Retrieving Content</h1>
+            <div class="mid-box">
+                <span id="mid-display">%s</span>
+            </div>
+
+            <div class="status-badge status-discovering" id="status-badge">
+                <div class="status-dot"></div>
+                <span id="status-text">Discovering peers...</span>
+            </div>
+
+            <div class="notice-box" id="notice-box">
+                <strong>Direct Download:</strong> This content is larger than 50MB. To preserve memory and client responsiveness, it will be downloaded directly as an attachment once fully assembled.
+            </div>
+
+            <div class="error-message" id="error-box">
+                <strong>Error:</strong> <span id="error-text"></span>
+            </div>
+
+            <div class="progress-container" id="progress-container">
+                <div class="progress-track">
+                    <div class="progress-bar" id="progress-bar"></div>
+                </div>
+                <div class="progress-labels">
+                    <span id="progress-detail">Initializing request...</span>
+                    <span class="progress-percent" id="progress-percent">0%%</span>
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Transfer Speed</div>
+                    <div class="stat-value" id="speed-value">0 B/s</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Time Remaining</div>
+                    <div class="stat-value" id="eta-value">Calculating...</div>
+                </div>
+            </div>
+
+            <div class="footer">
+                Mem-Gate • Content-Addressable CDN
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const mid = "%s";
+        const sseUrl = "%s";
+        let isLarge = false;
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function formatDuration(seconds) {
+            if (isNaN(seconds) || seconds === Infinity || seconds <= 0) return 'Calculating...';
+            if (seconds < 60) return Math.round(seconds) + 's';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.round(seconds %% 60);
+            return mins + 'm ' + secs + 's';
+        }
+
+        function initSSE() {
+            const eventSource = new EventSource(sseUrl);
+
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                console.log("Status update:", data);
+
+                const badge = document.getElementById("status-badge");
+                const badgeText = document.getElementById("status-text");
+                const bar = document.getElementById("progress-bar");
+                const percent = document.getElementById("progress-percent");
+                const detail = document.getElementById("progress-detail");
+                const speed = document.getElementById("speed-value");
+                const eta = document.getElementById("eta-value");
+                const notice = document.getElementById("notice-box");
+                const errorBox = document.getElementById("error-box");
+                const errorText = document.getElementById("error-text");
+
+                if (data.state === "discovering") {
+                    badge.className = "status-badge status-discovering";
+                    badgeText.innerText = "Discovering providers...";
+                    detail.innerText = "Searching Mem-DHT network...";
+                    bar.style.width = "0%%";
+                    percent.innerText = "0%%";
+                    speed.innerText = "0 B/s";
+                    eta.innerText = "Calculating...";
+                } else if (data.state === "fetching") {
+                    badge.className = "status-badge status-fetching";
+                    badgeText.innerText = "Fetching blocks...";
+                    
+                    let pct = 0;
+                    if (data.bytes_total > 0) {
+                        pct = Math.round((data.bytes_delivered / data.bytes_total) * 100);
+                        detail.innerText = formatBytes(data.bytes_delivered) + " / " + formatBytes(data.bytes_total) + " (" + data.blocks_resolved + " / " + data.blocks_total + " blks)";
+                        
+                        if (data.bytes_total > 50 * 1024 * 1024 && !isLarge) {
+                            isLarge = true;
+                            notice.style.display = "block";
+                        }
+                    } else if (data.blocks_total > 0) {
+                        pct = Math.round((data.blocks_resolved / data.blocks_total) * 100);
+                        detail.innerText = data.blocks_resolved + " / " + data.blocks_total + " blocks";
+                    } else {
+                        detail.innerText = formatBytes(data.bytes_delivered) + " fetched";
+                    }
+
+                    bar.style.width = pct + "%%";
+                    percent.innerText = pct + "%%";
+
+                    speed.innerText = formatBytes(data.throughput) + "/s";
+                    eta.innerText = formatDuration(data.eta);
+                } else if (data.state === "completed") {
+                    badge.className = "status-badge status-completed";
+                    badgeText.innerText = "Assembled successfully";
+                    bar.style.width = "100%%";
+                    percent.innerText = "100%%";
+                    detail.innerText = "Complete! Redirecting...";
+                    speed.innerText = "Done";
+                    eta.innerText = "Completed";
+
+                    eventSource.close();
+                    
+                    setTimeout(() => {
+                        const destUrl = window.location.pathname + window.location.search;
+                        window.location.href = destUrl;
+                    }, 1200);
+                } else if (data.state === "failed") {
+                    badge.className = "status-badge status-failed";
+                    badgeText.innerText = "Not found on network";
+                    detail.innerText = "Failed to resolve content.";
+                    eventSource.close();
+
+                    errorBox.style.display = "block";
+                    errorText.innerText = data.error || "No providers found on the Kademlia DHT or connections timed out.";
+                }
+            };
+
+            eventSource.onerror = function(err) {
+                console.error("SSE connection error:", err);
+            };
+        }
+
+        window.onload = initSSE;
+    </script>
+</body>
+</html>`, midStr, midStr, ssePath)
 }
 

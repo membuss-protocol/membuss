@@ -44,7 +44,7 @@ import (
 	explorerPkg "github.com/nnlgsakib/membuss/gateway/explorer"
 	memgate "github.com/nnlgsakib/membuss/gateway/memgate_v2"
 
-	badgerds "github.com/ipfs/go-ds-badger4"
+	"github.com/nnlgsakib/membuss/core/db"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -255,11 +255,11 @@ func main() {
 	// when (a) the DHT is willing to act as a server, (b)
 	// provider records are persisted into a datastore the
 	// kad-dht ProviderManager can read from, and (c) the
-	// optimistic provide shortcut is on. We use a badger4
+	// optimistic provide shortcut is on. We use a pebble
 	// backed datastore so provider records survive restarts;
 	// the reprovide loop in Mem-Herald keeps them fresh.
 	dhtDir := filepath.Join(cfg.DataDir, "dht")
-	dhtDS, err := badgerds.NewDatastore(dhtDir, nil)
+	dhtDS, err := db.NewPebbleDatastore(dhtDir, false)
 	if err != nil {
 		logger.Error("dht datastore", "err", err.Error())
 		os.Exit(1)
@@ -282,7 +282,7 @@ func main() {
 	}
 	relaySource.SetFinder(mdht.FindRelays)
 	if err := mdht.Bootstrap(ctx, bootstrapPeers); err != nil {
-		logger.Warn("dht bootstrap", "err", err.Error())
+		logger.Debug("dht bootstrap", "err", err.Error())
 	}
 	if len(bootstrapPeers) > 0 {
 		go func() {
@@ -327,7 +327,7 @@ func main() {
 	dhtBootstrapMu.Unlock()
 	if len(replay) > 0 {
 		if err := mdht.Bootstrap(ctx, replay); err != nil {
-			logger.Warn("dht bootstrap (replay)", "err", err.Error())
+			logger.Debug("dht bootstrap (replay)", "err", err.Error())
 		}
 	}
 	defer mdht.Close()
@@ -687,7 +687,7 @@ func banner(cfg *config.Config, cfgPath string, inMemory, noAnchor bool) {
 	)
 }
 
-// openStore opens the local BadgerDB block store. When
+// openStore opens the local block store. When
 // inMemory is true, the store is backed by RAM and discards
 // its contents on Close. The data dir is still passed through
 // to subsystems that need it (host identity, etc.).
@@ -709,7 +709,30 @@ func openStore(cfg *config.Config, inMemory bool) (store.Store, error) {
 		return nil, fmt.Errorf("store migration: %w", err)
 	}
 
-	return store.NewMemStore(store.Options{Path: filepath.Join(cfg.DataDir, "datastore"), Bloom: bloom})
+	datastorePath := filepath.Join(cfg.DataDir, "datastore")
+	if isBadgerDbDir(datastorePath) {
+		slog.Info("Legacy BadgerDB detected. Removing old datastore to initialize Pebble...", "path", datastorePath)
+		_ = os.RemoveAll(datastorePath)
+	}
+
+	return store.NewMemStore(store.Options{Path: datastorePath, Bloom: bloom})
+}
+
+func isBadgerDbDir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "DISCARD" || name == "KEYREGISTRY" || filepath.Ext(name) == ".vlog" {
+			return true
+		}
+	}
+	return false
 }
 
 // migrateBadgerFiles moves BadgerDB files from the root of dataDir to the

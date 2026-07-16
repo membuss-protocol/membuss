@@ -21,14 +21,17 @@
 package store
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
-	"github.com/dgraph-io/badger/v4"
+	"github.com/nnlgsakib/membuss/core/db"
 
 	"github.com/nnlgsakib/membuss/core/mid"
 )
@@ -82,6 +85,12 @@ type bloomIndex struct {
 	capacity uint
 	fpRate   float64
 	path     string
+
+	rebuildCh chan *db.DB
+	closeCh   chan struct{}
+	closed    bool
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // newBloomIndex constructs a fresh filter with the
@@ -103,11 +112,18 @@ func newBloomIndex(cfg BloomConfig) (*bloomIndex, error) {
 		path:     cfg.SnapshotPath,
 	}
 
+	idx.rebuildCh = make(chan *db.DB, 1)
+	idx.closeCh = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	idx.ctx = ctx
+	idx.cancel = cancel
+
 	if cfg.SnapshotPath != "" {
 		if data, err := os.ReadFile(cfg.SnapshotPath); err == nil {
 			bf := &bloom.BloomFilter{}
 			if uerr := bf.UnmarshalBinary(data); uerr == nil {
 				idx.filter = bf
+				go idx.rebuildWorker()
 				return idx, nil
 			}
 			// Fall through: snapshot was corrupt; build a
@@ -116,6 +132,8 @@ func newBloomIndex(cfg BloomConfig) (*bloomIndex, error) {
 	}
 
 	idx.filter = bloom.NewWithEstimates(cfg.Capacity, cfg.FPRate)
+	go idx.rebuildWorker()
+
 	return idx, nil
 }
 
@@ -124,8 +142,8 @@ func newBloomIndex(cfg BloomConfig) (*bloomIndex, error) {
 // when no snapshot file is available. This is a
 // one-time, blocking operation; the caller is expected
 // to invoke it from a constructor.
-func (b *bloomIndex) fromDB(db *badger.DB) error {
-	if db == nil {
+func (b *bloomIndex) fromDB(database *db.DB) error {
+	if database == nil {
 		return errors.New("bloom: nil db")
 	}
 	b.mu.Lock()
@@ -134,25 +152,20 @@ func (b *bloomIndex) fromDB(db *badger.DB) error {
 	if b.filter == nil {
 		b.filter = bloom.NewWithEstimates(b.capacity, b.fpRate)
 	}
-	err := db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for _, prefix := range []string{prefixBlock, prefixDAG} {
-			p := []byte(prefix)
-			for it.Seek(p); it.ValidForPrefix(p); it.Next() {
-				raw := append([]byte(nil), it.Item().Key()...)
-				if len(raw) <= len(p) {
-					continue
-				}
-				b.filter.Add(raw[len(p):])
-			}
-		}
-		return nil
-	})
+	it, err := database.NewIter()
 	if err != nil {
-		return fmt.Errorf("bloom: rebuild from db: %w", err)
+		return err
+	}
+	defer it.Close()
+	for _, prefix := range []string{db.PrefixBlock, db.PrefixDAG} {
+		p := []byte(prefix)
+		for it.SeekGE(p); it.Valid() && bytes.HasPrefix(it.Key(), p); it.Next() {
+			raw := append([]byte(nil), it.Key()...)
+			if len(raw) <= len(p) {
+				continue
+			}
+			b.filter.Add(raw[len(p):])
+		}
 	}
 	return nil
 }
@@ -185,40 +198,91 @@ func (b *bloomIndex) add(m mid.MID) {
 	b.mu.Unlock()
 }
 
-// rebuildFromDB is invoked on explicit Delete() because
-// the bloom library does not support removal. The cost
-// is bounded by the number of MIDs in the store, which
-// is acceptable because Delete is rare and operates
-// out-of-band from the request path.
-func (b *bloomIndex) rebuildFromDB(db *badger.DB) error {
-	if db == nil {
+func (b *bloomIndex) rebuildFromDB(database *db.DB) error {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return errors.New("bloom: closed")
+	}
+	select {
+	case b.rebuildCh <- database:
+	default:
+	}
+	return nil
+}
+
+func (b *bloomIndex) performRebuild(database *db.DB) error {
+	if database == nil {
 		return errors.New("bloom: nil db")
 	}
 	fresh := bloom.NewWithEstimates(b.capacity, b.fpRate)
-	err := db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for _, prefix := range []string{prefixBlock, prefixDAG} {
-			p := []byte(prefix)
-			for it.Seek(p); it.ValidForPrefix(p); it.Next() {
-				raw := append([]byte(nil), it.Item().Key()...)
-				if len(raw) <= len(p) {
-					continue
-				}
-				fresh.Add(raw[len(p):])
-			}
-		}
-		return nil
-	})
+	it, err := database.NewIter()
 	if err != nil {
 		return err
+	}
+	defer it.Close()
+	for _, prefix := range []string{db.PrefixBlock, db.PrefixDAG} {
+		p := []byte(prefix)
+		for it.SeekGE(p); it.Valid() && bytes.HasPrefix(it.Key(), p); it.Next() {
+			raw := append([]byte(nil), it.Key()...)
+			if len(raw) <= len(p) {
+				continue
+			}
+			fresh.Add(raw[len(p):])
+		}
 	}
 	b.mu.Lock()
 	b.filter = fresh
 	b.mu.Unlock()
 	return nil
+}
+
+func (b *bloomIndex) rebuildWorker() {
+	defer close(b.closeCh)
+	var lastDb *db.DB
+	timer := time.NewTimer(500 * time.Millisecond)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			if lastDb != nil {
+				_ = b.performRebuild(lastDb)
+			}
+			return
+		case database := <-b.rebuildCh:
+			lastDb = database
+			timer.Reset(500 * time.Millisecond)
+		case <-timer.C:
+			if lastDb != nil {
+				_ = b.performRebuild(lastDb)
+				lastDb = nil
+			}
+		}
+	}
+}
+
+func (b *bloomIndex) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	b.cancel()
+	b.mu.Unlock()
+
+	<-b.closeCh
+	return b.saveSnapshot()
 }
 
 // saveSnapshot serializes the filter to disk. A nil path

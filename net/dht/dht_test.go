@@ -104,7 +104,7 @@ func TestMemDHT_ProvideFindProviders(t *testing.T) {
 		t.Fatalf("d2: %v", err)
 	}
 
-	id := mid.FromBytes([]byte("membuss-phase-4-provide-test"))
+	id := mid.FromBytesWithCodec([]byte("membuss-phase-4-provide-test"), mid.CodecMemFS)
 	if err := d1.Provide(ctx, id); err != nil {
 		t.Fatalf("provide: %v", err)
 	}

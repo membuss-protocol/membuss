@@ -32,7 +32,7 @@ func TestParseLevel(t *testing.T) {
 
 func TestNew_EmitsJSON(t *testing.T) {
 	var buf bytes.Buffer
-	log := New(&buf, "debug")
+	log := New(&buf, "debug-json")
 	log.Info("hello", "k", "v")
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"hello"`) {

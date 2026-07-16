@@ -1,16 +1,18 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
-	"github.com/dgraph-io/badger/v4"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/nnlgsakib/membuss/core/db"
 	"github.com/nnlgsakib/membuss/core/mid"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
@@ -18,22 +20,6 @@ import (
 // Seal marks root as a pinned root. If recursive is true, Seal
 // also walks the DAG rooted at root to confirm the DAG is
 // internally consistent.
-//
-// A Seal is a *forward-looking pin*: the seal record is written
-// even if root (or some of its descendants) is not yet in the
-// local store. This matches the "Sealing a MID that is not yet
-// stored is allowed" contract on the Store interface. The walk
-// is a best-effort validation that surfaces obvious errors
-// (corrupt DAG, malformed link) but does NOT block the seal on
-// missing blocks. Use Stat to confirm a sealed root is fully
-// local.
-//
-// Walk errors are wrapped in ErrSealWalkIncomplete so callers
-// that DO want to surface the warning (e.g. for logging or
-// metrics) can detect them; a plain errors.Is check will see
-// them and a simple `return err` will still return the warning
-// to RPC callers. Most callers should treat the warning as
-// informational.
 func (s *MemStore) Seal(root mid.MID, recursive bool) error {
 	if err := s.enter(); err != nil {
 		return err
@@ -60,10 +46,6 @@ func (s *MemStore) Seal(root mid.MID, recursive bool) error {
 		return nil
 	})
 	if werr != nil {
-		// A missing block is a soft warning (forward-looking
-		// pin). Other walk errors (parse failures, truncated
-		// links) are still surfaced so the operator can spot
-		// a corrupt DAG.
 		if errors.Is(werr, ErrNotFound) {
 			return fmt.Errorf("%w: %v", ErrSealWalkIncomplete, werr)
 		}
@@ -74,15 +56,11 @@ func (s *MemStore) Seal(root mid.MID, recursive bool) error {
 
 // ErrSealWalkIncomplete signals that a Seal succeeded (the
 // pin record is on disk) but the recursive DAG walk did not
-// reach every reachable block. This is expected when the
-// operator pins a MID they have not fetched yet; the missing
-// blocks will be filled in by a later memex fetch or add.
+// reach every reachable block.
 var ErrSealWalkIncomplete = errors.New("store: seal walk incomplete")
 
 // Unseal removes the seal record for the given MID and recursively
-// unseals any child MemFS nodes. Missing blocks (e.g. forward-looking
-// seals for content not yet fetched) are silently skipped. Returns
-// the first error encountered during child seal deletion.
+// unseals any child MemFS nodes.
 func (s *MemStore) Unseal(root mid.MID) error {
 	if err := s.enter(); err != nil {
 		return err
@@ -91,30 +69,19 @@ func (s *MemStore) Unseal(root mid.MID) error {
 	if root.IsZero() {
 		return errors.New("store: zero MID")
 	}
-	err := s.db.Update(func(txn *badger.Txn) error {
-		err := txn.Delete(sealKey(root))
-		if err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
+	err := s.db.Delete(db.SealKey(root))
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
 		return err
 	}
 
 	walkErr := Walk(s, root, func(m mid.MID, _ bool) error {
 		if m.Codec() == mid.CodecMemFS {
-			if err := s.db.Update(func(txn *badger.Txn) error {
-				return txn.Delete(sealKey(m))
-			}); err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
+			if err := s.db.Delete(db.SealKey(m)); err != nil && !errors.Is(err, db.ErrNotFound) {
 				return fmt.Errorf("store: unseal child %s: %w", m.String(), err)
 			}
 		}
 		return nil
 	})
-	// Tolerate missing blocks (forward-looking seal pattern):
-	// the Walk fails with "block not found" but the root seal
-	// is already deleted above, which is the important part.
 	if walkErr != nil && !errors.Is(walkErr, ErrNotFound) {
 		return walkErr
 	}
@@ -130,100 +97,66 @@ func (s *MemStore) IsSealed(m mid.MID) (bool, error) {
 	if m.IsZero() {
 		return false, errors.New("store: zero MID")
 	}
-	var found bool
-	err := s.db.View(func(txn *badger.Txn) error {
-		_, gerr := txn.Get(sealKey(m))
-		if gerr == nil {
-			found = true
-			return nil
-		}
-		if errors.Is(gerr, badger.ErrKeyNotFound) {
-			return nil
-		}
-		return gerr
-	})
-	if err != nil {
-		return false, err
-	}
-	return found, nil
+	return s.db.Has(db.SealKey(m))
 }
 
-// AllSealed returns every MID with a direct seal record. Order
-// is unspecified.
+// AllSealed returns every MID with a direct seal record.
 func (s *MemStore) AllSealed() ([]mid.MID, error) {
-	if err := s.enter(); err != nil {
-		return nil, err
-	}
-	defer s.exit()
 	var out []mid.MID
-	err := s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		prefix := []byte(prefixSeal)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			raw := append([]byte(nil), it.Item().Key()...)
-			raw = raw[len(prefix):]
-			
-			codec := mid.CodecRaw
-			isChild := false
-			item := it.Item()
-			if item.ValueSize() == 8 {
-				var val [8]byte
-				err := item.Value(func(v []byte) error {
-					copy(val[:], v)
-					return nil
-				})
-				if err == nil {
-					v := binary.BigEndian.Uint64(val[:])
-					isChild = (v & (1 << 63)) != 0
-					codec = v &^ (1 << 63)
-				}
-			}
-			
-			if isChild {
-				continue
-			}
-			
-			m, err := mid.FromMultihash(codec, raw)
-			if err != nil {
-				continue
-			}
-			out = append(out, m)
-		}
+	err := s.IterateSealed(func(m mid.MID) error {
+		out = append(out, m)
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("store: all sealed: %w", err)
+	return out, err
+}
+
+func (s *MemStore) IterateSealed(fn func(mid.MID) error) error {
+	if err := s.enter(); err != nil {
+		return err
 	}
-	return out, nil
+	defer s.exit()
+	it, err := s.db.NewIter()
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	prefix := []byte(db.PrefixSeal)
+	for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
+		raw := append([]byte(nil), it.Key()...)
+		raw = raw[len(prefix):]
+
+		codec := mid.CodecRaw
+		isChild := false
+		val := it.Value()
+		if len(val) == 8 {
+			v := binary.BigEndian.Uint64(val)
+			isChild = (v & (1 << 63)) != 0
+			codec = v &^ (1 << 63)
+		}
+
+		if isChild {
+			continue
+		}
+
+		m, err := mid.FromMultihash(codec, raw)
+		if err != nil {
+			continue
+		}
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GC walks every sealed root, collects the reachable MID set,
 // and deletes every key in the store that is NOT in that set
-// AND is older than the minimum age. It returns the number of
-// bytes freed.
-//
-// Implementation note: a single BadgerDB Update transaction is
-// NOT used to iterate-and-delete, because BadgerDB iterators
-// hold a read snapshot at creation time and concurrent deletes
-// inside the same transaction are not reflected in the
-// iteration. Instead we do:
-//
-//  1. A View pass to enumerate every key + its size and decide
-//     which to delete.
-//  2. An Update pass to delete the collected keys.
-//
-// BadgerDB's value-log GC is invoked at most once per call.
+// AND is older than the minimum age.
 func (s *MemStore) GC(ctx context.Context) (uint64, error) {
 	return s.GCWithMinAge(ctx, 0)
 }
 
-// GCWithMinAge is like GC but only deletes blocks whose
-// BadgerDB commit timestamp is older than minAge. This
-// prevents recently-fetched content from being immediately
-// garbage-collected. Pass 0 for minAge to disable the age
-// check (original GC behavior).
+// GCWithMinAge is like GC but only deletes blocks whose commit timestamp is older than minAge.
 func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint64, error) {
 	if err := s.enter(); err != nil {
 		return 0, err
@@ -233,8 +166,20 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 		ctx = context.Background()
 	}
 
-	// Phase 1: build the reachable set (indexed by raw multihash bytes for codec-agnostic checks).
-	reachable := make(map[string]struct{})
+	// Create a temporary disk-backed Pebble DB to track reachability.
+	// This keeps memory usage O(1) even with millions of blocks.
+	tmpDir, err := os.MkdirTemp("", "membuss-gc-*")
+	if err != nil {
+		return 0, fmt.Errorf("store: gc tmpdir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpDB, err := db.Open(db.Options{Path: tmpDir})
+	if err != nil {
+		return 0, fmt.Errorf("store: gc tmpdb open: %w", err)
+	}
+	defer tmpDB.Close()
+
 	roots, err := s.AllSealed()
 	if err != nil {
 		return 0, err
@@ -246,100 +191,84 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 		if root.IsZero() {
 			continue
 		}
-		reachable[string(root.Bytes())] = struct{}{}
-		werr := Walk(s, root, func(m mid.MID, _ bool) error {
-			reachable[string(m.Bytes())] = struct{}{}
+		_ = tmpDB.Set(root.Bytes(), []byte{1})
+		_ = Walk(s, root, func(m mid.MID, _ bool) error {
+			_ = tmpDB.Set(m.Bytes(), []byte{1})
 			return nil
 		})
-		_ = werr
 	}
 
-	// Phase 2: enumerate every key in the store and collect the
-	// ones that are NOT reachable and older than minAge.
-	type pendingDelete struct {
-		key   []byte
-		bytes uint64
-	}
-	var toDelete []pendingDelete
 	var minAgeTs uint64
 	if minAge > 0 {
 		minAgeTs = uint64(time.Now().Add(-minAge).Unix())
 	}
-	err = s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for it.Rewind(); it.Valid(); it.Next() {
+
+	it, err := s.db.NewIter()
+	if err != nil {
+		return 0, err
+	}
+	defer it.Close()
+
+	var freed uint64
+	batch := s.db.NewBatch()
+	defer batch.Close()
+	count := 0
+
+	// GC Phase 2: only scan PrefixBlock and PrefixDAG keys to avoid reading metadata and seals
+	for _, prefix := range [][]byte{[]byte(db.PrefixBlock), []byte(db.PrefixDAG)} {
+		for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
 			if err := ctx.Err(); err != nil {
-				return err
+				return freed, err
 			}
-			item := it.Item()
-			k := item.Key()
-			ks := string(k)
-			// Skip meta records (/m/ prefix) - they are
-			// not part of the content-addressed data
-			// set and must survive GC.
-			if len(ks) > len(prefixMeta) && ks[:len(prefixMeta)] == prefixMeta {
+			k := it.Key()
+			raw := k[len(prefix):]
+
+			// Check if key is reachable
+			isReachable, err := tmpDB.Has(raw)
+			if err == nil && isReachable {
 				continue
 			}
-			// Skip seal records (/s/ prefix) - the
-			// operator-visible pin state must survive
-			// GC even when the underlying blocks are
-			// gone (think: a forward-looking seal for
-			// content that has not been fetched yet).
-			if len(ks) > len(prefixSeal) && ks[:len(prefixSeal)] == prefixSeal {
-				continue
-			}
-			// Only consider /b/ and /d/ keys; those
-			// are the actual content-addressed data.
-			isBlock := len(ks) > len(prefixBlock) && ks[:len(prefixBlock)] == prefixBlock
-			isDAG := len(ks) > len(prefixDAG) && ks[:len(prefixDAG)] == prefixDAG
-			if !isBlock && !isDAG {
-				continue
-			}
-			raw := k
-			if isBlock {
-				raw = k[len(prefixBlock):]
-			} else {
-				raw = k[len(prefixDAG):]
-			}
-			if _, ok := reachable[string(raw)]; ok {
-				continue
-			}
+
+			// Check if key is older than minAge
 			if minAgeTs > 0 {
 				m, merr := mid.FromMultihash(mid.CodecRaw, raw)
 				if merr == nil {
-					if ts, terr := readTimestamp(txn, m); terr == nil && ts >= minAgeTs {
+					if ts, terr := db.ReadTimestamp(s.db, m); terr == nil && ts >= minAgeTs {
 						continue
 					}
 				}
 			}
-			toDelete = append(toDelete, pendingDelete{
-				key:   append([]byte(nil), k...),
-				bytes: uint64(item.KeySize()+item.ValueSize()),
-			})
+
+			valSize := uint64(len(it.Value()))
+			if s.blocksPath != "" && len(it.Value()) == 8 {
+				valSize = binary.BigEndian.Uint64(it.Value())
+			}
+			_ = batch.Delete(k)
+			freed += uint64(len(k)) + valSize
+
+			if s.blocksPath != "" {
+				m, merr := mid.FromMultihash(mid.CodecRaw, raw)
+				if merr == nil {
+					_ = os.Remove(s.blockPath(m))
+				}
+			}
+			count++
+
+			if count >= 1000 {
+				if err := batch.Commit(); err != nil {
+					return freed, fmt.Errorf("store: gc batch delete failed: %w", err)
+				}
+				batch.Close()
+				batch = s.db.NewBatch()
+				count = 0
+			}
 		}
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("store: gc enumerate: %w", err)
 	}
 
-	// Phase 3: delete the collected keys. Each key gets its
-	// own short transaction so a single corrupt entry does
-	// not abort the whole sweep.
-	var freed uint64
-	for _, pd := range toDelete {
-		if err := s.deleteKey(pd.key); err != nil {
-			return freed, fmt.Errorf("store: gc delete: %w", err)
+	if count > 0 {
+		if err := batch.Commit(); err != nil {
+			return freed, fmt.Errorf("store: gc final batch delete failed: %w", err)
 		}
-		freed += pd.bytes
-	}
-
-	// Phase 4: trigger BadgerDB's value-log GC once.
-	if freed > 0 {
-		go func() { _ = s.db.RunValueLogGC(0.5) }()
 	}
 
 	return freed, nil
@@ -347,41 +276,16 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 
 // writeSeal writes a single seal record.
 func (s *MemStore) writeSeal(m mid.MID, child bool) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		val := make([]byte, 8)
-		codecVal := m.Codec()
-		if child {
-			codecVal |= 1 << 63
-		}
-		binary.BigEndian.PutUint64(val, codecVal)
-		return txn.Set(sealKey(m), val)
-	})
-}
-
-// ksToMID converts a BadgerDB key string back to the public MID
-// form for lookup in the reachable set.
-func ksToMID(ks string) string {
-	switch {
-	case len(ks) > len(prefixBlock) && ks[:len(prefixBlock)] == prefixBlock:
-		raw := ks[len(prefixBlock):]
-		m, err := mid.FromMultihash(mid.CodecRaw, []byte(raw))
-		if err != nil {
-			return ks
-		}
-		return m.String()
-	case len(ks) > len(prefixDAG) && ks[:len(prefixDAG)] == prefixDAG:
-		raw := ks[len(prefixDAG):]
-		m, err := mid.FromMultihash(mid.CodecRaw, []byte(raw))
-		if err != nil {
-			return ks
-		}
-		return m.String()
+	val := make([]byte, 8)
+	codecVal := m.Codec()
+	if child {
+		codecVal |= 1 << 63
 	}
-	return ks
+	binary.BigEndian.PutUint64(val, codecVal)
+	return s.db.Set(db.SealKey(m), val)
 }
 
 // DeleteRecursive removes the given root MID and all its reachable children from the store.
-// It also unseals them. It returns the number of blocks deleted and the number of bytes freed.
 func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 	if err := s.enter(); err != nil {
 		return 0, 0, err
@@ -391,16 +295,11 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 		return 0, 0, errors.New("store: zero MID")
 	}
 
-	// First, unseal the root to clear its seals/pins
 	if err := s.Unseal(root); err != nil {
-		// Ignore not found or similar
+		// Ignore
 	}
 
-	// Collect all reachable MIDs. If a block is missing, we still want to delete
-	// the blocks we *do* have, so we tolerate missing block errors during traversal.
 	reachable := make(map[string]mid.MID)
-
-	// We do a custom traverse to tolerate missing blocks
 	var collect func(m mid.MID)
 	collect = func(m mid.MID) {
 		if m.IsZero() {
@@ -414,7 +313,6 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 
 		data, err := s.Get(m)
 		if err != nil {
-			// Tolerate missing block, just stop traversing this branch
 			return
 		}
 
@@ -481,9 +379,6 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 
 	collect(root)
 
-	// Now delete all collected MIDs and count size freed.
-	// To minimize transaction overhead and latency, we group deletions into batches
-	// using a single Update transaction per batch.
 	var blocksDeleted uint64
 	var bytesFreed uint64
 
@@ -498,104 +393,81 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 		if end > len(mids) {
 			end = len(mids)
 		}
-		batch := mids[i:end]
+		batchMids := mids[i:end]
 
-		err := s.db.Update(func(txn *badger.Txn) error {
-			for _, m := range batch {
-				// 1. Get size and delete from block/dag namespaces
-				var size uint64
-				deletedThisBlock := false
-				for _, key := range [][]byte{blockKey(m), dagKey(m)} {
-					item, err := txn.Get(key)
-					if err == nil {
-						size += uint64(item.ValueSize())
-						errDel := txn.Delete(key)
-						if errDel == nil {
-							deletedThisBlock = true
-						}
+		batch := s.db.NewBatch()
+		for _, m := range batchMids {
+			var size uint64
+			deletedThisBlock := false
+			for _, key := range [][]byte{db.BlockKey(m), db.DagKey(m)} {
+				val, err := s.db.Get(key)
+				if err == nil {
+					if s.blocksPath != "" && len(val) == 8 {
+						size += binary.BigEndian.Uint64(val)
+					} else {
+						size += uint64(len(val))
 					}
+					_ = batch.Delete(key)
+					deletedThisBlock = true
 				}
-				if deletedThisBlock {
-					blocksDeleted++
-					bytesFreed += size
-				}
-
-				// 2. Also delete the ObjectInfo and timestamp metadata if they exist
-				_ = txn.Delete(metaKey("obj/" + m.String()))
-				_ = txn.Delete(metaKey("ts/" + m.String()))
 			}
-			return nil
-		})
-		if err != nil {
+			if deletedThisBlock {
+				blocksDeleted++
+				bytesFreed += size
+				if s.blocksPath != "" {
+					_ = os.Remove(s.blockPath(m))
+				}
+			}
+
+			_ = batch.Delete(db.MetaKey("obj/" + m.String()))
+			_ = batch.Delete(db.MetaKey("ts/" + m.String()))
+		}
+		if err := batch.Commit(); err != nil {
+			batch.Close()
 			return blocksDeleted, bytesFreed, fmt.Errorf("store: batch delete failed: %w", err)
 		}
+		batch.Close()
 	}
 
-	// Rebuild bloom filter if enabled
 	if s.bloom != nil {
 		if rerr := s.bloom.rebuildFromDB(s.db); rerr != nil {
 			return blocksDeleted, bytesFreed, fmt.Errorf("store: bloom rebuild after delete: %w", rerr)
 		}
 	}
 
-	// Trigger value-log GC once
-	if bytesFreed > 0 {
-		go func() { _ = s.db.RunValueLogGC(0.5) }()
-	}
-
 	return blocksDeleted, bytesFreed, nil
 }
 
-// AllObjectMIDs returns every MID that has an ObjectInfo metadata record
-// where IsRoot is true.
+// AllObjectMIDs returns every MID that has an ObjectInfo metadata record where IsRoot is true.
 func (s *MemStore) AllObjectMIDs() ([]mid.MID, error) {
 	if err := s.enter(); err != nil {
 		return nil, err
 	}
 	defer s.exit()
 	var out []mid.MID
-	err := s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		// The key prefix in BadgerDB is prefixMeta ("obj/")
-		prefix := metaKey("obj/")
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			// Read the ObjectInfo from the DB
-			var data []byte
-			err := item.Value(func(v []byte) error {
-				data = append([]byte(nil), v...)
-				return nil
-			})
-			if err != nil {
-				continue
-			}
-
-			var info ObjectInfo
-			if err := json.Unmarshal(data, &info); err != nil {
-				continue
-			}
-			if !info.IsRoot {
-				continue
-			}
-
-			// The key shape is /m/obj/<MID_string>.
-			// Let's parse the MID from the key itself.
-			k := item.Key()
-			midStr := string(k[len(prefix):])
-			m, err := mid.Parse(midStr)
-			if err != nil {
-				continue
-			}
-			out = append(out, m)
-		}
-		return nil
-	})
+	it, err := s.db.NewIter()
 	if err != nil {
-		return nil, fmt.Errorf("store: all object mids: %w", err)
+		return nil, err
+	}
+	defer it.Close()
+
+	prefix := db.MetaKey("obj/")
+	for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
+		var info ObjectInfo
+		if err := json.Unmarshal(it.Value(), &info); err != nil {
+			continue
+		}
+		if !info.IsRoot {
+			continue
+		}
+
+		k := it.Key()
+		midStr := string(k[len(prefix):])
+		m, err := mid.Parse(midStr)
+		if err != nil {
+			continue
+		}
+		out = append(out, m)
 	}
 	return out, nil
 }
-

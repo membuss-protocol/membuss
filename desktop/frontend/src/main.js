@@ -567,18 +567,22 @@ function renderDashboardTab(container, headerActions) {
     btn.disabled = true;
     try {
       if (appState.nodeStatus.process_running) {
+        btn.innerHTML = '⏳ Stopping Node...';
         logMessage("Stopping node process...");
         await StopNode();
       } else {
+        btn.innerHTML = '⏳ Starting Node...';
         logMessage("Starting node process...");
         await StartNode();
       }
       setTimeout(async () => {
         await checkNodeHealth();
         switchTab('dashboard');
-      }, 800);
+      }, 1000);
     } catch (err) {
       await showCustomAlert("Process Error", "Process error: " + (err.message || err), "error");
+      const isRunning = appState.nodeStatus.process_running;
+      btn.innerHTML = isRunning ? '🔴 Stop Node' : '🟢 Start Node';
       btn.disabled = false;
     }
   });

@@ -144,6 +144,122 @@ func (a *memgateAdapter) Resolve(ctx context.Context, m mid.MID) (io.ReadCloser,
 	}, nil
 }
 
+// ResolveWithProgress returns the bytes of a MID while calling progressFn as blocks arrive.
+func (a *memgateAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(memgate.ProgressUpdate)) (io.ReadCloser, memgate.ContentInfo, error) {
+	b := a.b
+	has, err := b.store.Has(m)
+	if err != nil {
+		return nil, memgate.ContentInfo{}, err
+	}
+	if has {
+		if complete, cerr := isDAGComplete(b.store, m); cerr != nil || !complete {
+			has = false
+		}
+	}
+	if !has && b.memex != nil && b.dht != nil {
+		provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		provs, perr := b.dht.FindProviders(provCtx, m)
+		cancel()
+		if perr != nil || len(provs) == 0 {
+			// Fallback: use currently connected swarm peers
+			for _, pid := range b.host.Network().Peers() {
+				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
+			}
+		}
+		if len(provs) > 0 {
+			sess, serr := memex.NewSession(memex.SessionConfig{
+				Engine:         b.memex,
+				Root:           m,
+				Providers:      provs,
+				Timeout:        memex.DefaultSessionTimeout,
+				ProviderFinder: b.dht.FindProviders,
+				ProgressFn: func(u memex.ProgressUpdate) {
+					if progressFn != nil {
+						progressFn(memgate.ProgressUpdate{
+							BlocksResolved: u.BlocksResolved,
+							BlocksTotal:    u.BlocksTotal,
+							BytesDelivered: u.BytesDelivered,
+							BytesTotal:     u.BytesTotal,
+							Throughput:     u.Throughput,
+							ETA:            u.ETA,
+						})
+					}
+				},
+			})
+			if serr == nil {
+				if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
+					has = true
+					if c, ok := rc.(io.Closer); ok {
+						_ = c.Close()
+					}
+				}
+			}
+		}
+	}
+	if !has {
+		return nil, memgate.ContentInfo{}, errMGNotFound
+	}
+	var (
+		rc     io.ReadCloser
+		size   uint64
+		blocks uint64
+		nodeMime string
+	)
+	if m.Codec() == mid.CodecMemFS {
+		mr := memfs.NewResolver(b.store)
+		node, err := mr.Resolve(ctx, m)
+		if err != nil {
+			return nil, memgate.ContentInfo{}, err
+		}
+		if node.IsDir() {
+			raw, err := b.store.Get(m)
+			if err != nil {
+				return nil, memgate.ContentInfo{}, err
+			}
+			size = uint64(len(raw))
+			blocks = 1
+			rc = io.NopCloser(bytes.NewReader(raw))
+			nodeMime = "inode/directory"
+		} else {
+			size = node.TotalSize()
+			blocks = uint64(1 + node.BlockCount())
+			openRc, err := mr.Open(ctx, m)
+			if err != nil {
+				return nil, memgate.ContentInfo{}, err
+			}
+			rc = openRc
+			nodeMime = node.MimeType()
+		}
+	} else {
+		var err error
+		blocks, size, err = countDAG(b.store, m)
+		if err != nil {
+			return nil, memgate.ContentInfo{}, err
+		}
+		resolver := dag.NewResolver(b.store)
+		rawRc, err := resolver.Resolve(m, nil)
+		if err != nil {
+			return nil, memgate.ContentInfo{}, err
+		}
+		rc = io.NopCloser(rawRc)
+	}
+	sealed, _ := b.store.IsSealed(m)
+	oi, _ := store.GetObjectInfo(b.store, m)
+	mimeType := oi.MimeType
+	if mimeType == "" && m.Codec() == mid.CodecMemFS {
+		mimeType = nodeMime
+	}
+	return rc, memgate.ContentInfo{
+		MID:        m.String(),
+		Size:       size,
+		Blocks:     blocks,
+		Sealed:     sealed,
+		Name:       oi.Name,
+		MimeType:   mimeType,
+		ContentType: memgate.DetectContentType(m.String(), nil, mimeType),
+	}, nil
+}
+
 // RawBlock returns the raw bytes of a single block (no DAG
 // walk).
 func (a *memgateAdapter) RawBlock(ctx context.Context, m mid.MID) ([]byte, error) {

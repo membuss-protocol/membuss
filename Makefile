@@ -28,6 +28,7 @@ else
 endif
 
 GO            ?= go
+export CGO_ENABLED=0
 PKG           := ./...
 BUILD_DIR     := bin
 DAEMON_BIN    := $(BUILD_DIR)/membuss$(BIN_EXT)

@@ -63,6 +63,10 @@ func (b *memBackend) Resolve(ctx context.Context, m mid.MID) (io.ReadCloser, Con
 	return io.NopCloser(bytes.NewReader(data)), b.stat[m.String()], nil
 }
 
+func (b *memBackend) ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(ProgressUpdate)) (io.ReadCloser, ContentInfo, error) {
+	return b.Resolve(ctx, m)
+}
+
 func (b *memBackend) RawBlock(ctx context.Context, m mid.MID) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -10,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -583,9 +581,7 @@ func joinStrings(parts []string, sep string) string {
 	return out
 }
 
-// Add ingests a stream from the explorer upload form. The
-// implementation writes to a temp file, calls daemonBackend.Add,
-// and removes the temp file.
+// Add ingests a stream from the explorer upload form.
 func (a *explorerAdapter) Add(ctx context.Context, name string, r io.Reader) (explorer.ContentInfo, error) {
 	b := a.b
 	if b == nil || b.store == nil {
@@ -594,31 +590,37 @@ func (a *explorerAdapter) Add(ctx context.Context, name string, r io.Reader) (ex
 	if r == nil {
 		return explorer.ContentInfo{}, errors.New("explorer: nil reader")
 	}
-	f, err := os.CreateTemp("", "membuss-explorer-add-*")
+
+	memBuilder := memfs.NewBuilder(b.store)
+	mime := store.SniffMime(name)
+	res, err := memBuilder.AddFile(name, r, 0o644, time.Time{}, mime)
 	if err != nil {
 		return explorer.ContentInfo{}, err
 	}
-	tmpPath := f.Name()
-	defer os.Remove(tmpPath)
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return explorer.ContentInfo{}, err
+
+	// Update ObjectInfo for the root MID to set IsRoot: true.
+	if oi, err := store.GetObjectInfo(b.store, res.MID); err == nil {
+		oi.IsRoot = true
+		_ = store.SetObjectInfo(b.store, res.MID, oi)
 	}
-	if err := f.Close(); err != nil {
-		return explorer.ContentInfo{}, err
+
+	_ = b.store.Seal(res.MID, true)
+	if b.dht != nil {
+		go func(r mid.MID) {
+			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			provideRecursive(announceCtx, b.dht, b.store, r)
+		}(res.MID)
 	}
-	res, err := b.Add(ctx, tmpPath, "", 0, true, name, "")
-	if err != nil {
-		return explorer.ContentInfo{}, err
-	}
-	a.allRoots[res.MID] = struct{}{}
+
+	a.allRoots[res.MID.String()] = struct{}{}
 	return explorer.ContentInfo{
-		MID:           res.MID,
+		MID:           res.MID.String(),
 		Size:          res.Size,
-		Blocks:        res.Blocks,
-		Sealed:        res.Sealed,
-		Name:          res.Name,
-		MimeType:      res.MimeType,
+		Blocks:        res.Block,
+		Sealed:        true,
+		Name:          name,
+		MimeType:      mime,
 		Present:       true,
 	}, nil
 }
@@ -632,12 +634,6 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 	if len(files) == 0 {
 		return explorer.ContentInfo{}, errors.New("explorer: no files")
 	}
-
-	tmp, err := os.MkdirTemp("", "membuss-explorer-add-dir-*")
-	if err != nil {
-		return explorer.ContentInfo{}, err
-	}
-	defer os.RemoveAll(tmp)
 
 	commonPrefix := ""
 	if len(files) > 0 {
@@ -659,44 +655,32 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 		}
 	}
 
+	var streamEntries []memfs.StreamEntry
 	for _, f := range files {
 		rel := strings.ReplaceAll(f.Path, "\\", "/")
 		if commonPrefix != "" {
 			rel = strings.TrimPrefix(rel, commonPrefix)
 		}
-		rel = path.Clean("/" + rel)
-		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" || rel == "." {
-			continue
-		}
-		full := filepath.Join(tmp, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return explorer.ContentInfo{}, err
-		}
-		outFile, err := os.Create(full)
-		if err != nil {
-			return explorer.ContentInfo{}, err
-		}
-		if _, err := io.Copy(outFile, f.R); err != nil {
-			outFile.Close()
-			return explorer.ContentInfo{}, err
-		}
-		if err := outFile.Close(); err != nil {
-			return explorer.ContentInfo{}, err
-		}
+		streamEntries = append(streamEntries, memfs.StreamEntry{
+			Path: rel,
+			Size: f.Size,
+			R:    f.R,
+		})
 	}
 
 	memBuilder := memfs.NewBuilder(b.store)
-	res, err := memBuilder.AddDirectoryFromFS(os.DirFS(tmp), ".")
+	res, err := memBuilder.AddDirectoryStream(streamEntries)
 	if err != nil {
 		return explorer.ContentInfo{}, err
 	}
 
 	_ = b.store.Seal(res.MID, true)
 	if b.dht != nil {
-		announceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		provideRecursive(announceCtx, b.dht, b.store, res.MID)
-		cancel()
+		go func(r mid.MID) {
+			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			provideRecursive(announceCtx, b.dht, b.store, r)
+		}(res.MID)
 	}
 
 	// Use uploader-supplied folder name, or fallback.

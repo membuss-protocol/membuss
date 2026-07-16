@@ -24,11 +24,11 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
-	"github.com/dgraph-io/badger/v4"
-
+	"github.com/nnlgsakib/membuss/core/db"
 	"github.com/nnlgsakib/membuss/core/mid"
 )
 
@@ -61,32 +61,28 @@ func MigrateToV1MIDs(s *MemStore) (*MigrationResult, error) {
 		return nil, errors.New("store: nil MemStore")
 	}
 	res := &MigrationResult{}
-	err := s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for _, prefix := range []string{prefixBlock, prefixDAG} {
-			p := []byte(prefix)
-			for it.Seek(p); it.ValidForPrefix(p); it.Next() {
-				raw := append([]byte(nil), it.Item().Key()...)
-				if len(raw) <= len(p) {
-					continue
-				}
-				rawMh := raw[len(p):]
-				m, err := mid.FromMultihash(mid.CodecRaw, rawMh)
-				if err != nil {
-					res.Legacy = append(res.Legacy, fmt.Sprintf("%x", rawMh))
-					continue
-				}
-				_ = m
-				res.Inspected++
-			}
-		}
-		return nil
-	})
+	it, err := s.db.NewIter()
 	if err != nil {
-		return res, fmt.Errorf("store: migrate scan: %w", err)
+		return nil, err
+	}
+	defer it.Close()
+
+	for _, prefix := range []string{db.PrefixBlock, db.PrefixDAG} {
+		p := []byte(prefix)
+		for it.SeekGE(p); it.Valid() && bytes.HasPrefix(it.Key(), p); it.Next() {
+			raw := append([]byte(nil), it.Key()...)
+			if len(raw) <= len(p) {
+				continue
+			}
+			rawMh := raw[len(p):]
+			m, err := mid.FromMultihash(mid.CodecRaw, rawMh)
+			if err != nil {
+				res.Legacy = append(res.Legacy, fmt.Sprintf("%x", rawMh))
+				continue
+			}
+			_ = m
+			res.Inspected++
+		}
 	}
 	return res, nil
 }

@@ -46,8 +46,9 @@ type Blockstore interface {
 // use. Phase 2 introduces a BadgerDB-backed implementation
 // (MemStore) behind the same interface.
 type Memstore struct {
-	mu     sync.RWMutex
-	blocks map[string][]byte
+	mu      sync.RWMutex
+	blocks  map[string][]byte
+	sizeVal uint64
 
 	metaMu sync.RWMutex
 	meta   map[string][]byte
@@ -60,6 +61,7 @@ type Memstore struct {
 func NewMemstore() *Memstore {
 	return &Memstore{
 		blocks: make(map[string][]byte),
+		meta:   make(map[string][]byte),
 		seals:  make(map[string]bool),
 	}
 }
@@ -71,7 +73,11 @@ func (m *Memstore) Put(mid mid.MID, data []byte) error {
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	m.mu.Lock()
+	if old, ok := m.blocks[mid.String()]; ok {
+		m.sizeVal -= uint64(len(old))
+	}
 	m.blocks[mid.String()] = cp
+	m.sizeVal += uint64(len(cp))
 	m.mu.Unlock()
 	return nil
 }
@@ -95,9 +101,22 @@ func (m *Memstore) Has(mid mid.MID) (bool, error) {
 	return ok, nil
 }
 
+func (m *Memstore) GetSize(midID mid.MID) (int64, error) {
+	m.mu.RLock()
+	b, ok := m.blocks[midID.String()]
+	m.mu.RUnlock()
+	if !ok {
+		return 0, ErrNotFound
+	}
+	return int64(len(b)), nil
+}
+
 func (m *Memstore) Delete(mid mid.MID) error {
 	m.mu.Lock()
-	delete(m.blocks, mid.String())
+	if old, ok := m.blocks[mid.String()]; ok {
+		m.sizeVal -= uint64(len(old))
+		delete(m.blocks, mid.String())
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -105,9 +124,17 @@ func (m *Memstore) Delete(mid mid.MID) error {
 // AllSealed returns every sealed MID from the in-memory seals
 // map. It is part of the herald SealedLister interface.
 func (m *Memstore) AllSealed() ([]mid.MID, error) {
+	var out []mid.MID
+	err := m.IterateSealed(func(midID mid.MID) error {
+		out = append(out, midID)
+		return nil
+	})
+	return out, err
+}
+
+func (m *Memstore) IterateSealed(fn func(mid.MID) error) error {
 	m.sealsMu.RLock()
 	defer m.sealsMu.RUnlock()
-	out := make([]mid.MID, 0, len(m.seals))
 	for k, isChild := range m.seals {
 		if isChild {
 			continue
@@ -116,25 +143,37 @@ func (m *Memstore) AllSealed() ([]mid.MID, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, midID)
+		if err := fn(midID); err != nil {
+			return err
+		}
 	}
-	return out, nil
+	return nil
 }
 
 // AllBlocks returns every MID currently held in the in-memory
 // store. The order is unspecified.
 func (m *Memstore) AllBlocks() ([]mid.MID, error) {
+	var out []mid.MID
+	err := m.IterateBlocks(func(midID mid.MID) error {
+		out = append(out, midID)
+		return nil
+	})
+	return out, err
+}
+
+func (m *Memstore) IterateBlocks(fn func(mid.MID) error) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]mid.MID, 0, len(m.blocks))
 	for k := range m.blocks {
 		midID, err := mid.Parse(k)
 		if err != nil {
 			continue
 		}
-		out = append(out, midID)
+		if err := fn(midID); err != nil {
+			return err
+		}
 	}
-	return out, nil
+	return nil
 }
 
 // PutMeta stores a metadata key/value pair. The in-memory
@@ -171,11 +210,7 @@ func (m *Memstore) GetMeta(key string) ([]byte, error) {
 func (m *Memstore) Size() (uint64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var n uint64
-	for _, b := range m.blocks {
-	n += uint64(len(b))
-	}
-	return n, nil
+	return m.sizeVal, nil
 }
 
 // Close releases any resources held by the store. The
@@ -357,18 +392,22 @@ func (m *Memstore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 	var bytesFreed uint64
 
 	m.mu.Lock()
-	m.metaMu.Lock()
 	for ids := range reachable {
 		if data, ok := m.blocks[ids]; ok {
 			bytesFreed += uint64(len(data))
+			m.sizeVal -= uint64(len(data))
 			delete(m.blocks, ids)
 			blocksDeleted++
 		}
+	}
+	m.mu.Unlock()
+
+	m.metaMu.Lock()
+	for ids := range reachable {
 		delete(m.meta, "obj/"+ids)
 		delete(m.meta, "ts/"+ids)
 	}
 	m.metaMu.Unlock()
-	m.mu.Unlock()
 
 	return blocksDeleted, bytesFreed, nil
 }
