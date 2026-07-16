@@ -466,3 +466,40 @@ func TestAddFile_Empty(t *testing.T) {
 		t.Errorf("TotalSize: got %d, want 0", n.TotalSize())
 	}
 }
+
+func TestAddFile_RealDiskStore(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "db")
+	blocksPath := filepath.Join(tmp, "blocks")
+	bs, err := store.NewMemStore(store.Options{
+		Path:       dbPath,
+		BlocksPath: blocksPath,
+	})
+	if err != nil {
+		t.Fatalf("failed to create disk store: %v", err)
+	}
+	defer bs.Close()
+
+	b := NewBuilder(bs)
+	payload := randomBytes(t, 500*1024) // 500 KiB (multi-block, default chunk is 256 KiB)
+	res, err := b.AddFile("real.bin", bytes.NewReader(payload), 0o644, time.Time{}, "")
+	if err != nil {
+		t.Fatalf("AddFile: %v", err)
+	}
+
+	r := NewResolver(bs)
+	rc, err := r.Open(context.TODO(), res.MID)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("round-trip mismatch: got %d bytes, want %d", len(got), len(payload))
+	}
+}
+

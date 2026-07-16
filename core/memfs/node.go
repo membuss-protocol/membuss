@@ -146,8 +146,14 @@ func (n *Node) BlocksValue() []MemFSBlock {
 		if b == nil {
 			continue
 		}
+		var m mid.MID
+		if b.GetSize() > 0 {
+			m = midFromBytesWithCodec(b.GetMid(), mid.CodecRaw)
+		} else {
+			m = midFromBytesWithCodec(b.GetMid(), mid.CodecMemFS)
+		}
 		out[i] = MemFSBlock{
-			Mid:  midFromBytes(b.GetMid()),
+			Mid:  m,
 			Size: b.GetSize(),
 		}
 	}
@@ -272,13 +278,9 @@ func ParseNode(data []byte) (*Node, error) {
 	return n, nil
 }
 
-// midFromBytes builds a mid.MID from a raw multihash envelope
-// stored as []byte. An empty input yields the zero MID.
-//
-// We try to parse the public "mem…" string form first so the
-// codec round-trips correctly; if that fails we fall back to
-// embedding the raw envelope with the 0x72 MemFS codec.
-func midFromBytes(b []byte) mid.MID {
+// midFromBytesWithCodec builds a mid.MID from a raw multihash envelope
+// stored as []byte using the default codec if it's not a public string.
+func midFromBytesWithCodec(b []byte, defaultCodec uint64) mid.MID {
 	if len(b) == 0 {
 		return mid.MID{}
 	}
@@ -289,11 +291,21 @@ func midFromBytes(b []byte) mid.MID {
 	}
 	mh := make([]byte, len(b))
 	copy(mh, b)
-	m, err := mid.FromMultihash(mid.CodecMemFS, mh)
+	m, err := mid.FromMultihash(defaultCodec, mh)
 	if err != nil {
 		return mid.MID{Hash: mh}
 	}
 	return m
+}
+
+// midFromBytes builds a mid.MID from a raw multihash envelope
+// stored as []byte. An empty input yields the zero MID.
+//
+// We try to parse the public "mem…" string form first so the
+// codec round-trips correctly; if that fails we fall back to
+// embedding the raw envelope with the 0x72 MemFS codec.
+func midFromBytes(b []byte) mid.MID {
+	return midFromBytesWithCodec(b, mid.CodecMemFS)
 }
 
 // sortDirEntries sorts in place by name (lexicographic, byte-wise).
