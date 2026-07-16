@@ -706,7 +706,7 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 		name = defaultFilename(midStr, ct)
 	}
 	disp := "inline"
-	if !isRenderableInline(ct, info.Size) {
+	if info.Size > MaxRenderSize {
 		disp = "attachment"
 	}
 	if r.URL.Query().Get("download") == "1" {
@@ -1379,7 +1379,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 			w.Header().Set("X-Membuss-MimeType", cp.Mime)
 			if w.Header().Get("Content-Disposition") == "" {
 				disp := "inline"
-				if !isRenderableInline(cp.Mime, pathInfo.Size) {
+				if pathInfo.Size > MaxRenderSize {
 					disp = "attachment"
 				}
 				w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
@@ -1434,7 +1434,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		w.Header().Set("X-Membuss-MimeType", ct)
 		if w.Header().Get("Content-Disposition") == "" {
 			disp := "inline"
-			if !isRenderableInline(ct, size) {
+			if size > MaxRenderSize {
 				disp = "attachment"
 			}
 			w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
@@ -1456,7 +1456,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	w.Header().Set("X-Membuss-MimeType", ct)
 	if w.Header().Get("Content-Disposition") == "" {
 		disp := "inline"
-		if !isRenderableInline(ct, size) {
+		if size > MaxRenderSize {
 			disp = "attachment"
 		}
 		w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
@@ -1852,13 +1852,6 @@ func (m *MemGate) getRefererDir(r *http.Request, root mid.MID) string {
 }
 
 const MaxRenderSize = 50 * 1024 * 1024 // 50MB
-
-func isRenderableInline(contentType string, size uint64) bool {
-	if strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "audio/") {
-		return true
-	}
-	return size <= MaxRenderSize
-}
 
 func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 	midStr := chi.URLParam(r, "mid")

@@ -224,6 +224,9 @@ func (m *MemDHT) Provide(ctx context.Context, id mid.MID) error {
 	if id.IsZero() {
 		return errors.New("dht: zero MID")
 	}
+	if id.Codec() == mid.CodecRaw {
+		return nil // raw blocks are not announced individually
+	}
 	c := midToCID(id)
 	if !c.Defined() {
 		return errors.New("dht: zero MID")
@@ -239,6 +242,9 @@ func (m *MemDHT) FindProviders(ctx context.Context, id mid.MID) ([]peer.AddrInfo
 	}
 	if id.IsZero() {
 		return nil, errors.New("dht: zero MID")
+	}
+	if id.Codec() == mid.CodecRaw {
+		return nil, nil // raw blocks are never announced on DHT, bypass timeout
 	}
 	c := midToCID(id)
 	if !c.Defined() {
@@ -495,9 +501,16 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 					return
 				case <-timer.C:
 				}
+				maxLimit := cfg.Max
+				if attempt > 5 {
+					maxLimit = 10 * time.Minute
+					if maxLimit < cfg.Max {
+						maxLimit = cfg.Max
+					}
+				}
 				next := float64(delay) * cfg.Factor
-				if next > float64(cfg.Max) {
-					delay = cfg.Max
+				if next > float64(maxLimit) {
+					delay = maxLimit
 				} else {
 					delay = time.Duration(next)
 				}
