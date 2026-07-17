@@ -3,8 +3,6 @@
 #   status: OPEN | FIXED | WONTFIX
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
-[FIXED] BUG-006: File downloads return 0 bytes due to codec mismatch in BlocksValue
-  Fixed: 2026-07-16 — updated BlocksValue to decode leaf blocks with CodecRaw (0x55) and intermediate blocks with CodecMemFS (0x72).
 
 [FIXED] BUG-005: Desktop must not auto-start daemon; Start/Stop button only
   Fixed: 2026-07-11 — removed Go autoStartDaemon + frontend ensureAutoStart;
