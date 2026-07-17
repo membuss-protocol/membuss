@@ -797,10 +797,10 @@ async function renderConfigTab(container) {
           style="
             width: 100%;
             min-height: 320px;
-            background: #1a1b26;
-            color: #a9b1d6;
+            background: #080f10;
+            color: #b8c2b0;
             border: 1px solid var(--border-color);
-            border-radius: 8px;
+            border-radius: var(--border-radius);
             padding: 16px;
             font-family: var(--font-mono);
             font-size: 13px;
@@ -920,7 +920,7 @@ function renderLogsTab(container, headerActions) {
       
       <div style="flex: 2; display: flex; flex-direction: column; min-height: 200px;">
         <span class="stat-label">Daemon Engine Standard Output (daemon.log)</span>
-        <div class="terminal-card" id="daemon-terminal-screen" style="flex-grow: 1; height: auto; font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; background: #030508; color: #8ab4f8; overflow-y: auto;">
+        <div class="terminal-card" id="daemon-terminal-screen" style="flex-grow: 1; height: auto; font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; background: #060c0d; color: #8fe0cb; overflow-y: auto;">
           Loading daemon output logs...
         </div>
       </div>
