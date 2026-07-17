@@ -9,8 +9,16 @@
 //
 // Three strategies are supported:
 //
-//   - roots  (default): only the sealed root MIDs. Cheapest
-//     and sufficient for most nodes.
+//   - roots  (default): the sealed root MIDs plus the MemFS
+//     entry nodes reachable from them (directories and file
+//     envelopes). Raw content leaves and DAGPB intermediates
+//     are NOT announced — a peer that locates any entry node
+//     fetches its children from that provider directly (Memex
+//     walks the DAG over the existing stream), so per-leaf
+//     provider records are redundant. This keeps every
+//     addressable object discoverable while announcing O(files)
+//     records instead of O(blocks). Cheapest, and the right
+//     default for most nodes.
 //   - all: every block MID in the store. Used by Anchor
 //     nodes that back up the whole network.
 //   - shards: only erasure shard MIDs this node is responsible
@@ -45,8 +53,12 @@ import (
 type Strategy string
 
 const (
-	// StrategyRoots announces only the directly sealed root
-	// MIDs. Default.
+	// StrategyRoots announces the sealed root MIDs plus the
+	// MemFS entry nodes (directories and file envelopes)
+	// reachable from them — everything a peer needs to *find*
+	// content in the DHT. Raw content leaves and DAGPB
+	// intermediates are not announced; Memex pulls those from
+	// a located provider by walking the DAG. Default.
 	StrategyRoots Strategy = "roots"
 	// StrategyAll announces every block MID in the store.
 	// Used by Anchor nodes.
@@ -494,6 +506,27 @@ return nil // skip this MID in this cycle
 		return err
 
 	case StrategyRoots, "":
+		// Announce the entry points a peer needs to *find*
+		// content in the DHT: the sealed roots, plus the MemFS
+		// nodes reachable from them (directories and file
+		// envelopes). Raw content leaves (codec 0x55) and
+		// DAGPB intermediates (codec 0x70) are deliberately
+		// NOT announced.
+		//
+		// This is safe because Memex fetches a DAG by locating
+		// a provider of an entry node and then walking the tree
+		// from that same provider (see net/memex_v2 session
+		// enqueueChildren): child blocks are pulled over the
+		// existing stream, not rediscovered through the DHT. So
+		// one provider record per entry node is sufficient for
+		// full retrieval, while every inner file of a directory
+		// stays independently discoverable by its bare MID.
+		//
+		// Announcing every leaf instead would cost one full
+		// Kademlia lookup per 256 KiB block — overhead that
+		// scales with total bytes stored, not with the number
+		// of addressable objects. Anchor nodes that intentionally
+		// back up the whole network use StrategyAll for that.
 		seen := make(map[string]struct{})
 		err := h.cfg.Store.IterateSealed(func(r mid.MID) error {
 			if ctx.Err() != nil {
@@ -502,18 +535,28 @@ return nil // skip this MID in this cycle
 			if r.IsZero() {
 				return nil
 			}
-			// Pin root itself
-			if err := filterFn(r); err != nil {
-				return err
+			// Announce the root itself (any codec: a bare file
+			// root, a directory, or a legacy DAGPB root).
+			if _, ok := seen[r.String()]; !ok {
+				seen[r.String()] = struct{}{}
+				if err := filterFn(r); err != nil {
+					return err
+				}
 			}
 
-			// Traverse DAG and announce components
+			// Walk the DAG but announce only MemFS entry nodes.
 			walkErr := store.Walk(h.cfg.Store, r, func(m mid.MID, _ bool) error {
 				if m.Equal(r) {
 					return nil
 				}
 				if ctx.Err() != nil {
 					return ctx.Err()
+				}
+				// Only MemFS nodes (directories + file
+				// envelopes) are addressable entry points.
+				// Skip raw leaves and DAGPB intermediates.
+				if m.Codec() != mid.CodecMemFS {
+					return nil
 				}
 				mStr := m.String()
 				if _, ok := seen[mStr]; ok {
