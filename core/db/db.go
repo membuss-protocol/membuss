@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -34,9 +35,24 @@ type Options struct {
 	Logger   Logger
 }
 
+// ErrClosed is returned by DB and PebbleDatastore operations
+// invoked after Close. Pebble panics on use-after-close; this
+// wrapper converts that into a recoverable error so an operation
+// racing shutdown (e.g. a hijacked WebSocket handler still driving
+// a DHT lookup) fails cleanly instead of crashing the process.
+var ErrClosed = errors.New("db: closed")
+
 // DB wraps the Pebble DB instance.
+//
+// A sync.RWMutex guards against use-after-close: read/write
+// operations take the read lock and check the closed flag, while
+// Close takes the write lock. This guarantees no operation is
+// mid-flight when pebble.Close runs, so the "pebble: closed"
+// panic cannot occur during graceful shutdown.
 type DB struct {
+	mu     sync.RWMutex
 	pebble *pebble.DB
+	closed bool
 }
 
 // Open opens a Pebble DB.
@@ -63,13 +79,26 @@ func Open(opts Options) (*DB, error) {
 	return &DB{pebble: pdb}, nil
 }
 
-// Close closes the Pebble DB.
+// Close closes the Pebble DB. It is idempotent and takes the
+// write lock so it cannot run concurrently with any in-flight
+// operation, preventing the "pebble: closed" panic.
 func (db *DB) Close() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.closed {
+		return nil
+	}
+	db.closed = true
 	return db.pebble.Close()
 }
 
 // Get retrieves the value for key. Copied to prevent transient memory issues.
 func (db *DB) Get(key []byte) ([]byte, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return nil, ErrClosed
+	}
 	val, closer, err := db.pebble.Get(key)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
@@ -85,6 +114,11 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 // Has checks key existence via iterator seek.
 func (db *DB) Has(key []byte) (bool, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return false, ErrClosed
+	}
 	it, err := db.pebble.NewIter(nil)
 	if err != nil {
 		return false, err
@@ -99,11 +133,21 @@ func (db *DB) Has(key []byte) (bool, error) {
 
 // Set writes a key/value pair.
 func (db *DB) Set(key, value []byte) error {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return ErrClosed
+	}
 	return db.pebble.Set(key, value, pebble.Sync)
 }
 
 // Delete deletes a key.
 func (db *DB) Delete(key []byte) error {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return ErrClosed
+	}
 	return db.pebble.Delete(key, pebble.Sync)
 }
 
@@ -144,6 +188,11 @@ type Iterator struct {
 
 // NewIter returns a new iterator.
 func (db *DB) NewIter() (*Iterator, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return nil, ErrClosed
+	}
 	it, err := db.pebble.NewIter(nil)
 	if err != nil {
 		return nil, err

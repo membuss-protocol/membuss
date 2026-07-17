@@ -9,6 +9,53 @@ import (
 	dsq "github.com/ipfs/go-datastore/query"
 )
 
+// TestPebbleDatastore_UseAfterClose verifies that operations
+// invoked after Close return ErrClosed instead of panicking.
+// This guards the shutdown race where an in-flight request (e.g.
+// a hijacked WebSocket handler still driving a DHT lookup) reaches
+// the datastore after Close: Pebble panics on use-after-close, so
+// the wrapper must convert that into a recoverable error.
+func TestPebbleDatastore_UseAfterClose(t *testing.T) {
+	ctx := context.Background()
+	pds, err := NewPebbleDatastore("", true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	key := ds.NewKey("/k")
+	if err := pds.Put(ctx, key, []byte("v")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := pds.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Second Close is idempotent.
+	if err := pds.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+
+	if _, err := pds.Get(ctx, key); err != ErrClosed {
+		t.Errorf("Get after close: got %v, want ErrClosed", err)
+	}
+	if _, err := pds.Has(ctx, key); err != ErrClosed {
+		t.Errorf("Has after close: got %v, want ErrClosed", err)
+	}
+	if _, err := pds.GetSize(ctx, key); err != ErrClosed {
+		t.Errorf("GetSize after close: got %v, want ErrClosed", err)
+	}
+	if err := pds.Put(ctx, key, []byte("v")); err != ErrClosed {
+		t.Errorf("Put after close: got %v, want ErrClosed", err)
+	}
+	if err := pds.Delete(ctx, key); err != ErrClosed {
+		t.Errorf("Delete after close: got %v, want ErrClosed", err)
+	}
+	if _, err := pds.Query(ctx, dsq.Query{}); err != ErrClosed {
+		t.Errorf("Query after close: got %v, want ErrClosed", err)
+	}
+	if _, err := pds.Batch(ctx); err != ErrClosed {
+		t.Errorf("Batch after close: got %v, want ErrClosed", err)
+	}
+}
+
 func TestPebbleDatastore_BasicOps(t *testing.T) {
 	ctx := context.Background()
 	pds, err := NewPebbleDatastore("", true) // in-memory

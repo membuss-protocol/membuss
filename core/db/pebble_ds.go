@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
@@ -14,8 +15,16 @@ import (
 var _ ds.Batching = (*PebbleDatastore)(nil)
 
 // PebbleDatastore implements the IPFS Datastore and Batching interfaces using Pebble.
+//
+// A sync.RWMutex guards against use-after-close: every operation
+// takes a read lock and checks the closed flag, while Close takes
+// the write lock. This guarantees no operation is mid-flight when
+// pebble.Close runs, so the "pebble: closed" panic cannot occur
+// during graceful shutdown.
 type PebbleDatastore struct {
-	db *pebble.DB
+	mu     sync.RWMutex
+	db     *pebble.DB
+	closed bool
 }
 
 // NewPebbleDatastore creates a new Pebble-backed Datastore.
@@ -33,6 +42,11 @@ func NewPebbleDatastore(path string, inMemory bool) (*PebbleDatastore, error) {
 
 // Get retrieves the value for the given key.
 func (pd *PebbleDatastore) Get(ctx context.Context, key ds.Key) ([]byte, error) {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return nil, ErrClosed
+	}
 	val, closer, err := pd.db.Get(key.Bytes())
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
@@ -48,6 +62,11 @@ func (pd *PebbleDatastore) Get(ctx context.Context, key ds.Key) ([]byte, error) 
 
 // Has checks if the given key exists.
 func (pd *PebbleDatastore) Has(ctx context.Context, key ds.Key) (bool, error) {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return false, ErrClosed
+	}
 	_, closer, err := pd.db.Get(key.Bytes())
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
@@ -61,6 +80,11 @@ func (pd *PebbleDatastore) Has(ctx context.Context, key ds.Key) (bool, error) {
 
 // GetSize returns the size of the value for the given key.
 func (pd *PebbleDatastore) GetSize(ctx context.Context, key ds.Key) (int, error) {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return -1, ErrClosed
+	}
 	val, closer, err := pd.db.Get(key.Bytes())
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
@@ -75,11 +99,21 @@ func (pd *PebbleDatastore) GetSize(ctx context.Context, key ds.Key) (int, error)
 
 // Put writes the value for the given key.
 func (pd *PebbleDatastore) Put(ctx context.Context, key ds.Key, val []byte) error {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return ErrClosed
+	}
 	return pd.db.Set(key.Bytes(), val, pebble.Sync)
 }
 
 // Delete removes the key and its value.
 func (pd *PebbleDatastore) Delete(ctx context.Context, key ds.Key) error {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return ErrClosed
+	}
 	err := pd.db.Delete(key.Bytes(), pebble.Sync)
 	if err != nil && errors.Is(err, pebble.ErrNotFound) {
 		return nil
@@ -89,6 +123,11 @@ func (pd *PebbleDatastore) Delete(ctx context.Context, key ds.Key) error {
 
 // Query performs a query on the datastore.
 func (pd *PebbleDatastore) Query(ctx context.Context, q dsq.Query) (dsq.Results, error) {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return nil, ErrClosed
+	}
 	it, err := pd.db.NewIter(nil)
 	if err != nil {
 		return nil, err
@@ -132,13 +171,26 @@ func (pd *PebbleDatastore) Sync(ctx context.Context, prefix ds.Key) error {
 	return nil
 }
 
-// Close closes the underlying Pebble database.
+// Close closes the underlying Pebble database. It is idempotent
+// and takes the write lock so it cannot run concurrently with any
+// in-flight operation, preventing the "pebble: closed" panic.
 func (pd *PebbleDatastore) Close() error {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+	if pd.closed {
+		return nil
+	}
+	pd.closed = true
 	return pd.db.Close()
 }
 
 // Batch returns a new batching write interface.
 func (pd *PebbleDatastore) Batch(ctx context.Context) (ds.Batch, error) {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	if pd.closed {
+		return nil, ErrClosed
+	}
 	return &pebbleBatch{
 		b:  pd.db.NewBatch(),
 		ds: pd,
@@ -159,5 +211,10 @@ func (pb *pebbleBatch) Delete(ctx context.Context, key ds.Key) error {
 }
 
 func (pb *pebbleBatch) Commit(ctx context.Context) error {
+	pb.ds.mu.RLock()
+	defer pb.ds.mu.RUnlock()
+	if pb.ds.closed {
+		return ErrClosed
+	}
 	return pb.b.Commit(pebble.Sync)
 }
