@@ -69,3 +69,9 @@ test-react-app/
 test-svelte-game/
 
 kubo/
+
+node_modules/
+package-lock.json
+package.json
+nul
+Screenshot 2026-07-17 105706.png
