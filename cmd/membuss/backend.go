@@ -22,6 +22,7 @@ import (
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/chunk"
 	"github.com/nnlgsakib/membuss/core/dag"
+	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/net/dht"
@@ -226,15 +227,7 @@ func (b *daemonBackend) Get(ctx context.Context, midStr string, offset, limit ui
 		}
 	}
 
-	resolver := dag.NewResolver(b.store)
-	rc, err := resolver.Resolve(root, nil)
-	if err != nil {
-		return nil, err
-	}
-	if offset == 0 && limit == 0 {
-		return io.NopCloser(rc), nil
-	}
-	return io.NopCloser(sectionReader(rc, offset, limit)), nil
+	return b.resolveContent(ctx, root, offset, limit)
 }
 
 // GetWithProgress returns the content of midStr with progress
@@ -288,15 +281,67 @@ func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offs
 		}
 	}
 
-	resolver := dag.NewResolver(b.store)
-	rc, err := resolver.Resolve(root, nil)
-	if err != nil {
-		return nil, err
+	return b.resolveContent(ctx, root, offset, limit)
+}
+
+// resolveContent reassembles the content of root into a
+// sequential reader, dispatching on the MID codec so that
+// MemFS FILE nodes (codec 0x72) are read through the MemFS
+// reader and plain Merkle-DAG roots through the DAG resolver.
+//
+// A file added through the HTTP /api/v1/add endpoint (and
+// every child of a directory upload) is stored as a MemFS
+// FILE node, not a DAGNode. Resolving such a MID with the
+// DAG resolver yields the protobuf envelope bytes instead of
+// the file payload, which surfaced to users as a 0-byte /
+// corrupt download. Dispatching on the codec — the same way
+// store.Walk and the gateway's Resolve already do — keeps
+// both ingest paths readable.
+//
+// The blockstore is wrapped so leaves that are not yet local
+// are pulled from the network on demand, matching the
+// gateway/explorer resolvers.
+func (b *daemonBackend) resolveContent(ctx context.Context, root mid.MID, offset, limit uint64) (io.ReadCloser, error) {
+	bs := &fetchingBlockstore{Blockstore: b.store, b: b, ctx: ctx}
+
+	var rc io.Reader
+	if root.Codec() == mid.CodecMemFS {
+		mr := memfs.NewResolver(bs)
+		node, err := mr.Resolve(ctx, root)
+		if err != nil {
+			return nil, fmt.Errorf("get: resolve memfs node: %w", err)
+		}
+		if !node.IsFile() {
+			return nil, fmt.Errorf("get: %s is a %s, not a file; use the path or ls API", root.String(), memFSTypeString(node.GetType()))
+		}
+		openRc, err := mr.Open(ctx, root)
+		if err != nil {
+			return nil, fmt.Errorf("get: open memfs file: %w", err)
+		}
+		rc = openRc
+	} else {
+		resolver := dag.NewResolver(bs)
+		rawRc, err := resolver.Resolve(root, nil)
+		if err != nil {
+			return nil, err
+		}
+		rc = rawRc
 	}
+
 	if offset == 0 && limit == 0 {
-		return io.NopCloser(rc), nil
+		return readerCloser(rc), nil
 	}
 	return io.NopCloser(sectionReader(rc, offset, limit)), nil
+}
+
+// readerCloser wraps rc in an io.ReadCloser, calling the
+// underlying Close if rc already implements io.Closer (as the
+// MemFS reader does) and a no-op Close otherwise.
+func readerCloser(rc io.Reader) io.ReadCloser {
+	if c, ok := rc.(io.ReadCloser); ok {
+		return c
+	}
+	return io.NopCloser(rc)
 }
 
 // Seal pins midStr. If recursive is true, the daemon walks the

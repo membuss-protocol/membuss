@@ -705,10 +705,7 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 	if name == "" {
 		name = defaultFilename(midStr, ct)
 	}
-	disp := "inline"
-	if info.Size > MaxRenderSize {
-		disp = "attachment"
-	}
+	disp := contentDisposition(ct, info.Size)
 	if r.URL.Query().Get("download") == "1" {
 		disp = "attachment"
 		if fn := r.URL.Query().Get("filename"); fn != "" {
@@ -1378,10 +1375,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 			w.Header().Set("X-Membuss-Name", filename)
 			w.Header().Set("X-Membuss-MimeType", cp.Mime)
 			if w.Header().Get("Content-Disposition") == "" {
-				disp := "inline"
-				if pathInfo.Size > MaxRenderSize {
-					disp = "attachment"
-				}
+				disp := contentDisposition(cp.Mime, pathInfo.Size)
 				w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
 			}
 			w.Header().Set("ETag", `"`+etagVal+`"`)
@@ -1433,10 +1427,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		w.Header().Set("X-Membuss-Name", filename)
 		w.Header().Set("X-Membuss-MimeType", ct)
 		if w.Header().Get("Content-Disposition") == "" {
-			disp := "inline"
-			if size > MaxRenderSize {
-				disp = "attachment"
-			}
+			disp := contentDisposition(ct, size)
 			w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
 		}
 		w.Header().Set("ETag", `"`+etagVal+`"`)
@@ -1455,10 +1446,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	w.Header().Set("X-Membuss-Name", filename)
 	w.Header().Set("X-Membuss-MimeType", ct)
 	if w.Header().Get("Content-Disposition") == "" {
-		disp := "inline"
-		if size > MaxRenderSize {
-			disp = "attachment"
-		}
+		disp := contentDisposition(ct, size)
 		w.Header().Set("Content-Disposition", mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(filename)}))
 	}
 	if size > 0 {
@@ -1852,6 +1840,55 @@ func (m *MemGate) getRefererDir(r *http.Request, root mid.MID) string {
 }
 
 const MaxRenderSize = 50 * 1024 * 1024 // 50MB
+
+// contentDisposition decides between "inline" and "attachment"
+// for a resolved response.
+//
+// The gateway serves every response with Accept-Ranges and a
+// working Range handler, so streamable media (video, audio,
+// images, PDF) plays inline in the browser at any size — a
+// 200 MB video is streamed in Range chunks, never buffered
+// whole. Forcing "attachment" purely on size would make the
+// browser download such files instead of playing them, which
+// is exactly the "video won't play in the browser" symptom.
+//
+// The MaxRenderSize ceiling therefore only applies to opaque
+// types (application/octet-stream and the like): those have no
+// inline renderer, so a large one is better offered as a
+// download than streamed into a tab that cannot display it.
+func contentDisposition(ct string, size uint64) string {
+	if isInlineStreamable(ct) {
+		return "inline"
+	}
+	if size > MaxRenderSize {
+		return "attachment"
+	}
+	return "inline"
+}
+
+// isInlineStreamable reports whether a content type has a
+// native browser renderer that consumes the body via Range
+// requests (so size is irrelevant to whether it should be
+// inline). The check is on the media type only; parameters
+// such as "; charset=utf-8" are ignored.
+func isInlineStreamable(ct string) bool {
+	base := ct
+	if idx := strings.IndexByte(base, ';'); idx >= 0 {
+		base = base[:idx]
+	}
+	base = strings.ToLower(strings.TrimSpace(base))
+	switch {
+	case strings.HasPrefix(base, "video/"),
+		strings.HasPrefix(base, "audio/"),
+		strings.HasPrefix(base, "image/"):
+		return true
+	}
+	switch base {
+	case "application/pdf", "text/plain", "text/html":
+		return true
+	}
+	return false
+}
 
 func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 	midStr := chi.URLParam(r, "mid")
