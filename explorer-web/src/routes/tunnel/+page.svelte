@@ -89,7 +89,7 @@
 				<Icon icon="ph:link-bold" class="text-xl" />
 			</span>
 			<div>
-				<h1 class="text-xl font-black text-slate-100 font-sans tracking-tight">Public Swarm Tunnel</h1>
+				<h1 class="font-display text-xl text-slate-50">Public Swarm Tunnel</h1>
 				<p class="text-xs text-slate-550 font-mono mt-0.5">Expose local libp2p TCP listen ports via secure programmatic tunneling</p>
 			</div>
 		</div>

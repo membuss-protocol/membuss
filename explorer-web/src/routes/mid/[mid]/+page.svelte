@@ -379,8 +379,6 @@
 	{:else if data}
 		{#if resolverActive}
 			<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col gap-6 shadow-xl relative overflow-hidden">
-				<div class="absolute -right-16 -top-16 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none"></div>
-
 				<div class="flex items-center justify-between border-b border-slate-800 pb-4">
 					<div class="flex flex-col">
 						<span class="text-[10px] font-mono text-slate-500 ">Active Resolver</span>

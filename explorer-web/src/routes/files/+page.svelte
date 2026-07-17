@@ -459,7 +459,7 @@
 <div class="flex flex-col gap-6">
 	<!-- Page Header -->
 	<div class="border-b border-slate-800/80 pb-4">
-		<h1 class="text-2xl font-bold text-slate-100">Local File System</h1>
+		<h1 class="font-display text-2xl text-slate-50">Local File System</h1>
 		<p class="text-xs text-slate-500 mt-1">Manage files, seal/pin redundancy parameters, and fetch Merkle DAGs from the network</p>
 	</div>
 

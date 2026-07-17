@@ -101,7 +101,7 @@
 <div class="flex flex-col gap-6">
 	<!-- Page Header -->
 	<div class="border-b border-slate-800 pb-4">
-		<h1 class="text-2xl font-bold text-slate-50">Local Daemon Node Parameters</h1>
+		<h1 class="font-display text-2xl text-slate-50">Local Daemon Node Parameters</h1>
 		<p class="text-xs text-slate-500 mt-1">Host node keys, listener network bindings, and publisher keyring records</p>
 	</div>
 

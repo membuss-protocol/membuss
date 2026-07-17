@@ -1,48 +1,115 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap');
 
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
 
+/*
+  MEMBUSS EXPLORER — node console
+  -------------------------------
+  Membuss is a decentralized content network: content-addressed storage,
+  streaming delivery, mutable naming, a gateway, and DHT routing. This UI is
+  the console for a running node. The interface reads as an engineering rack
+  panel. Palette is warm industrial teal-ink, not neon-on-black.
+
+    ink        #0C1416   deep teal-black ground
+    panel      #111D20   raised rack module
+    bone       #E9E2D2   warm off-white text
+    ochre      #E8A33D   primary / this node — the working payload
+    verdigris  #57B79E   healthy / sealed / peers — the network
+    brick      #E0654C   destructive only
+
+  We remap Tailwind's default slate/cyan/emerald/amber stops so the whole app
+  inherits the identity from this file. cyan -> ochre, emerald+amber -> verdigris.
+*/
+
 @theme {
-  --color-slate-950: #050505;
-  --color-slate-900: #0b0c15;
-  --color-slate-800: rgba(255, 255, 255, 0.04);
-  --color-slate-750: rgba(255, 255, 255, 0.02);
-  --color-slate-700: rgba(255, 255, 255, 0.06);
-  --color-slate-650: rgba(255, 255, 255, 0.08);
-  
-  --font-sans: 'Geist', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: 'Geist Mono', monospace;
-  
-  --animate-fade-in-up: fade-in-up 0.8s cubic-bezier(0.32, 0.72, 0, 1) both;
+  /* Ground + panel */
+  --color-slate-950: #0c1416;
+  --color-slate-900: #111d20;
+
+  /* Bone text ramp (replaces cold slate) */
+  --color-slate-50: #f4efe2;
+  --color-slate-100: #e9e2d2;
+  --color-slate-200: #d8d0bd;
+  --color-slate-300: #bcb4a1;
+  --color-slate-400: #8c887a;
+  --color-slate-500: #6d695d;
+  --color-slate-600: #4f4c43;
+
+  /* Warm hairline / fill overlays */
+  --color-slate-800: rgba(233, 226, 210, 0.05);
+  --color-slate-750: rgba(233, 226, 210, 0.03);
+  --color-slate-700: rgba(233, 226, 210, 0.07);
+  --color-slate-650: rgba(233, 226, 210, 0.1);
+
+  /* PRIMARY / DATA shards — ochre (remaps cyan) */
+  --color-cyan-200: #f4cd8a;
+  --color-cyan-300: #eebb61;
+  --color-cyan-400: #e8a33d;
+  --color-cyan-500: #d6902a;
+  --color-cyan-600: #b9761c;
+
+  /* PARITY / healthy — verdigris (remaps emerald) */
+  --color-emerald-300: #7fcdb6;
+  --color-emerald-400: #57b79e;
+  --color-emerald-500: #45a288;
+  --color-emerald-600: #35836d;
+
+  /* Secondary telemetry — verdigris family (remaps amber so it never
+     collides with the ochre primary on charts) */
+  --color-amber-400: #7fcdb6;
+  --color-amber-500: #57b79e;
+  --color-amber-600: #45a288;
+
+  /* Destructive — brick (warm red) */
+  --color-red-300: #ec8a76;
+  --color-red-400: #e0654c;
+  --color-red-500: #d1503a;
+  --color-red-600: #b53f2c;
+
+  /* Purple accent folded into ochre so no orphan hue appears */
+  --color-purple-400: #e8a33d;
+  --color-violet-400: #e8a33d;
+
+  --font-sans: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --animate-fade-in-up: fade-in-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 @layer base {
-  html, body {
+  html,
+  body {
     max-width: 100%;
     overflow-x: hidden;
     scroll-behavior: smooth;
   }
 
-  /* Noise overlay for physical grain depth */
+  body {
+    background-color: #0c1416;
+    color: #e9e2d2;
+  }
+
+  /* Fine engineering-grain — brushed panel, not a starfield glow */
   body::before {
     content: '';
     position: fixed;
     inset: 0;
     z-index: 50;
     pointer-events: none;
-    opacity: 0.025;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+    opacity: 0.018;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-repeat: repeat;
   }
 
-  /* Respect reduced motion */
   @media (prefers-reduced-motion: reduce) {
     html {
       scroll-behavior: auto;
     }
-    *, *::before, *::after {
+    *,
+    *::before,
+    *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
@@ -54,47 +121,91 @@
   @keyframes fade-in-up {
     from {
       opacity: 0;
-      transform: translateY(16px);
-      filter: blur(4px);
+      transform: translateY(12px);
     }
     to {
       opacity: 1;
       transform: translateY(0);
-      filter: blur(0);
     }
   }
 }
 
-.premium-bg {
-  background-color: #050505;
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.06) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.05) 0px, transparent 50%),
-    radial-gradient(at 50% 0%, rgba(6, 182, 212, 0.04) 0px, transparent 40%);
+/* Display face — Archivo pushed to its expanded width axis, stamped nameplate */
+.font-display {
+  font-family: 'Archivo', sans-serif;
+  font-stretch: 125%;
+  font-weight: 800;
+  letter-spacing: -0.005em;
 }
 
+/*
+  GROUND
+  Solid teal-ink with a fine measured grid — a workbench surface, not a
+  radial-gradient nebula. One faint warm horizon at the top edge only.
+*/
+.premium-bg {
+  background-color: #0c1416;
+  background-image:
+    linear-gradient(180deg, rgba(232, 163, 61, 0.035) 0%, transparent 220px),
+    linear-gradient(rgba(233, 226, 210, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(233, 226, 210, 0.022) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    72px 72px,
+    72px 72px;
+  background-position:
+    0 0,
+    -1px -1px,
+    -1px -1px;
+}
+
+/*
+  RACK MODULE
+  Flat panel with a hairline frame and a single machined top-edge highlight.
+  Square-ish 4px radius replaces the 15–20px pillowy glass bezels.
+*/
 .double-bezel {
-  background: rgba(255, 255, 255, 0.015);
-  border: 1px solid rgba(255, 255, 255, 0.03);
-  padding: 6px;
-  border-radius: 20px;
-  transition: all 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 5px;
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .double-bezel:hover {
-  border-color: rgba(6, 182, 212, 0.15);
+  transform: translateY(-1px);
 }
 
 .double-bezel-inner {
-  background: rgba(10, 12, 22, 0.7);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.035);
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
-  border-radius: 15px;
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(233, 226, 210, 0.025), rgba(233, 226, 210, 0) 40%),
+    #111d20;
+  border: 1px solid rgba(233, 226, 210, 0.08);
+  border-top-color: rgba(233, 226, 210, 0.14);
+  box-shadow:
+    0 1px 0 rgba(233, 226, 210, 0.04) inset,
+    0 8px 24px -12px rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
   padding: 20px;
+  transition:
+    border-color 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Premium transition speeds */
+.double-bezel:hover .double-bezel-inner {
+  border-color: rgba(232, 163, 61, 0.28);
+}
+
 .transition-bezier {
-  transition: all 700ms cubic-bezier(0.32, 0.72, 0, 1);
+  transition: all 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Eyebrow label — machine-stamped section tag */
+.eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #8c887a;
 }
