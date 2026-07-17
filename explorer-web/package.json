@@ -36,7 +36,9 @@
 	"dependencies": {
 		"@iconify-json/ph": "^1.2.2",
 		"@iconify/svelte": "^5.2.2",
+		"dotted-map": "^3.1.0",
 		"three": "^0.185.1",
-		"three-globe": "^2.45.2"
+		"three-globe": "^2.45.2",
+		"topojson-client": "^3.1.0"
 	}
 }

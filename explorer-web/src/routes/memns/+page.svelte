@@ -164,7 +164,7 @@
 	<!-- Page Header -->
 	<div class="border-b border-slate-800 pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
 		<div>
-			<h1 class="text-2xl font-bold text-slate-50">MemNS Namespaces</h1>
+			<h1 class="font-display text-2xl text-slate-50">MemNS Namespaces</h1>
 			<p class="text-xs text-slate-400 font-mono mt-1">Manage mutable cryptographic pointers and keys</p>
 		</div>
 		<div class="flex bg-slate-900 border border-slate-800 p-0.5 rounded-lg text-xs font-mono">

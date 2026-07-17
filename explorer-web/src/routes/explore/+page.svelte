@@ -18,7 +18,7 @@
 <div class="flex flex-col gap-6 max-w-4xl w-full mx-auto">
 	<!-- Page Header -->
 	<div class="border-b border-slate-800 pb-4">
-		<h1 class="text-2xl font-bold text-slate-50">Merkle DAG Visualizer</h1>
+		<h1 class="font-display text-2xl text-slate-50">Merkle DAG Visualizer</h1>
 		<p class="text-xs text-slate-500 mt-1">Traverse and explore the block tree of any content multihash on the network</p>
 	</div>
 

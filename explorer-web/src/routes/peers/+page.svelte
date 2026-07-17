@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { tick } from 'svelte';
+	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
-	import { browser } from '$app/environment';
 	import Icon from '@iconify/svelte';
+	import SwarmMap from '$lib/components/SwarmMap.svelte';
 
 	interface PeerInfo {
 		PeerID: string;
@@ -28,8 +27,6 @@
 	let error = $state<string | null>(null);
 	let copiedId = $state<string | null>(null);
 	let searchFilter = $state('');
-	let mapEl = $state<HTMLDivElement>();
-	let mapReady = $state(false);
 
 	interface DisplayPeer {
 		peerId: string;
@@ -47,144 +44,6 @@
 	let connectAddr = $state('');
 	let connectStatus = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
 	let connectError = $state('');
-
-	let L: any;
-	let map: any;
-	let markersLayer: any;
-
-	function updateMapData() {
-		if (!mapReady || !map || !L || !markersLayer) return;
-
-		// Clear previous layers
-		markersLayer.clearLayers();
-
-		// Sort so the self node is processed first and gets true coordinates, and peers get offset
-		const sortedPeers = [...displayPeers].sort((a, b) => {
-			if (a.isSelf) return -1;
-			if (b.isSelf) return 1;
-			return 0;
-		});
-
-		// Deduplicate and jitter overlapping coordinates
-		const coordCounts = new Map<string, number>();
-		const validPeers = sortedPeers
-			.filter((p) => p.lat !== 0 || p.lon !== 0)
-			.map((p) => {
-				const key = `${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
-				const count = coordCounts.get(key) || 0;
-				coordCounts.set(key, count + 1);
-
-				let lat = p.lat;
-				let lon = p.lon;
-
-				if (count > 0) {
-					// Deterministic radial offset around coordinate center
-					const angle = (count * 2 * Math.PI) / 8;
-					const jitterDist = 0.006 + Math.floor(count / 8) * 0.003;
-					lat += Math.sin(angle) * jitterDist;
-					lon += Math.cos(angle) * jitterDist;
-				}
-
-				return { ...p, lat, lon };
-			});
-
-		if (validPeers.length === 0) return;
-
-		const leafletMarkers: any[] = [];
-
-		validPeers.forEach((p) => {
-			let iconClass = 'network-marker';
-			let dotClass = 'marker-dot';
-			let pulseClass = 'marker-pulse';
-
-			if (p.isSelf) {
-				iconClass = 'network-marker self';
-				dotClass = 'marker-dot self';
-				pulseClass = 'marker-pulse self';
-			} else if (p.isAnchor) {
-				iconClass = 'network-marker anchor';
-				dotClass = 'marker-dot anchor';
-				pulseClass = 'marker-pulse anchor';
-			}
-
-			const customIcon = L.divIcon({
-				className: iconClass,
-				html: `
-					<div class="${pulseClass}"></div>
-					<div class="${dotClass}"></div>
-				`,
-				iconSize: [24, 24],
-				iconAnchor: [12, 12]
-			});
-
-			const popupContent = `
-				<div class="p-2 font-sans text-xs bg-slate-950 text-slate-205 border border-slate-800 rounded-lg flex flex-col gap-1.5 min-w-[200px]">
-					<div class="flex items-center justify-between border-b border-slate-800 pb-1">
-						<span class="font-mono text-[10px] text-slate-500">PEER ID</span>
-						<span class="px-1.5 py-0.2 rounded text-[9px] font-bold ${p.isSelf ? 'bg-emerald-950 text-emerald-400 border border-emerald-900/40' : p.isAnchor ? 'bg-pink-950 text-pink-400 border border-pink-900/40' : 'bg-cyan-955 text-cyan-400 border border-cyan-900/40'}">
-							${p.isSelf ? 'me' : p.isAnchor ? 'Anchor Node' : 'Node'}
-						</span>
-					</div>
-					<div class="font-mono text-[10px] truncate font-bold text-slate-200 select-all" title="${p.peerId}">
-						${p.peerId}
-					</div>
-					<div class="flex justify-between text-[11px] mt-0.5">
-						<span class="text-slate-500">Location</span>
-						<span class="text-slate-300 font-medium">${p.location}</span>
-					</div>
-					<div class="flex justify-between text-[11px]">
-						<span class="text-slate-500">Transport</span>
-						<span class="text-slate-350 font-mono text-[10px]">${p.transport}</span>
-					</div>
-				</div>
-			`;
-
-			const marker = L.marker([p.lat, p.lon], { icon: customIcon })
-				.bindPopup(popupContent, {
-					closeButton: false,
-					className: 'custom-leaflet-popup'
-				});
-
-			markersLayer.addLayer(marker);
-			leafletMarkers.push(marker);
-		});
-
-		// Connect lines mesh topology
-		if (validPeers.length >= 2) {
-			for (let i = 0; i < validPeers.length; i++) {
-				for (let j = i + 1; j < validPeers.length; j++) {
-					const coords = [
-						[validPeers[i].lat, validPeers[i].lon],
-						[validPeers[j].lat, validPeers[j].lon]
-					];
-
-					// 1. Background static cable connection
-					const bgLine = L.polyline(coords, {
-						color: '#00f0ff',
-						weight: 1,
-						opacity: 0.12,
-						className: 'mesh-line-bg'
-					});
-					markersLayer.addLayer(bgLine);
-
-					// 2. Animated glowing data packet sliding along the cable
-					const pulseLine = L.polyline(coords, {
-						color: '#00f0ff',
-						weight: 1.5,
-						opacity: 0.7,
-						className: 'mesh-line-pulse'
-					});
-					markersLayer.addLayer(pulseLine);
-				}
-			}
-		}
-
-		try {
-			map.invalidateSize();
-			const group = L.featureGroup(leafletMarkers);
-			map.fitBounds(group.getBounds().pad(0.18), { maxZoom: 9 });
-		} catch (_) {}
-	}
 
 	async function loadPeers() {
 		try {
@@ -271,9 +130,6 @@
 				displayPeers = peersList;
 			}
 			loading = false;
-
-			await tick();
-			updateMapData();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to query peer swarm';
 			loading = false;
@@ -417,48 +273,6 @@
 		}
 	}
 
-	async function initMap() {
-		if (!mapEl || map) return;
-		try {
-			L = await import('leaflet');
-			if (!mapEl) return;
-
-			map = L.map(mapEl, {
-				center: [20, 0],
-				zoom: 3,
-				minZoom: 3,
-				maxZoom: 9,
-				zoomControl: false,
-				attributionControl: false,
-				maxBounds: [[-90, -180], [90, 180]],
-				maxBoundsViscosity: 1.0
-			});
-
-			L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-			L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-				maxZoom: 9,
-				minZoom: 3,
-				noWrap: true
-			}).addTo(map);
-
-			markersLayer = L.layerGroup().addTo(map);
-			mapReady = true;
-			setTimeout(() => {
-				if (map) map.invalidateSize();
-			}, 100);
-			updateMapData();
-		} catch (err) {
-			console.error('Leaflet initialization failed:', err);
-		}
-	}
-
-	$effect(() => {
-		if (browser && mapEl && !map) {
-			initMap();
-		}
-	});
-
 	onMount(() => {
 		loadPeers();
 		const interval = setInterval(loadPeers, 10000);
@@ -466,26 +280,14 @@
 			clearInterval(interval);
 		};
 	});
-
-	onDestroy(() => {
-		if (map) {
-			map.remove();
-			map = null;
-			mapReady = false;
-		}
-	});
 </script>
-
-<svelte:head>
-	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-</svelte:head>
 
 <div class="flex flex-col gap-6 animate-fade-in-up" style="animation-delay: 0ms">
 	<!-- Page Header -->
 	<div class="border-b border-white/[0.04] pb-5 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
 		<div>
 			<span class="text-[9px] text-cyan-400 uppercase tracking-widest font-mono font-semibold">Mesh Swarm Explorer</span>
-			<h1 class="text-2xl font-bold text-slate-50 mt-1">Active Swarm Map</h1>
+			<h1 class="font-display text-2xl text-slate-50 mt-1">Active Swarm Map</h1>
 			<p class="text-xs text-slate-500 mt-1">
 				Geographic coordinates and status parameters of active routing connections
 			</p>
@@ -510,7 +312,7 @@
 				class="w-full sm:w-auto px-5 py-2.5 text-xs font-semibold rounded-xl transition-all duration-300 cursor-pointer
 					{connectStatus === 'loading'
 						? 'bg-slate-800 text-slate-500 cursor-wait'
-						: 'bg-cyan-600 hover:bg-cyan-500 hover:scale-[1.02] active:scale-[0.98] text-white shadow-[0_4px_12px_rgba(6,182,212,0.15)]'}"
+						: 'bg-cyan-500 hover:bg-cyan-400 hover:scale-[1.02] active:scale-[0.98] text-slate-950 shadow-[0_4px_12px_rgba(232,163,61,0.18)]'}"
 			>
 				{connectStatus === 'loading' ? 'Connecting...' : 'Connect'}
 			</button>
@@ -535,26 +337,10 @@
 			{error}
 		</div>
 	{:else if data}
-		<!-- 2D Interactive Swarm Map -->
+		<!-- Custom SVG swarm topology — density heat, no external map tiles -->
 		<div class="double-bezel relative">
-			<div class="double-bezel-inner !p-0 relative overflow-hidden h-[450px]">
-				<!-- Peer counter overlay -->
-				<div
-					class="absolute top-5 left-5 z-[1000] flex flex-col items-start pointer-events-none select-none"
-				>
-					<span
-						class="text-3xl md:text-4xl font-bold text-slate-50 tracking-tight leading-none drop-shadow-md"
-					>
-						{data.PeerCount}
-					</span>
-					<span
-						class="text-[9px] text-cyan-400 font-mono tracking-widest uppercase mt-1.5 bg-slate-950/90 border border-cyan-800/40 px-2 py-0.5 rounded shadow"
-					>
-						peers in swarm
-					</span>
-				</div>
-				<!-- Map container -->
-				<div bind:this={mapEl} class="h-full w-full"></div>
+			<div class="double-bezel-inner !p-0 relative overflow-hidden">
+				<SwarmMap peers={displayPeers} peerCount={data.PeerCount} />
 			</div>
 		</div>
 
@@ -601,10 +387,14 @@
 							<tbody class="divide-y divide-white/[0.02] font-mono text-[11px]">
 								{#each filteredPeers as peer}
 									<tr class="hover:bg-white/[0.02] transition-colors duration-300 group">
-										<td
-											class="py-3.5 px-6 font-sans text-slate-200 text-xs font-medium"
-										>
-											{peer.location}
+										<td class="py-3.5 px-6 font-sans text-slate-200 text-xs font-medium">
+											<span class="flex items-center gap-2.5">
+												<span
+													class="h-2 w-2 rounded-full shrink-0"
+													style="background: {peer.isSelf ? '#f4efe2' : peer.isAnchor ? '#57b79e' : '#e8a33d'}"
+												></span>
+												{peer.location}
+											</span>
 										</td>
 
 										<td class="py-3.5 px-6 text-slate-400 max-w-[150px] md:max-w-[250px] truncate" title={peer.peerId}>
@@ -624,17 +414,9 @@
 
 										<td class="py-3.5 px-6 text-right font-sans">
 											{#if peer.isSelf}
-												<span
-													class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-emerald-950/40 text-emerald-400 border border-emerald-800/30 uppercase"
-												>
-													self
-												</span>
+												<span class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-slate-800 text-slate-100 border border-white/[0.08] uppercase">self</span>
 											{:else if peer.isAnchor}
-												<span
-													class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-pink-950/40 text-pink-400 border border-pink-800/30 uppercase"
-												>
-													anchor
-												</span>
+												<span class="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 uppercase">anchor</span>
 											{:else}
 												<span class="text-slate-650 font-mono text-xs">no</span>
 											{/if}
@@ -654,135 +436,3 @@
 	{/if}
 </div>
 
-<style>
-	:global(.leaflet-container) {
-		background: #090f1c !important;
-	}
-
-	:global(.network-marker) {
-		position: relative;
-		width: 24px;
-		height: 24px;
-	}
-
-	:global(.marker-dot) {
-		position: absolute;
-		width: 8px;
-		height: 8px;
-		top: 8px;
-		left: 8px;
-		border-radius: 50%;
-		background-color: #00f0ff;
-		box-shadow: 0 0 8px #00f0ff;
-		z-index: 10;
-	}
-
-	:global(.marker-dot.anchor) {
-		background-color: #ff00aa;
-		box-shadow: 0 0 8px #ff00aa;
-	}
-
-	:global(.marker-dot.self) {
-		background-color: #10b981;
-		box-shadow: 0 0 8px #10b981;
-		z-index: 12;
-	}
-
-	:global(.marker-pulse) {
-		position: absolute;
-		width: 24px;
-		height: 24px;
-		top: 0;
-		left: 0;
-		border-radius: 50%;
-		border: 1px solid rgba(0, 240, 255, 0.4);
-		animation: pulse 1.8s infinite ease-out;
-		pointer-events: none;
-		z-index: 1;
-	}
-
-	:global(.marker-pulse.anchor) {
-		border-color: rgba(255, 0, 170, 0.4);
-		animation: pulse-anchor 1.8s infinite ease-out;
-	}
-
-	:global(.marker-pulse.self) {
-		border-color: rgba(16, 185, 129, 0.4);
-		animation: pulse-self 1.8s infinite ease-out;
-	}
-
-	@keyframes pulse {
-		0% {
-			transform: scale(0.3);
-			opacity: 1;
-		}
-		100% {
-			transform: scale(1.5);
-			opacity: 0;
-		}
-	}
-
-	@keyframes pulse-anchor {
-		0% {
-			transform: scale(0.3);
-			opacity: 1;
-		}
-		100% {
-			transform: scale(1.5);
-			opacity: 0;
-		}
-	}
-
-	@keyframes pulse-self {
-		0% {
-			transform: scale(0.3);
-			opacity: 1;
-		}
-		100% {
-			transform: scale(1.5);
-			opacity: 0;
-		}
-	}
-
-	:global(.custom-leaflet-popup .leaflet-popup-content-wrapper) {
-		background: #0f172a !important;
-		border: 1px solid rgba(255, 255, 255, 0.08) !important;
-		box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
-		border-radius: 12px !important;
-		padding: 0 !important;
-	}
-
-	:global(.custom-leaflet-popup .leaflet-popup-content) {
-		margin: 0 !important;
-		padding: 0 !important;
-		color: #e2e8f0 !important;
-	}
-
-	:global(.custom-leaflet-popup .leaflet-popup-tip) {
-		background: #0f172a !important;
-		border: 1px solid rgba(255, 255, 255, 0.08) !important;
-	}
-
-	:global(.mesh-line-bg) {
-		stroke: rgba(0, 240, 255, 0.08);
-		stroke-width: 1px;
-	}
-
-	:global(.mesh-line-pulse) {
-		stroke: #00f0ff;
-		stroke-width: 1.5px;
-		stroke-linecap: round;
-		stroke-dasharray: 15, 120;
-		animation: mesh-pulse-flow 2.5s infinite linear;
-		filter: drop-shadow(0 0 2px #00f0ff);
-	}
-
-	@keyframes mesh-pulse-flow {
-		from {
-			stroke-dashoffset: 270;
-		}
-		to {
-			stroke-dashoffset: 0;
-		}
-	}
-</style>
