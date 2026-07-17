@@ -85,6 +85,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   padding: 12px 24px;
   background-color: var(--primary);
   color: #0c1416;                  /* dark ink on ochre */
@@ -96,6 +97,17 @@
   cursor: pointer;
   transition: var(--transition-smooth);
   text-decoration: none;
+}
+
+/* Inline line-icon glyph — inherits text color, never shrinks */
+.ic {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.btn .ic {
+  margin-top: -1px;
 }
 
 .btn:hover {

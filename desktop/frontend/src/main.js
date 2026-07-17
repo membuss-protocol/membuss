@@ -27,6 +27,41 @@ import {
 
 import * as wailsRuntime from '../wailsjs/runtime/runtime';
 
+// ---------------------------------------------------------------------------
+// ICONS — inline SVG line icons (Phosphor-style, currentColor stroke) matching
+// the web explorer's Phosphor set. No emoji. Each returns a 20px glyph.
+// ---------------------------------------------------------------------------
+function icon(name, size = 20) {
+  const paths = {
+    // gauge / dashboard
+    dashboard: '<path d="M8 15 A5 5 0 0 1 12 6.5"/><circle cx="12" cy="15" r="1.5"/><path d="M12 15 L15 11.5"/><path d="M4 18 A9 9 0 0 1 20 18"/>',
+    // globe
+    explorer: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12 H20.5"/><path d="M12 3.5 C15 6 15 18 12 20.5 C9 18 9 6 12 3.5 Z"/>',
+    // gear
+    config: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5 L12 5 M12 19 L12 21.5 M21.5 12 L19 12 M5 12 L2.5 12 M18.7 5.3 L17 7 M7 17 L5.3 18.7 M18.7 18.7 L17 17 M7 7 L5.3 5.3"/>',
+    // terminal window
+    logs: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 10 L10 12.5 L7 15"/><path d="M12.5 15 H16.5"/>',
+    // download
+    download: '<path d="M12 3.5 V14.5 M8 11 L12 15 L16 11"/><path d="M4.5 18.5 H19.5"/>',
+    // copy
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8 V6 A2 2 0 0 0 14 4 H6 A2 2 0 0 0 4 6 V14 A2 2 0 0 0 6 16 H8"/>',
+    // arrows-clockwise (restart/refresh)
+    refresh: '<path d="M20 12 A8 8 0 1 1 17.5 6.5"/><path d="M20 4 V8 H16"/>',
+    // power
+    power: '<path d="M12 3 V12"/><path d="M6.5 7 A8 8 0 1 0 17.5 7"/>',
+    // trash
+    trash: '<path d="M4 7 H20 M9 7 V5 A1 1 0 0 1 10 4 H14 A1 1 0 0 1 15 5 V7 M6 7 L7 19 A2 2 0 0 0 9 21 H15 A2 2 0 0 0 17 19 L18 7"/>',
+    // status glyphs (used in modal/status badges)
+    warning: '<path d="M12 3.5 L21.5 20 H2.5 Z"/><path d="M12 10 V14"/><circle cx="12" cy="17" r="0.6" fill="currentColor"/>',
+    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11 V16.5"/><circle cx="12" cy="8" r="0.6" fill="currentColor"/>',
+    question: '<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.5 A2.5 2.5 0 0 1 14.5 9.7 C14.5 11.5 12 11.8 12 13.5"/><circle cx="12" cy="16.8" r="0.6" fill="currentColor"/>',
+    check: '<path d="M5 12.5 L10 17.5 L19 7"/>',
+    x: '<path d="M6 6 L18 18 M18 6 L6 18"/>',
+  };
+  const d = paths[name] || '';
+  return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+}
+
 // Application State
 let appState = {
   config: null,
@@ -141,7 +176,7 @@ function renderBrokenInstallationScreen(checks) {
   document.querySelector('#app').innerHTML = `
     <div class="wizard-container">
       <div class="wizard-card" style="max-width: 600px; border-color: var(--error);">
-        <div class="brand-icon" style="background: var(--error)">⚠️</div>
+        <div class="brand-icon" style="background: var(--error); color: #0c1416; display: flex; align-items: center; justify-content: center;">${icon('warning', 34)}</div>
         <h1 class="wizard-title" style="color: var(--error)">Broken Installation</h1>
         <p class="wizard-subtitle">
           We found issues with the Membuss node installation in your configured directory:
@@ -468,10 +503,10 @@ function renderDashboardLayout() {
         </div>
         
         <ul class="nav-menu">
-          <li class="nav-item active" id="nav-dash" data-tab="dashboard">📊 Dashboard</li>
-          <li class="nav-item" id="nav-expl" data-tab="explorer">🌐 Explorer</li>
-          <li class="nav-item" id="nav-conf" data-tab="config">⚙️ Node Settings</li>
-          <li class="nav-item" id="nav-logs" data-tab="logs">📃 Activity Logs</li>
+          <li class="nav-item active" id="nav-dash" data-tab="dashboard">${icon('dashboard')}<span>Dashboard</span></li>
+          <li class="nav-item" id="nav-expl" data-tab="explorer">${icon('explorer')}<span>Explorer</span></li>
+          <li class="nav-item" id="nav-conf" data-tab="config">${icon('config')}<span>Node Settings</span></li>
+          <li class="nav-item" id="nav-logs" data-tab="logs">${icon('logs')}<span>Activity Logs</span></li>
         </ul>
         
         <div class="sidebar-footer">
@@ -555,9 +590,9 @@ function renderDashboardTab(container, headerActions) {
   // Add Start/Stop toggle button to header actions
   headerActions.innerHTML = `
     <button class="btn ${isRunning ? 'btn-secondary' : ''}" id="btn-toggle-node" style="padding: 8px 16px;">
-      ${isRunning ? '🔴 Stop Node' : '🟢 Start Node'}
+      ${icon('power', 16)}<span>${isRunning ? 'Stop Node' : 'Start Node'}</span>
     </button>
-    <button class="btn btn-secondary" id="btn-check-updates" style="padding: 8px 16px; margin-left: 8px;">🔄 Check Updates</button>
+    <button class="btn btn-secondary" id="btn-check-updates" style="padding: 8px 16px; margin-left: 8px;">${icon('refresh', 16)}<span>Check Updates</span></button>
   `;
 
   document.getElementById('btn-check-updates').addEventListener('click', () => checkForUpdatesManual());
@@ -567,11 +602,11 @@ function renderDashboardTab(container, headerActions) {
     btn.disabled = true;
     try {
       if (appState.nodeStatus.process_running) {
-        btn.innerHTML = '⏳ Stopping Node...';
+        btn.innerHTML = `${icon('power', 16)}<span>Stopping Node...</span>`;
         logMessage("Stopping node process...");
         await StopNode();
       } else {
-        btn.innerHTML = '⏳ Starting Node...';
+        btn.innerHTML = `${icon('power', 16)}<span>Starting Node...</span>`;
         logMessage("Starting node process...");
         await StartNode();
       }
@@ -582,7 +617,7 @@ function renderDashboardTab(container, headerActions) {
     } catch (err) {
       await showCustomAlert("Process Error", "Process error: " + (err.message || err), "error");
       const isRunning = appState.nodeStatus.process_running;
-      btn.innerHTML = isRunning ? '🔴 Stop Node' : '🟢 Start Node';
+      btn.innerHTML = `${icon('power', 16)}<span>${isRunning ? 'Stop Node' : 'Start Node'}</span>`;
       btn.disabled = false;
     }
   });
@@ -704,7 +739,7 @@ async function renderExplorerTab(container) {
         <div class="download-toolbar" style="display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 12px; flex-wrap: wrap;">
           <input id="download-url" class="form-input form-input-mono" style="flex: 1; min-width: 220px;" placeholder="Paste MID, e.g. mem1..." value="http://${appState.config.gateway_addr}/mem/" />
           <button class="btn btn-secondary" id="btn-pick-dir" style="padding: 8px 14px; white-space: nowrap;">Choose Folder</button>
-          <button class="btn" id="btn-download-to" style="padding: 8px 14px; white-space: nowrap;">⬇ Download to Folder</button>
+          <button class="btn" id="btn-download-to" style="padding: 8px 14px; white-space: nowrap;">${icon('download', 16)}<span>Download to Folder</span></button>
           <span id="download-status" style="font-size: 12px; color: var(--text-muted); width: 100%;"></span>
         </div>
         <iframe src="http://${appState.config.gateway_addr}/explorer/" class="explorer-iframe" allow="clipboard-read; clipboard-write; fullscreen" referrerpolicy="no-referrer"></iframe>
@@ -714,7 +749,7 @@ async function renderExplorerTab(container) {
   } else {
     container.innerHTML = `
       <div class="explorer-offline">
-        <div class="offline-icon">🌐</div>
+        <div class="offline-icon">${icon('explorer', 48)}</div>
         <h3 style="font-size: 18px; margin-bottom: 8px;">Web Explorer Offline</h3>
         <p class="wizard-subtitle" style="max-width: 420px; margin-bottom: 24px;">
           The gateway server at http://${appState.config.gateway_addr} is not responding. 
@@ -879,8 +914,8 @@ async function renderConfigTab(container) {
 // --- Tab 4: Activity Logs --
 function renderLogsTab(container, headerActions) {
   headerActions.innerHTML = `
-    <button class="btn btn-secondary" id="btn-copy-logs" style="padding: 8px 16px; margin-right: 8px;">Copy Daemon Logs</button>
-    <button class="btn btn-secondary" id="btn-clear-logs" style="padding: 8px 16px;">Clear Console</button>
+    <button class="btn btn-secondary" id="btn-copy-logs" style="padding: 8px 16px; margin-right: 8px;">${icon('copy', 16)}<span>Copy Daemon Logs</span></button>
+    <button class="btn btn-secondary" id="btn-clear-logs" style="padding: 8px 16px;">${icon('trash', 16)}<span>Clear Console</span></button>
   `;
 
   document.getElementById('btn-copy-logs').addEventListener('click', async () => {
@@ -890,10 +925,10 @@ function renderLogsTab(container, headerActions) {
     try {
       await navigator.clipboard.writeText(text);
       const btn = document.getElementById('btn-copy-logs');
-      btn.innerText = "✓ Copied!";
+      btn.innerHTML = `${icon('copy', 16)}<span>Copied</span>`;
       setTimeout(() => {
         const b = document.getElementById('btn-copy-logs');
-        if (b) b.innerText = "Copy Daemon Logs";
+        if (b) b.innerHTML = `${icon('copy', 16)}<span>Copy Daemon Logs</span>`;
       }, 2000);
     } catch (err) {
       await showCustomAlert("Copy Failed", "Failed to copy logs: " + err, "error");
@@ -1061,13 +1096,13 @@ function showCustomAlert(title, message, type = 'info') {
   modal.style.animation = 'fadeIn 0.2s ease-out';
 
   let color = 'var(--primary)';
-  let icon = 'ℹ️';
-  if (type === 'error') { color = 'var(--error)'; icon = '✕'; }
-  else if (type === 'success') { color = 'var(--success)'; icon = '✓'; }
+  let glyph = 'info';
+  if (type === 'error') { color = 'var(--error)'; glyph = 'x'; }
+  else if (type === 'success') { color = 'var(--success)'; glyph = 'check'; }
 
   modal.innerHTML = `
     <div class="wizard-card" style="max-width: 440px; padding: 30px; border-color: ${color}; text-align: center; animation: modalIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);">
-      <div class="brand-icon" style="background: ${color}; width: 48px; height: 48px; font-size: 20px; margin-bottom: 16px; box-shadow: none;">${icon}</div>
+      <div class="brand-icon" style="background: ${color}; color: #0c1416; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; box-shadow: none;">${icon(glyph, 26)}</div>
       <h3 style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">${title}</h3>
       <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5; text-align: center;">${message}</p>
       <button class="btn" id="custom-modal-ok" style="width: 100%;">OK</button>
@@ -1101,7 +1136,7 @@ function showCustomConfirm(title, message) {
 
   modal.innerHTML = `
     <div class="wizard-card" style="max-width: 440px; padding: 30px; border-color: var(--primary); text-align: center; animation: modalIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);">
-      <div class="brand-icon" style="background: var(--primary); width: 48px; height: 48px; font-size: 20px; margin-bottom: 16px; box-shadow: none;">❓</div>
+      <div class="brand-icon" style="background: var(--primary); color: #0c1416; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; box-shadow: none;">${icon('question', 26)}</div>
       <h3 style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">${title}</h3>
       <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5; text-align: center;">${message}</p>
       <div style="display: flex; gap: 12px; justify-content: flex-end;">
@@ -1165,7 +1200,7 @@ async function checkForUpdatesManual() {
     const b = document.getElementById('btn-check-updates');
     if (b) {
       b.disabled = false;
-      b.innerText = '🔄 Check Updates';
+      b.innerHTML = `${icon('refresh', 16)}<span>Check Updates</span>`;
     }
   }
 }
