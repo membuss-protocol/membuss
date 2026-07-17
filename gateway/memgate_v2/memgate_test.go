@@ -641,6 +641,38 @@ func TestDownloadDisposition(t *testing.T) {
 	}
 }
 
+// TestContentDisposition_StreamableMedia verifies the
+// content-type-aware disposition rule: streamable/renderable
+// media (video, audio, images, PDF) is served inline at any
+// size — otherwise a large video would be sent as an
+// attachment and refuse to play in a browser <video> element.
+// Opaque types keep the MaxRenderSize ceiling.
+func TestContentDisposition_StreamableMedia(t *testing.T) {
+	const big = uint64(MaxRenderSize) + 1
+	const small = uint64(1024)
+	cases := []struct {
+		ct   string
+		size uint64
+		want string
+	}{
+		{"video/mp4", big, "inline"},               // large video must stay inline
+		{"video/webm", big, "inline"},
+		{"audio/mpeg", big, "inline"},
+		{"image/png", big, "inline"},
+		{"application/pdf", big, "inline"},
+		{"text/html; charset=utf-8", big, "inline"}, // params ignored
+		{"application/octet-stream", big, "attachment"},
+		{"application/octet-stream", small, "inline"},
+		{"application/zip", big, "attachment"},
+		{"application/zip", small, "inline"},
+	}
+	for _, c := range cases {
+		if got := contentDisposition(c.ct, c.size); got != c.want {
+			t.Errorf("contentDisposition(%q, %d) = %q, want %q", c.ct, c.size, got, c.want)
+		}
+	}
+}
+
 type memfsBackend struct {
 	*memBackend
 	resolver *memfs.Resolver

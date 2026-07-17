@@ -120,8 +120,15 @@ nat_wait_seconds: <<NAT_WAIT_SECONDS>>
 reprovide_interval: <<REPROVIDE_INTERVAL>>
 reprovide_groups: <<REPROVIDE_GROUPS>>
 
-# Reprovide strategy. "roots" only re-pins DAG roots; "all"
-# re-pins every sealed block; "shards" re-pins erasure shards.
+# Reprovide strategy.
+#   roots  - announce content entry points only: sealed roots plus
+#            reachable MemFS nodes (directories + file envelopes).
+#            Raw content leaves are NOT announced; peers fetch them
+#            by walking the DAG from a located entry node. Cheapest,
+#            and the sensible default for most nodes.
+#   all    - announce every block in the store. Used by anchor nodes
+#            that mirror the whole network.
+#   shards - announce only the erasure shards this node owns.
 # Allowed: roots | all | shards
 reprovide_strategy: roots
 
