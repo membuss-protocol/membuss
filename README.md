@@ -2,7 +2,7 @@
 
 # Membuss
 
-### The content network that survives partial failure.
+### A decentralized content-addressed storage and delivery network.
 
 Decentralized storage and delivery built on erasure coding, streaming block exchange, and automatic content persistence.
 
