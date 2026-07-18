@@ -62,6 +62,7 @@ skills-lock.json
 # Roadmap docs
 info.txt
 research.txt
+commands.txt
 
 # Local dev / MCP configs
 .mcp.json
