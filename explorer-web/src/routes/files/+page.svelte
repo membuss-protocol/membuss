@@ -4,6 +4,7 @@
 	import { toast } from '$lib/toast';
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface StoredMID {
@@ -695,10 +696,29 @@
 
 		<!-- File List Table -->
 		{#if loading}
-			<div class="space-y-3 animate-pulse py-4">
-				<div class="h-8 bg-slate-800/60 rounded w-full"></div>
-				<div class="h-8 bg-slate-800/60 rounded w-full"></div>
-				<div class="h-8 bg-slate-800/60 rounded w-full"></div>
+			<div class="flex flex-col">
+				<div class="grid grid-cols-12 gap-4 border-b border-slate-800/80 py-2.5 px-4">
+					<div class="col-span-3"><Skeleton width="3rem" height="0.6rem" /></div>
+					<div class="col-span-4"><Skeleton width="8rem" height="0.6rem" /></div>
+					<div class="col-span-2"><Skeleton width="3rem" height="0.6rem" /></div>
+					<div class="col-span-1"><Skeleton width="3rem" height="0.6rem" /></div>
+					<div class="col-span-2 flex justify-end"><Skeleton width="4rem" height="0.6rem" /></div>
+				</div>
+				{#each Array(5) as _}
+					<div class="grid grid-cols-12 gap-4 items-center border-b border-slate-850/40 py-3.5 px-4">
+						<div class="col-span-3 flex items-center gap-2">
+							<Skeleton width="1rem" height="1rem" rounded="rounded" />
+							<Skeleton width="7rem" height="0.75rem" />
+						</div>
+						<div class="col-span-4"><Skeleton width="90%" height="0.75rem" /></div>
+						<div class="col-span-2"><Skeleton width="3.5rem" height="0.75rem" /></div>
+						<div class="col-span-1 flex justify-center"><Skeleton width="3.5rem" height="1rem" rounded="rounded-md" /></div>
+						<div class="col-span-2 flex justify-end gap-1.5">
+							<Skeleton width="1.75rem" height="1.75rem" rounded="rounded-lg" />
+							<Skeleton width="1.75rem" height="1.75rem" rounded="rounded-lg" />
+						</div>
+					</div>
+				{/each}
 			</div>
 		{:else if filteredFiles && filteredFiles.length > 0}
 			<div class="overflow-x-auto">

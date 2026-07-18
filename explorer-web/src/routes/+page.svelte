@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { base } from '$app/paths';
 	import { apiFetch, formatBytes } from '$lib/api';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface NodeInfo {
@@ -188,9 +189,25 @@
 		<span class="absolute right-0 top-0 h-full w-1 bg-gradient-to-b from-cyan-400/50 to-transparent pointer-events-none"></span>
 
 		{#if loading && !data}
-			<div class="w-full space-y-4 animate-pulse">
-				<div class="h-6 bg-slate-800 rounded w-1/3"></div>
-				<div class="h-4 bg-slate-800 rounded w-1/2"></div>
+			<div class="flex flex-col gap-8 w-full lg:flex-row lg:items-center lg:justify-between">
+				<div class="flex flex-col gap-3 max-w-xl w-full">
+					<Skeleton width="14rem" height="0.75rem" />
+					<Skeleton width="20rem" height="2.4rem" rounded="rounded-lg" />
+					<Skeleton width="24rem" height="0.9rem" />
+					<Skeleton width="18rem" height="0.9rem" />
+				</div>
+				<div class="shrink-0 grid grid-cols-2 gap-px bg-white/[0.06] border border-white/[0.06] rounded-[4px] overflow-hidden">
+					{#each Array(4) as _}
+						<div class="flex flex-col gap-2 bg-slate-900 px-5 py-4 min-w-[9rem]">
+							<Skeleton width="4rem" height="0.6rem" />
+							<Skeleton width="6rem" height="1.5rem" rounded="rounded-md" />
+						</div>
+					{/each}
+				</div>
+			</div>
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 mt-6 border-t border-white/[0.06] pt-4 w-full">
+				<Skeleton width="90%" height="0.7rem" />
+				<Skeleton width="80%" height="0.7rem" />
 			</div>
 		{:else if error}
 			<div class="flex items-center gap-4 text-red-405">

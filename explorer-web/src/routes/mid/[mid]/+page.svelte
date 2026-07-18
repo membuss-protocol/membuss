@@ -5,8 +5,9 @@
 	import { goto } from '$app/navigation';
 	import { apiFetch, formatBytes } from '$lib/api';
 	import { toast } from '$lib/toast';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
-	import DagNode from '$lib/components/DagNode.svelte';
+	import DagViewer from '$lib/components/DagViewer.svelte';
 
 	interface MemFSEntry {
 		name: string;
@@ -368,9 +369,35 @@
 	{/if}
 
 	{#if loading && !data && !resolverActive}
-		<div class="space-y-6 animate-pulse">
-			<div class="h-44 bg-slate-900 rounded-lg"></div>
-			<div class="h-28 bg-slate-900 rounded-lg"></div>
+		<div class="flex flex-col gap-6">
+			<!-- Tab bar skeleton -->
+			<div class="flex gap-6 border-b border-slate-800 pb-3">
+				<Skeleton width="9rem" height="0.9rem" />
+				<Skeleton width="9rem" height="0.9rem" />
+			</div>
+			<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+				<!-- Metadata panel skeleton -->
+				<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 md:col-span-2 flex flex-col gap-4">
+					<Skeleton width="10rem" height="0.9rem" />
+					<div class="border-t border-slate-800 pt-4 flex flex-col gap-3.5">
+						{#each Array(5) as _}
+							<div class="grid grid-cols-3 gap-3 items-center">
+								<Skeleton width="6rem" height="0.7rem" />
+								<div class="col-span-2"><Skeleton width="70%" height="0.7rem" /></div>
+							</div>
+						{/each}
+					</div>
+				</div>
+				<!-- Side actions panel skeleton -->
+				<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col gap-4">
+					<Skeleton width="7rem" height="0.9rem" />
+					<div class="border-t border-slate-800 pt-4 flex flex-col gap-3">
+						{#each Array(4) as _}
+							<Skeleton width="100%" height="2.25rem" rounded="rounded-xl" />
+						{/each}
+					</div>
+				</div>
+			</div>
 		</div>
 	{:else if error}
 		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">
@@ -522,7 +549,7 @@
 						activeTab === 'dag' ? 'border-cyan-500 text-cyan-400' : 'border-transparent text-slate-500 hover:text-slate-350'
 					}`}
 				>
-					Merkle DAG Tree
+					Merkle DAG
 				</button>
 			</div>
 
@@ -722,13 +749,11 @@
 					<div>
 						<h2 class="text-lg font-black tracking-tight text-slate-150">Merkle DAG Block Structure</h2>
 						<p class="text-xs text-slate-550 mt-1 leading-relaxed">
-							Expand nodes recursively to view Merkle link bindings. Blocks are verified against multihash addresses lazily fetched from <code class="bg-slate-950 px-1 py-0.5 rounded font-mono">/mem/&lt;mid&gt;?format=dag-json</code>.
+							Blocks are lazily fetched from <code class="bg-slate-950 px-1 py-0.5 rounded font-mono">/mem/&lt;mid&gt;?format=dag-json</code> and verified against their multihash addresses. Use the graph to see how blocks link and where they are shared, or the tree to walk the hierarchy.
 						</p>
 					</div>
 
-					<div class="p-4 bg-slate-950/40 border border-slate-850 rounded-xl max-h-[500px] overflow-y-auto mt-2">
-						<DagNode mid={midVal} depth={0} />
-					</div>
+					<DagViewer mid={midVal} />
 				</div>
 			{/if}
 

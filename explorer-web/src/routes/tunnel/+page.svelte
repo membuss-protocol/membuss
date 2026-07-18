@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { apiFetch } from '$lib/api';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface TunnelStatus {
@@ -96,7 +97,23 @@
 	</div>
 
 	{#if loading && !status}
-		<div class="h-64 bg-slate-900 rounded-2xl border border-slate-800 animate-pulse"></div>
+		<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+			<div class="md:col-span-2 bg-slate-900/60 border border-slate-850 rounded-2xl p-6 flex flex-col gap-6">
+				<div class="flex justify-between items-start">
+					<Skeleton width="8rem" height="0.8rem" />
+					<Skeleton width="6rem" height="1.5rem" rounded="rounded-full" />
+				</div>
+				<Skeleton width="60%" height="0.6rem" />
+				<Skeleton width="100%" height="3rem" rounded="rounded-xl" />
+				<Skeleton width="40%" height="0.8rem" />
+			</div>
+			<div class="bg-slate-900/60 border border-slate-850 rounded-2xl p-6 flex flex-col gap-4">
+				<Skeleton width="10rem" height="0.8rem" />
+				{#each Array(3) as _}
+					<Skeleton width="100%" height="1.5rem" rounded="rounded-lg" />
+				{/each}
+			</div>
+		</div>
 	{:else if error}
 		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">
 			{error}

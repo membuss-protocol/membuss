@@ -93,7 +93,10 @@
 	{#if expanded}
 		<div class="flex flex-col ml-2">
 			{#if loading && !nodeData}
-				<div class="py-1 pl-6 text-slate-600 italic text-[11px]">Loading DAG block data...</div>
+				<div class="py-1 pl-6 flex flex-col gap-1.5">
+					<div class="skeleton rounded" style="width: 60%; height: 0.7rem;"></div>
+					<div class="skeleton rounded" style="width: 45%; height: 0.7rem;"></div>
+				</div>
 			{:else if error}
 				<div class="py-1 pl-6 text-red-400 italic text-[11px]">Error: {error}</div>
 			{:else if nodeData}

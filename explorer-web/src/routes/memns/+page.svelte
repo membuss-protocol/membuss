@@ -3,6 +3,7 @@
 	import { apiFetch } from '$lib/api';
 	import { toast } from '$lib/toast';
 	import { base } from '$app/paths';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface Key {
@@ -203,8 +204,23 @@
 					</div>
 
 					{#if loadingKeys && keys.length === 0}
-						<div class="py-12 flex justify-center items-center">
-							<span class="text-xs text-slate-500 font-mono">Loading keys...</span>
+						<div class="divide-y divide-slate-800">
+							{#each Array(3) as _}
+								<div class="py-4 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+									<div class="space-y-2">
+										<div class="flex items-center gap-2">
+											<Skeleton width="7rem" height="0.95rem" />
+											<Skeleton width="3rem" height="1rem" rounded="rounded-md" />
+										</div>
+										<Skeleton width="14rem" height="0.7rem" />
+										<Skeleton width="18rem" height="0.7rem" />
+									</div>
+									<div class="flex items-center gap-2">
+										<Skeleton width="8rem" height="1.9rem" rounded="rounded-lg" />
+										<Skeleton width="2.25rem" height="1.9rem" rounded="rounded-lg" />
+									</div>
+								</div>
+							{/each}
 						</div>
 					{:else if errorKeys}
 						<div class="bg-red-950/20 border border-red-900/40 text-red-400 p-4 rounded-xl text-xs font-mono">

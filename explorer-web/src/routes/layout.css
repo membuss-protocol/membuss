@@ -209,3 +209,45 @@
   text-transform: uppercase;
   color: #8c887a;
 }
+
+/*
+  SKELETON - loading placeholder
+  A warm panel-toned fill with a single bone-colored sweep. Reads as a rack
+  module warming up, not a generic gray shimmer. Every deferred data region
+  renders the real layout's shape in this state so content lands in place.
+*/
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: rgba(233, 226, 210, 0.05);
+  border-radius: 4px;
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(233, 226, 210, 0.07) 45%,
+    rgba(232, 163, 61, 0.06) 55%,
+    transparent 100%
+  );
+  animation: skeleton-sweep 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes skeleton-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+    opacity: 0.4;
+    transform: none;
+  }
+}

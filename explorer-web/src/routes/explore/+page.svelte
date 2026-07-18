@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { base } from '$app/paths';
-	import DagNode from '$lib/components/DagNode.svelte';
+	import DagViewer from '$lib/components/DagViewer.svelte';
 	import Icon from '@iconify/svelte';
 
 	let inputMID = $state('');
@@ -19,7 +19,7 @@
 	<!-- Page Header -->
 	<div class="border-b border-slate-800 pb-4">
 		<h1 class="font-display text-2xl text-slate-50">Merkle DAG Visualizer</h1>
-		<p class="text-xs text-slate-500 mt-1">Traverse and explore the block tree of any content multihash on the network</p>
+		<p class="text-xs text-slate-500 mt-1">Explore the block structure of any content multihash — as a live force graph or a recursive tree</p>
 	</div>
 
 	<!-- Selector Input card -->
@@ -46,11 +46,11 @@
 		<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col gap-4 shadow-lg">
 			<div class="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-850 pb-3 gap-2">
 				<div class="flex flex-col">
-					<span class="text-[9px] font-mono text-slate-500">Visualizing Tree</span>
+					<span class="text-[9px] font-mono text-slate-500">Visualizing</span>
 					<code class="text-xs text-slate-300 font-mono font-bold break-all select-all">{visualizedMID}</code>
 				</div>
-				<button 
-					onclick={() => visualizedMID = ''} 
+				<button
+					onclick={() => visualizedMID = ''}
 					class="text-[10px] text-slate-550 hover:text-slate-350 font-mono hover:underline"
 				>
 					Clear view
@@ -58,9 +58,9 @@
 			</div>
 
 			<!-- DAG Component mount -->
-			<div class="p-4 bg-slate-950/30 border border-slate-850 rounded-xl max-h-[550px] overflow-y-auto mt-2">
-				<DagNode mid={visualizedMID} depth={0} />
-			</div>
+			{#key visualizedMID}
+				<DagViewer mid={visualizedMID} />
+			{/key}
 		</div>
 	{:else}
 		<div class="py-20 border-2 border-dashed border-slate-850 rounded-xl flex flex-col items-center justify-center text-center gap-3">

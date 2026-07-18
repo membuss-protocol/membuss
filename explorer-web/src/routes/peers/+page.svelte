@@ -3,6 +3,7 @@
 	import { apiFetch } from '$lib/api';
 	import Icon from '@iconify/svelte';
 	import SwarmMap from '$lib/components/SwarmMap.svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 
 	interface PeerInfo {
 		PeerID: string;
@@ -326,9 +327,35 @@
 	{/if}
 
 	{#if loading && !data}
-		<div class="space-y-6 animate-pulse">
-			<div class="h-60 bg-slate-900 rounded-lg w-full"></div>
-			<div class="h-32 bg-slate-900 rounded-lg w-full"></div>
+		<div class="flex flex-col gap-6">
+			<!-- Swarm map skeleton -->
+			<div class="double-bezel">
+				<div class="double-bezel-inner !p-0 overflow-hidden">
+					<Skeleton width="100%" height="20rem" rounded="rounded-none" />
+				</div>
+			</div>
+			<!-- Connections table skeleton -->
+			<div class="double-bezel">
+				<div class="double-bezel-inner !p-0 overflow-hidden flex flex-col">
+					<div class="px-6 py-4 bg-slate-950/40 border-b border-white/[0.04] flex items-center justify-between gap-4">
+						<Skeleton width="12rem" height="0.9rem" />
+						<Skeleton width="16rem" height="1.75rem" rounded="rounded-xl" />
+					</div>
+					<div class="divide-y divide-white/[0.02]">
+						{#each Array(6) as _}
+							<div class="grid grid-cols-12 gap-4 items-center py-3.5 px-6">
+								<div class="col-span-3 flex items-center gap-2.5">
+									<Skeleton width="0.5rem" height="0.5rem" rounded="rounded-full" />
+									<Skeleton width="6rem" height="0.7rem" />
+								</div>
+								<div class="col-span-5"><Skeleton width="90%" height="0.7rem" /></div>
+								<div class="col-span-2"><Skeleton width="4rem" height="0.7rem" /></div>
+								<div class="col-span-2 flex justify-end"><Skeleton width="3rem" height="1rem" rounded="rounded-md" /></div>
+							</div>
+						{/each}
+					</div>
+				</div>
+			</div>
 		</div>
 	{:else if error}
 		<div
