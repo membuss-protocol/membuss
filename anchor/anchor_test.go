@@ -2,6 +2,7 @@
 
 import (
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -57,7 +58,7 @@ func TestAnchor_RegistryIsConsistent(t *testing.T) {
 			Store: bs,
 		},
 		anchors:  make(map[peer.ID]peer.AddrInfo),
-		hostSeen: make(map[string]struct{}),
+		attempts: make(map[string]time.Time),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}

@@ -69,6 +69,12 @@ const maxHealthChecksPerRound = 16
 // anchorHealthDialTimeout bounds a single reachability dial.
 const anchorHealthDialTimeout = 10 * time.Second
 
+// anchorAttemptBackoff is how long the engine waits before
+// re-attempting a discovered MID it could not acquire. Without a
+// backoff, content that no reachable peer can serve would be
+// re-enqueued (and re-logged) on every discovery round forever.
+const anchorAttemptBackoff = 10 * time.Minute
+
 // AnchorStore is the subset of store.Store the anchor
 // engine actually depends on. Splitting it out keeps tests
 // free of BadgerDB and lets the in-memory store satisfy the
@@ -162,17 +168,32 @@ type Config struct {
 	Logger Logger
 }
 
+// enqueuedMID is a MID queued for acquisition together with the
+// peer the engine learned it from. Carrying the source peer lets
+// the engine fetch directly from the announcer instead of relying
+// solely on DHT provider records, which may not exist yet on a
+// young network.
+type enqueuedMID struct {
+	mid    mid.MID
+	source peer.ID // zero value = no known source (e.g. re-seed)
+}
+
 // AnchorEngine is the Anchor Node full-sync engine.
 type AnchorEngine struct {
 	cfg    Config
 	logger Logger
 
-	mu       sync.Mutex
-	anchors  map[peer.ID]peer.AddrInfo
-	backlog  []mid.MID
-	started  time.Time
-	synced   int64
-	hostSeen map[string]struct{}
+	mu      sync.Mutex
+	anchors map[peer.ID]peer.AddrInfo
+	backlog []enqueuedMID
+	started time.Time
+	synced  int64
+	// attempts records the last time the engine tried to acquire a
+	// MID it learned about, keyed by MID string. It is used both to
+	// suppress redundant re-enqueues/logging and to back off retries
+	// for content that no reachable peer can currently serve. A MID
+	// that has been sealed is removed, so it is never revisited.
+	attempts map[string]time.Time
 
 	// sticky holds anchors that must never be pruned by health
 	// checks (the operator-provided bootstrap set).
@@ -221,7 +242,7 @@ func New(cfg Config) (*AnchorEngine, error) {
 		cfg:         cfg,
 		logger:      cfg.Logger,
 		anchors:     make(map[peer.ID]peer.AddrInfo),
-		hostSeen:    make(map[string]struct{}),
+		attempts:    make(map[string]time.Time),
 		sticky:      make(map[peer.ID]struct{}),
 		healthFails: make(map[peer.ID]int),
 		resolver:    cfg.ProviderResolver,
@@ -261,17 +282,31 @@ func (e *AnchorEngine) Stop() {
 }
 
 // Enqueue asks the anchor engine to ensure root is locally
-// stored. Safe to call from any goroutine.
+// stored. Safe to call from any goroutine. It records no source
+// peer, so acquisition falls back to DHT provider lookup.
 func (e *AnchorEngine) Enqueue(root mid.MID) {
+	e.enqueueFrom(root, "")
+}
+
+// enqueueFrom queues root for acquisition, remembering the peer it
+// was learned from, and reports whether it was actually queued.
+// MIDs attempted within anchorAttemptBackoff are skipped (returning
+// false) so unreachable content does not churn the backlog or the
+// logs every round.
+func (e *AnchorEngine) enqueueFrom(root mid.MID, source peer.ID) bool {
 	if root.IsZero() {
-		return
+		return false
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if last, ok := e.attempts[root.String()]; ok && time.Since(last) < anchorAttemptBackoff {
+		return false
+	}
 	if len(e.backlog) >= MaxEnqueueBacklog {
 		e.backlog = e.backlog[1:]
 	}
-	e.backlog = append(e.backlog, root)
+	e.backlog = append(e.backlog, enqueuedMID{mid: root, source: source})
+	return true
 }
 
 // AddAnchor adds ai to the local anchor registry.
@@ -490,8 +525,8 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	e.backlog = nil
 	e.mu.Unlock()
 
-	for _, m := range pending {
-		e.fetchIfMissing(ctx, m)
+	for _, item := range pending {
+		e.fetchIfMissing(ctx, item.mid, item.source)
 	}
 
 	sealed, err := e.cfg.Store.AllSealed()
@@ -504,27 +539,13 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	}
 	for i := 0; i < maxSample; i++ {
 		m := sealed[i]
+		// Only re-acquire sealed roots whose bytes are actually
+		// missing locally; already-held roots need nothing. No source
+		// peer is known here, so acquisition falls back to DHT/anchors.
 		if !e.shouldFetch(m) {
 			continue
 		}
-		provs, err := e.cfg.DHT.FindProviders(ctx, m)
-		if err != nil {
-			continue
-		}
-		provs = mergeAnchors(provs, e.AnchorPeers())
-		if len(provs) == 0 {
-			continue
-		}
-		if err := e.cfg.Fetcher.Fetch(ctx, m, provs); err != nil {
-			e.logger.Errorf("anchor: fetch %s: %v", m.String()[:12], err)
-			continue
-		}
-		e.sealFetched(ctx, m)
-		val := atomic.AddInt64(&e.synced, 1)
-		buf := make([]byte, 8)
-		binary.BigEndian.PutUint64(buf, uint64(val))
-		_ = e.cfg.Store.PutMeta("anchor_synced", buf)
-		e.markSeen(m)
+		e.fetchIfMissing(ctx, m, "")
 	}
 }
 
@@ -546,12 +567,19 @@ func (e *AnchorEngine) discoverFromPeers(ctx context.Context) {
 		return
 	}
 
+	// Count only MIDs actually queued this round. Content still in
+	// its retry backoff is suppressed, so the log reflects genuine
+	// new discovery instead of re-reporting the same unreachable
+	// MIDs every round.
+	queued := 0
 	for _, a := range announcements {
-		e.Enqueue(a.MID)
+		if e.enqueueFrom(a.MID, a.Source) {
+			queued++
+		}
 	}
 
-	if len(announcements) > 0 {
-		e.logger.Infof("anchor: discovered %d new MIDs from peers", len(announcements))
+	if queued > 0 {
+		e.logger.Infof("anchor: discovered %d new MIDs from peers", queued)
 	}
 }
 
@@ -563,14 +591,39 @@ func (e *AnchorEngine) sealFetched(ctx context.Context, m mid.MID) {
 	}
 }
 
-func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID) {
-	if !e.shouldFetch(m) {
+// fetchIfMissing ensures the engine holds and has sealed m. It is
+// the acquisition counterpart to discovery, and the two must agree
+// on what "done" means: discovery reports a MID as new until it is
+// sealed, so acquisition must always end by sealing.
+//
+// Three cases:
+//   - Already held but unsealed: seal it (the block arrived some
+//     other way, e.g. a prior fetch that was not sealed). Without
+//     this the MID is rediscovered every round forever.
+//   - Not held: fetch it, preferring the peer that announced it as
+//     a provider and merging in DHT providers and known anchors,
+//     then seal.
+//   - Unreachable (no providers or fetch failed): record the
+//     attempt so it backs off instead of retrying every round.
+func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID, source peer.ID) {
+	if m.IsZero() {
 		return
 	}
+	e.recordAttempt(m)
+
+	has, err := e.cfg.Store.Has(m)
+	if err == nil && has {
+		// Already have the bytes; sealing is idempotent and is what
+		// makes discovery stop reporting this MID as new.
+		e.finishAcquired(ctx, m)
+		return
+	}
+
 	provs, err := e.resolver.Resolve(ctx, m)
 	if err != nil {
 		return
 	}
+	provs = e.mergeSource(provs, source)
 	if len(provs) == 0 {
 		return
 	}
@@ -578,12 +631,34 @@ func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID) {
 		e.logger.Errorf("anchor: fetch %s: %v", m.String()[:12], err)
 		return
 	}
+	e.finishAcquired(ctx, m)
+}
+
+// finishAcquired seals a now-held MID, bumps the synced counter, and
+// clears its attempt record so it is never revisited.
+func (e *AnchorEngine) finishAcquired(ctx context.Context, m mid.MID) {
 	e.sealFetched(ctx, m)
 	val := atomic.AddInt64(&e.synced, 1)
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, uint64(val))
 	_ = e.cfg.Store.PutMeta("anchor_synced", buf)
-	e.markSeen(m)
+	e.markDone(m)
+}
+
+// mergeSource adds the announcing peer to the provider set if its
+// address is known, so the engine can fetch directly from the node
+// it learned the MID from even before DHT provider records exist.
+func (e *AnchorEngine) mergeSource(provs []peer.AddrInfo, source peer.ID) []peer.AddrInfo {
+	if source == "" || e.cfg.Host == nil {
+		return provs
+	}
+	for _, p := range provs {
+		if p.ID == source {
+			return provs
+		}
+	}
+	addrs := e.cfg.Host.Peerstore().Addrs(source)
+	return append(provs, peer.AddrInfo{ID: source, Addrs: addrs})
 }
 
 func (e *AnchorEngine) shouldFetch(m mid.MID) bool {
@@ -597,9 +672,19 @@ func (e *AnchorEngine) shouldFetch(m mid.MID) bool {
 	return !has
 }
 
-func (e *AnchorEngine) markSeen(m mid.MID) {
+// recordAttempt stamps the current time against m so redundant
+// re-enqueues within anchorAttemptBackoff are suppressed.
+func (e *AnchorEngine) recordAttempt(m mid.MID) {
 	e.mu.Lock()
-	e.hostSeen[m.String()] = struct{}{}
+	e.attempts[m.String()] = time.Now()
+	e.mu.Unlock()
+}
+
+// markDone drops m from the attempt map once it is sealed, so it is
+// never re-enqueued or re-logged.
+func (e *AnchorEngine) markDone(m mid.MID) {
+	e.mu.Lock()
+	delete(e.attempts, m.String())
 	e.mu.Unlock()
 }
 
