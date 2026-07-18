@@ -86,6 +86,14 @@ type MemStore struct {
 	wg       sync.WaitGroup
 	closed   bool
 	dropping bool
+
+	// gcMu serializes garbage-collection runs. It is a leaf lock,
+	// distinct from mu (which guards the store lifecycle): mu is an
+	// RWMutex whose RLock is shared, so it does not prevent two GC
+	// runs from overlapping. gcMu ensures at most one GC walks and
+	// deletes at a time, so concurrent callers run sequentially
+	// against current state instead of racing on deletion.
+	gcMu sync.Mutex
 }
 
 // Options configures a MemStore at construction time.

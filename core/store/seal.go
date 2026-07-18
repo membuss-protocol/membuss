@@ -162,6 +162,13 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 		return 0, err
 	}
 	defer s.exit()
+
+	// Serialize GC runs. A second concurrent caller blocks here until
+	// the first finishes, then runs against the now-current state
+	// rather than doing racy, duplicated deletion work in parallel.
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+
 	if ctx == nil {
 		ctx = context.Background()
 	}

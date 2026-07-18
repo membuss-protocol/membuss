@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/multiformats/go-multiaddr"
@@ -48,6 +49,25 @@ const DefaultDiscoveryInterval = 30 * time.Second
 // MaxEnqueueBacklog caps the number of externally-queued
 // MIDs the engine will process per round.
 const MaxEnqueueBacklog = 1024
+
+// DefaultHealthEvery is how many discovery rounds elapse between
+// anchor health checks. Reachability changes slowly relative to the
+// discovery cadence, so health is checked less often than discovery
+// to avoid needless dial churn.
+const DefaultHealthEvery = 5
+
+// anchorFailThreshold is the number of consecutive failed health
+// checks before a non-sticky anchor is pruned. A small threshold
+// avoids evicting an anchor on a single transient blip.
+const anchorFailThreshold = 3
+
+// maxHealthChecksPerRound bounds how many anchors are dialed in a
+// single health round so the check never blocks the loop on a large
+// registry.
+const maxHealthChecksPerRound = 16
+
+// anchorHealthDialTimeout bounds a single reachability dial.
+const anchorHealthDialTimeout = 10 * time.Second
 
 // AnchorStore is the subset of store.Store the anchor
 // engine actually depends on. Splitting it out keeps tests
@@ -129,8 +149,14 @@ type Config struct {
 	// DiscoveryInterval is the time between discovery +
 	// fetch rounds. Default is DefaultDiscoveryInterval.
 	DiscoveryInterval time.Duration
+	// HealthEvery is how many discovery rounds elapse between
+	// anchor health checks. Zero uses DefaultHealthEvery. A
+	// negative value disables health checking entirely.
+	HealthEvery int
 	// BootstrapAnchors is the initial set of anchor peers
-	// the engine should trust on startup.
+	// the engine should trust on startup. Bootstrap anchors are
+	// "sticky": they are never pruned by health checks, since they
+	// reflect explicit operator intent and are re-added on restart.
 	BootstrapAnchors []peer.AddrInfo
 	// Logger is optional; nil means silent.
 	Logger Logger
@@ -147,6 +173,15 @@ type AnchorEngine struct {
 	started  time.Time
 	synced   int64
 	hostSeen map[string]struct{}
+
+	// sticky holds anchors that must never be pruned by health
+	// checks (the operator-provided bootstrap set).
+	sticky map[peer.ID]struct{}
+	// healthFails counts consecutive failed health checks per anchor.
+	healthFails map[peer.ID]int
+	// roundNum counts discovery rounds; health checks run every
+	// HealthEvery rounds.
+	roundNum int
 
 	resolver ProviderResolver
 
@@ -176,17 +211,22 @@ func New(cfg Config) (*AnchorEngine, error) {
 	if cfg.DiscoveryInterval <= 0 {
 		cfg.DiscoveryInterval = DefaultDiscoveryInterval
 	}
+	if cfg.HealthEvery == 0 {
+		cfg.HealthEvery = DefaultHealthEvery
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = nopLogger{}
 	}
 	return &AnchorEngine{
-		cfg:      cfg,
-		logger:   cfg.Logger,
-		anchors:  make(map[peer.ID]peer.AddrInfo),
-		hostSeen: make(map[string]struct{}),
-		resolver: cfg.ProviderResolver,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		cfg:         cfg,
+		logger:      cfg.Logger,
+		anchors:     make(map[peer.ID]peer.AddrInfo),
+		hostSeen:    make(map[string]struct{}),
+		sticky:      make(map[peer.ID]struct{}),
+		healthFails: make(map[peer.ID]int),
+		resolver:    cfg.ProviderResolver,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
 	}, nil
 }
 
@@ -206,6 +246,9 @@ func (e *AnchorEngine) Start(ctx context.Context) error {
 	}
 	for _, ai := range e.cfg.BootstrapAnchors {
 		e.AddAnchor(ai)
+		e.mu.Lock()
+		e.sticky[ai.ID] = struct{}{}
+		e.mu.Unlock()
 	}
 	go e.loop(ctx)
 	return nil
@@ -242,12 +285,92 @@ func (e *AnchorEngine) AddAnchor(ai peer.AddrInfo) {
 	e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
 }
 
-// RemoveAnchor removes a peer from the local anchor
-// registry.
+// RemoveAnchor removes a peer from the local anchor registry and
+// clears its addresses from the peerstore. Anchor addresses are
+// stored with a permanent TTL, so they must be explicitly cleared or
+// they would linger forever after the anchor is removed.
 func (e *AnchorEngine) RemoveAnchor(id peer.ID) {
 	e.mu.Lock()
 	delete(e.anchors, id)
+	delete(e.healthFails, id)
 	e.mu.Unlock()
+	if e.cfg.Host != nil {
+		e.cfg.Host.Peerstore().ClearAddrs(id)
+	}
+}
+
+// checkAnchorHealth dials a bounded sample of unhealthy anchors and
+// prunes those that fail anchorFailThreshold consecutive rounds.
+// Sticky (bootstrap) anchors are checked but never pruned. Network
+// dials happen without any lock held; registry mutations are done
+// under e.mu.
+func (e *AnchorEngine) checkAnchorHealth(ctx context.Context) {
+	if e.cfg.Host == nil {
+		return
+	}
+
+	// Snapshot the current anchor set under the lock.
+	e.mu.Lock()
+	candidates := make([]peer.AddrInfo, 0, len(e.anchors))
+	for _, ai := range e.anchors {
+		candidates = append(candidates, ai)
+	}
+	e.mu.Unlock()
+
+	checked := 0
+	for _, ai := range candidates {
+		if checked >= maxHealthChecksPerRound {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.stopCh:
+			return
+		default:
+		}
+
+		// Never dial ourselves.
+		if ai.ID == e.cfg.Host.ID() {
+			continue
+		}
+
+		reachable := e.probeAnchor(ctx, ai)
+		checked++
+
+		e.mu.Lock()
+		_, isSticky := e.sticky[ai.ID]
+		if reachable {
+			delete(e.healthFails, ai.ID)
+			e.mu.Unlock()
+			continue
+		}
+		if isSticky {
+			// Sticky anchors are never pruned; just record the miss.
+			e.mu.Unlock()
+			continue
+		}
+		e.healthFails[ai.ID]++
+		fails := e.healthFails[ai.ID]
+		e.mu.Unlock()
+
+		if fails >= anchorFailThreshold {
+			e.logger.Infof("anchor: pruning unreachable anchor %s after %d failed checks", ai.ID, fails)
+			e.RemoveAnchor(ai.ID)
+		}
+	}
+}
+
+// probeAnchor reports whether the anchor is currently reachable: it is
+// healthy if already connected, otherwise a short-lived dial is
+// attempted.
+func (e *AnchorEngine) probeAnchor(ctx context.Context, ai peer.AddrInfo) bool {
+	if e.cfg.Host.Network().Connectedness(ai.ID) == network.Connected {
+		return true
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, anchorHealthDialTimeout)
+	defer cancel()
+	return e.cfg.Host.Connect(dialCtx, ai) == nil
 }
 
 // AnchorPeers returns a snapshot of the current anchor
@@ -346,6 +469,16 @@ func (e *AnchorEngine) loop(ctx context.Context) {
 }
 
 func (e *AnchorEngine) tick(ctx context.Context) {
+	// Run an anchor health check every HealthEvery rounds so
+	// unreachable anchors are pruned instead of accumulating forever.
+	e.mu.Lock()
+	e.roundNum++
+	round := e.roundNum
+	e.mu.Unlock()
+	if e.cfg.HealthEvery > 0 && round%e.cfg.HealthEvery == 0 {
+		e.checkAnchorHealth(ctx)
+	}
+
 	e.persistRegistry()
 
 	// Discover content from connected peers via the
