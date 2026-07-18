@@ -7,7 +7,7 @@
 	import { toast } from '$lib/toast';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
-	import DagNode from '$lib/components/DagNode.svelte';
+	import DagViewer from '$lib/components/DagViewer.svelte';
 
 	interface MemFSEntry {
 		name: string;
@@ -549,7 +549,7 @@
 						activeTab === 'dag' ? 'border-cyan-500 text-cyan-400' : 'border-transparent text-slate-500 hover:text-slate-350'
 					}`}
 				>
-					Merkle DAG Tree
+					Merkle DAG
 				</button>
 			</div>
 
@@ -749,13 +749,11 @@
 					<div>
 						<h2 class="text-lg font-black tracking-tight text-slate-150">Merkle DAG Block Structure</h2>
 						<p class="text-xs text-slate-550 mt-1 leading-relaxed">
-							Expand nodes recursively to view Merkle link bindings. Blocks are verified against multihash addresses lazily fetched from <code class="bg-slate-950 px-1 py-0.5 rounded font-mono">/mem/&lt;mid&gt;?format=dag-json</code>.
+							Blocks are lazily fetched from <code class="bg-slate-950 px-1 py-0.5 rounded font-mono">/mem/&lt;mid&gt;?format=dag-json</code> and verified against their multihash addresses. Use the graph to see how blocks link and where they are shared, or the tree to walk the hierarchy.
 						</p>
 					</div>
 
-					<div class="p-4 bg-slate-950/40 border border-slate-850 rounded-xl max-h-[500px] overflow-y-auto mt-2">
-						<DagNode mid={midVal} depth={0} />
-					</div>
+					<DagViewer mid={midVal} />
 				</div>
 			{/if}
 
