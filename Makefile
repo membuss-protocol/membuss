@@ -5,7 +5,9 @@
 #   make frontend       build the explorer web UI (Vite)
 #   make frontend-dev   run the explorer web UI in dev mode (Vite)
 #   make proto          regenerate protobuf Go bindings into proto/
-#   make test           run `go test ./... -race -count=1`
+#   make test           run `go test ./... -count=1` (CGO off; no race)
+#                       (set RACE=1 to enable the race detector where a
+#                        C toolchain is available, e.g. `make test RACE=1`)
 #   make lint           run golangci-lint (skipped if not installed)
 #   make run-daemon     run the daemon with ./membuss.yaml
 #   make tidy           go mod tidy
@@ -30,6 +32,20 @@ endif
 GO            ?= go
 export CGO_ENABLED=0
 PKG           := ./...
+
+# Race detector toggle. The project has no cgo dependency, so it
+# builds and tests fine with CGO_ENABLED=0 everywhere. The one thing
+# that needs cgo is `go test -race`, which requires a working C
+# toolchain. Default is OFF so the suite runs on any machine; opt in
+# with `make test RACE=1` where a C compiler is available.
+RACE          ?= 0
+ifeq ($(RACE),1)
+    TEST_FLAGS   := -race -count=1
+    TEST_CGO     := 1
+else
+    TEST_FLAGS   := -count=1
+    TEST_CGO     := 0
+endif
 BUILD_DIR     := bin
 DAEMON_BIN    := $(BUILD_DIR)/membuss$(BIN_EXT)
 CLI_BIN       := $(BUILD_DIR)/membuss-cli$(BIN_EXT)
@@ -77,7 +93,7 @@ else
 endif
 
 test:
-	$(GO) test $(PKG) -race -count=1
+	CGO_ENABLED=$(TEST_CGO) $(GO) test $(PKG) $(TEST_FLAGS)
 
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \

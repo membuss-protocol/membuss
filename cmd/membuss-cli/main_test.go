@@ -138,10 +138,14 @@ func withCLI(t *testing.T, args []string, stdin io.Reader) (stdout, stderr strin
 		_ = os.Stdin
 	}
 
-	done := make(chan struct{})
+	// Copy both pipes concurrently. We must wait for BOTH goroutines
+	// to finish before reading the buffers, otherwise reading
+	// errBuf.String() races the stderr copy still writing into it.
+	outDone := make(chan struct{})
+	errDone := make(chan struct{})
 	var outBuf, errBuf bytes.Buffer
-	go func() { _, _ = io.Copy(&outBuf, rOut); close(done) }()
-	go func() { _, _ = io.Copy(&errBuf, rErr) }()
+	go func() { _, _ = io.Copy(&outBuf, rOut); close(outDone) }()
+	go func() { _, _ = io.Copy(&errBuf, rErr); close(errDone) }()
 
 	// Replace os.Args for the duration of this test.
 	oldArgs := os.Args
@@ -151,7 +155,8 @@ func withCLI(t *testing.T, args []string, stdin io.Reader) (stdout, stderr strin
 	err = newRootCmd().Execute()
 	_ = wOut.Close()
 	_ = wErr.Close()
-	<-done
+	<-outDone
+	<-errDone
 	return outBuf.String(), errBuf.String(), err
 }
 

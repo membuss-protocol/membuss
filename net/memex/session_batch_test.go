@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,8 +14,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// mockStream is written by the writeLoop goroutine under test while
+// the test goroutine inspects what has been written so far. The
+// underlying bytes.Buffer is not safe for that concurrent access, so
+// mu guards every read and write. Use snapshot()/length() from the
+// test goroutine — never touch buf directly.
 type mockStream struct {
 	network.Stream
+	mu  sync.Mutex
 	buf bytes.Buffer
 }
 
@@ -23,7 +30,24 @@ func (m *mockStream) SetWriteDeadline(t time.Time) error {
 }
 
 func (m *mockStream) Write(p []byte) (n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.buf.Write(p)
+}
+
+// snapshot returns a copy of everything written so far. The copy is
+// safe to hand to decodeFrames while the writeLoop keeps writing.
+func (m *mockStream) snapshot() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]byte(nil), m.buf.Bytes()...)
+}
+
+// length returns the number of bytes written so far.
+func (m *mockStream) length() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buf.Len()
 }
 
 func newTestPipelineState(maxDepth int) *pipelineState {
@@ -94,7 +118,7 @@ func TestWriteLoopBatching(t *testing.T) {
 	}
 
 	// Decode frames sent
-	msgs, err := decodeFrames(stream.buf.Bytes())
+	msgs, err := decodeFrames(stream.snapshot())
 	if err != nil {
 		t.Fatalf("failed to decode written frames: %v", err)
 	}
@@ -173,7 +197,7 @@ func TestWriteLoopBatchTimeout(t *testing.T) {
 	}
 
 	// Decode frames
-	msgs, err := decodeFrames(stream.buf.Bytes())
+	msgs, err := decodeFrames(stream.snapshot())
 	if err != nil {
 		t.Fatalf("failed to decode written frames: %v", err)
 	}
@@ -216,7 +240,7 @@ func TestWriteLoopMaxBatchSize(t *testing.T) {
 	}
 
 	// Decode frames
-	msgs, err := decodeFrames(stream.buf.Bytes())
+	msgs, err := decodeFrames(stream.snapshot())
 	if err != nil {
 		t.Fatalf("failed to decode written frames: %v", err)
 	}
@@ -261,7 +285,7 @@ func TestWriteLoopPipelineBlocks(t *testing.T) {
 
 	// writeLoop should be blocked because inFlight >= maxDepth.
 	time.Sleep(50 * time.Millisecond)
-	msgs, _ := decodeFrames(stream.buf.Bytes())
+	msgs, _ := decodeFrames(stream.snapshot())
 	if len(msgs) != 0 {
 		t.Fatal("writeLoop should not have sent anything yet")
 	}
@@ -271,7 +295,7 @@ func TestWriteLoopPipelineBlocks(t *testing.T) {
 
 	// writeLoop should now send a batch.
 	time.Sleep(50 * time.Millisecond)
-	msgs, _ = decodeFrames(stream.buf.Bytes())
+	msgs, _ = decodeFrames(stream.snapshot())
 	if len(msgs) == 0 {
 		t.Fatal("writeLoop should have sent after signal")
 	}
@@ -313,14 +337,21 @@ func TestWriteLoopPipelineDepthRespected(t *testing.T) {
 
 	// Wait for first batch to be sent.
 	time.Sleep(50 * time.Millisecond)
-	msgs, _ := decodeFrames(stream.buf.Bytes())
+	msgs, _ := decodeFrames(stream.snapshot())
 	if len(msgs) == 0 {
 		t.Fatal("expected at least 1 frame")
 	}
 
-	// Pipeline should now be full (inFlight == 3).
-	if ps.inFlight != 3 {
-		t.Fatalf("inFlight = %d, want 3", ps.inFlight)
+	// Pipeline should now be full: exactly the 3 wants must have been
+	// sent. We assert this via the observable stream output (wants
+	// actually written) rather than reading ps.inFlight directly,
+	// which is owned by the writeLoop goroutine and racy to touch here.
+	wantsSent := 0
+	for _, msg := range msgs {
+		wantsSent += len(msg.Wants)
+	}
+	if wantsSent != 3 {
+		t.Fatalf("wants sent = %d, want 3", wantsSent)
 	}
 
 	// Send 3 more wants — these should block.
@@ -329,7 +360,7 @@ func TestWriteLoopPipelineDepthRespected(t *testing.T) {
 	}
 
 	time.Sleep(50 * time.Millisecond)
-	bufLen := stream.buf.Len()
+	bufLen := stream.length()
 
 	// Resolve 2 blocks to free capacity.
 	ps.capCh <- struct{}{}
@@ -338,7 +369,7 @@ func TestWriteLoopPipelineDepthRespected(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// More data should have been written.
-	if stream.buf.Len() <= bufLen {
+	if stream.length() <= bufLen {
 		t.Fatal("writeLoop should have sent more after signal")
 	}
 
@@ -387,7 +418,7 @@ func TestWriteLoopPipelineCancelsFreeCapacity(t *testing.T) {
 	queue.Push(sessionEvent{isCancel: false, mid: mids[3]})
 
 	time.Sleep(50 * time.Millisecond)
-	msgs, _ := decodeFrames(stream.buf.Bytes())
+	msgs, _ := decodeFrames(stream.snapshot())
 
 	// Should have at least 2 frames: initial wants + cancels.
 	if len(msgs) < 2 {
@@ -477,7 +508,7 @@ func TestWriteLoopPipelinePendingOverflow(t *testing.T) {
 
 	// First batch should be sent (2 wants).
 	time.Sleep(50 * time.Millisecond)
-	msgs, _ := decodeFrames(stream.buf.Bytes())
+	msgs, _ := decodeFrames(stream.snapshot())
 	if len(msgs) == 0 {
 		t.Fatal("expected at least 1 frame")
 	}
@@ -488,7 +519,7 @@ func TestWriteLoopPipelinePendingOverflow(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// The pending overflow event should have been sent.
-	bufLen := stream.buf.Len()
+	bufLen := stream.length()
 	if bufLen == 0 {
 		t.Fatal("expected data to be written")
 	}
