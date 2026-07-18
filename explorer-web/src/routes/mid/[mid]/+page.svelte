@@ -6,6 +6,7 @@
 	import { apiFetch, formatBytes } from '$lib/api';
 	import { toast } from '$lib/toast';
 	import Skeleton from '$lib/components/Skeleton.svelte';
+	import ActionMenu from '$lib/components/ActionMenu.svelte';
 	import Icon from '@iconify/svelte';
 	import DagViewer from '$lib/components/DagViewer.svelte';
 
@@ -318,23 +319,33 @@
 		</div>
 
 		{#if data && !data.NotFound}
-			<form onsubmit={renameContent} class="flex items-center gap-2">
-				<input
-					type="text"
-					bind:value={renameValue}
-					required
-					disabled={isRenaming}
-					placeholder="Rename content alias"
-					class="bg-slate-950/60 border border-slate-800 text-slate-200 text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/20"
+			<div class="flex items-center gap-2">
+				<form onsubmit={renameContent} class="flex items-center gap-2">
+					<input
+						type="text"
+						bind:value={renameValue}
+						required
+						disabled={isRenaming}
+						placeholder="Rename content alias"
+						class="bg-slate-950/60 border border-slate-800 text-slate-200 text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/20"
+					/>
+					<button
+						type="submit"
+						disabled={isRenaming || (data && renameValue.trim() === data.Name)}
+						class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-xs font-bold text-slate-200 border border-slate-750 transition-colors active:scale-[0.98]"
+					>
+						{isRenaming ? 'Saving...' : 'Rename'}
+					</button>
+				</form>
+				<ActionMenu
+					target={midVal ?? ''}
+					isDir={data.MemFSType === 'dir'}
+					sealed={data.Sealed}
+					onToggleSeal={() => runAction(data?.Sealed ? 'unseal' : 'seal')}
+					onDelete={() => (showDeleteMIDModal = true)}
+					compact={false}
 				/>
-				<button
-					type="submit"
-					disabled={isRenaming || (data && renameValue.trim() === data.Name)}
-					class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-xs font-bold text-slate-200 border border-slate-750 transition-colors active:scale-[0.98]"
-				>
-					{isRenaming ? 'Saving...' : 'Rename'}
-				</button>
-			</form>
+			</div>
 		{/if}
 	</div>
 

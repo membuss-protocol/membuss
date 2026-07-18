@@ -5,6 +5,7 @@
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import Skeleton from '$lib/components/Skeleton.svelte';
+	import ActionMenu from '$lib/components/ActionMenu.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface StoredMID {
@@ -81,9 +82,6 @@
 		eventSource: EventSource | null;
 	}[]>([]);
 
-	// Share Copy Toast
-	let copiedId = $state<string | null>(null);
-
 	// Load file list from the index endpoint (all metadata included)
 	async function loadFiles() {
 		try {
@@ -149,24 +147,6 @@
 		} catch (err) {
 			toast.error(`Delete failed: ${err instanceof Error ? err.message : err}`);
 		}
-	}
-
-	// Copy gateway link to share
-	function shareFile(file: LocalFile) {
-		let shareUrl = '';
-		if (file.type === 'dir' && window.location.hostname === 'localhost') {
-			const portStr = window.location.port ? `:${window.location.port}` : '';
-			shareUrl = `${window.location.protocol}//${file.mid}.localhost${portStr}/`;
-		} else {
-			const gateBase = window.location.origin;
-			shareUrl = `${gateBase}/mem/${file.mid}${file.type === 'dir' ? '/' : ''}`;
-		}
-		navigator.clipboard.writeText(shareUrl).then(() => {
-			copiedId = file.mid;
-			setTimeout(() => {
-				if (copiedId === file.mid) copiedId = null;
-			}, 2000);
-		});
 	}
 
 	// Trigger network fetch of a remote MID
@@ -780,40 +760,15 @@
 
 								<!-- In-line actions -->
 								<td class="py-3 px-4 text-right">
-									<div class="flex items-center justify-end gap-3 text-[11px]">
-										<!-- Pin/Unpin (Seal/Unseal) -->
-										<button 
-											onclick={() => toggleSeal(file)}
-											class={`font-bold hover:underline ${
-												file.sealed ? 'text-amber-500 hover:text-amber-400' : 'text-emerald-500 hover:text-emerald-400'
-											}`}
-										>
-											{file.sealed ? 'Unpin' : 'Pin'}
-										</button>
-
-										<!-- Share gateway link -->
-										<button 
-											onclick={() => shareFile(file)}
-											class="text-cyan-500 hover:text-cyan-400 font-bold hover:underline"
-										>
-											{copiedId === file.mid ? 'Copied ✓' : 'Share'}
-										</button>
-
-										<!-- View details -->
-										<a 
-											href={`${base}/mid/${file.mid}`} 
-											class="text-slate-400 hover:text-slate-200 font-bold hover:underline"
-										>
-											Inspect
-										</a>
-
-										<!-- Delete recursively -->
-										<button 
-											onclick={() => triggerDeleteFile(file)}
-											class="text-red-500 hover:text-red-400 font-bold hover:underline"
-										>
-											Delete
-										</button>
+									<div class="flex items-center justify-end">
+										<ActionMenu
+											target={file.mid}
+											isDir={file.type === 'dir'}
+											sealed={file.sealed}
+											inspectHref={`${base}/mid/${file.mid}`}
+											onToggleSeal={() => toggleSeal(file)}
+											onDelete={() => triggerDeleteFile(file)}
+										/>
 									</div>
 								</td>
 							</tr>

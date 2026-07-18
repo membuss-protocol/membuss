@@ -4,6 +4,7 @@
 	import { apiFetch } from '$lib/api';
 	import { base } from '$app/paths';
 	import Skeleton from '$lib/components/Skeleton.svelte';
+	import ActionMenu from '$lib/components/ActionMenu.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface MemRoute {
@@ -36,17 +37,40 @@
 	let data = $state<MemNSData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	// 'unresolved' — the name isn't in the DHT (never published, expired, or not
+	// yet propagated). 'failed' — an actual lookup/transport error worth showing raw.
+	let errorKind = $state<'unresolved' | 'failed'>('failed');
+	let retrying = $state(false);
+
+	function classify(msg: string): 'unresolved' | 'failed' {
+		const m = msg.toLowerCase();
+		if (m.includes('not found') || m.includes('routing') || m.includes('no record') || m.includes('404')) {
+			return 'unresolved';
+		}
+		return 'failed';
+	}
 
 	async function loadRecord() {
 		try {
 			const name = page.params.name;
 			const res = await apiFetch(`/memns/${name}`);
 			data = res;
+			error = null;
 			loading = false;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to resolve MemNS record';
+			const msg = err instanceof Error ? err.message : 'Failed to resolve MemNS record';
+			error = msg;
+			errorKind = classify(msg);
 			loading = false;
+		} finally {
+			retrying = false;
 		}
+	}
+
+	async function retry() {
+		retrying = true;
+		loading = true;
+		await loadRecord();
 	}
 
 	function formatDate(dateStr: string): string {
@@ -65,13 +89,21 @@
 
 <div class="flex flex-col gap-6">
 	<!-- Page Header -->
-	<div class="border-b border-slate-800 pb-4 flex items-center justify-between">
+	<div class="border-b border-slate-800 pb-4 flex items-center justify-between gap-4">
 		<div>
 			<div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/40 text-[10px] text-amber-400 font-mono tracking-wider uppercase">
 				Mutable Target (MemNS)
 			</div>
 			<h1 class="text-2xl font-bold text-slate-50 mt-1 break-all select-all">/{page.params.name}</h1>
 		</div>
+		{#if data}
+			<ActionMenu
+				target={page.params.name ?? ''}
+				kind="memns"
+				compact={false}
+				shareOnly={true}
+			/>
+		{/if}
 	</div>
 
 	{#if loading && !data}
@@ -100,9 +132,54 @@
 				{/each}
 			</div>
 		</div>
+	{:else if error && errorKind === 'unresolved'}
+		<!-- Name isn't in the DHT: never published, expired, or not yet propagated. -->
+		<div class="bg-slate-900 border border-slate-800 rounded-xl p-8 flex flex-col items-center text-center gap-4">
+			<div class="flex h-14 w-14 items-center justify-center rounded-full bg-amber-950/40 border border-amber-800/40">
+				<Icon icon="ph:signpost" class="text-3xl text-amber-500" />
+			</div>
+			<div class="flex flex-col gap-1.5 max-w-md">
+				<h3 class="text-slate-200 font-bold text-sm">No record resolves for this name yet</h3>
+				<p class="text-slate-500 text-xs leading-relaxed">
+					This MemNS name isn't currently in the DHT. It may never have been published, its
+					record may have expired past its TTL, or a fresh publish hasn't propagated to this node
+					yet. Once a key publishes a value here, the resolved target will appear.
+				</p>
+			</div>
+			<div class="flex items-center gap-2 mt-1">
+				<button
+					onclick={retry}
+					disabled={retrying}
+					class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-850 hover:bg-slate-800 disabled:opacity-50 text-slate-200 border border-slate-750 text-xs font-bold transition-colors active:scale-[0.98]"
+				>
+					<Icon icon="ph:arrow-clockwise" class={`text-sm ${retrying ? 'animate-spin' : ''}`} />
+					{retrying ? 'Resolving…' : 'Retry resolution'}
+				</button>
+				<a
+					href={`${base}/memns`}
+					class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-slate-400 hover:text-slate-200 text-xs font-bold transition-colors"
+				>
+					Manage keys
+				</a>
+			</div>
+			<code class="text-[10px] text-slate-600 font-mono break-all mt-1">{error}</code>
+		</div>
 	{:else if error}
-		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">
-			{error}
+		<!-- Genuine lookup / transport failure. -->
+		<div class="bg-red-950/20 border border-red-800/40 rounded-xl p-6 flex flex-col items-center text-center gap-3">
+			<Icon icon="ph:warning-octagon" class="text-3xl text-red-400" />
+			<div class="flex flex-col gap-1 max-w-md">
+				<h3 class="text-red-300 font-bold text-sm">Resolution failed</h3>
+				<p class="text-red-400/70 text-xs font-mono break-all">{error}</p>
+			</div>
+			<button
+				onclick={retry}
+				disabled={retrying}
+				class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-950/40 hover:bg-red-950/60 disabled:opacity-50 text-red-300 border border-red-900/40 text-xs font-bold transition-colors active:scale-[0.98] mt-1"
+			>
+				<Icon icon="ph:arrow-clockwise" class={`text-sm ${retrying ? 'animate-spin' : ''}`} />
+				{retrying ? 'Retrying…' : 'Retry'}
+			</button>
 		</div>
 	{:else if data}
 		<div class="grid grid-cols-1 gap-6">
