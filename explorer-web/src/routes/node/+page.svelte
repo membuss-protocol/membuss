@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch, formatBytes } from '$lib/api';
 	import { base } from '$app/paths';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface NodeInfo {
@@ -106,10 +107,28 @@
 	</div>
 
 	{#if loading && !data}
-		<div class="grid grid-cols-1 md:grid-cols-2 gap-6 animate-pulse">
-			<div class="h-44 bg-slate-900 rounded-lg"></div>
-			<div class="h-44 bg-slate-900 rounded-lg"></div>
-			<div class="h-40 bg-slate-900 rounded-lg md:col-span-2"></div>
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+			{#each Array(2) as _}
+				<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4">
+					<Skeleton width="12rem" height="0.9rem" />
+					<div class="border-t border-slate-800 pt-4 flex flex-col gap-3">
+						{#each Array(4) as _}
+							<div class="grid grid-cols-3 gap-3 items-center">
+								<Skeleton width="5rem" height="0.7rem" />
+								<div class="col-span-2"><Skeleton width="85%" height="0.7rem" /></div>
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/each}
+			<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4 md:col-span-2">
+				<Skeleton width="14rem" height="0.9rem" />
+				<div class="border-t border-slate-800 pt-4 flex flex-col gap-3">
+					{#each Array(3) as _}
+						<Skeleton width="100%" height="1.4rem" rounded="rounded-md" />
+					{/each}
+				</div>
+			</div>
 		</div>
 	{:else if error}
 		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">

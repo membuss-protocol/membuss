@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface AnchorInfo {
@@ -64,9 +65,37 @@
 	</div>
 
 	{#if loading && !data}
-		<div class="space-y-6 animate-pulse">
-			<div class="h-40 bg-slate-900 rounded-lg w-full"></div>
-			<div class="h-32 bg-slate-900 rounded-lg w-full"></div>
+		<div class="flex flex-col gap-6">
+			<!-- Local engine panel skeleton -->
+			<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+				<div class="px-6 py-4 bg-slate-950/40 border-b border-slate-800 flex items-center justify-between">
+					<Skeleton width="12rem" height="0.9rem" />
+					<Skeleton width="5rem" height="1.1rem" rounded="rounded-md" />
+				</div>
+				<div class="p-6 grid grid-cols-2 md:grid-cols-4 gap-6">
+					{#each Array(4) as _}
+						<div class="flex flex-col gap-2">
+							<Skeleton width="4rem" height="0.6rem" />
+							<Skeleton width="5rem" height="1.25rem" rounded="rounded-md" />
+						</div>
+					{/each}
+				</div>
+			</div>
+			<!-- Registry table skeleton -->
+			<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+				<div class="px-6 py-4 bg-slate-950/40 border-b border-slate-800 flex items-center justify-between">
+					<Skeleton width="14rem" height="0.9rem" />
+					<Skeleton width="4rem" height="1.1rem" rounded="rounded-md" />
+				</div>
+				<div class="divide-y divide-slate-750/40">
+					{#each Array(4) as _}
+						<div class="flex items-center justify-between gap-6 py-4 px-6">
+							<Skeleton width="16rem" height="0.8rem" />
+							<Skeleton width="40%" height="0.8rem" />
+						</div>
+					{/each}
+				</div>
+			</div>
 		</div>
 	{:else if error}
 		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">

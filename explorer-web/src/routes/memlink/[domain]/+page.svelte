@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { apiFetch } from '$lib/api';
 	import { base } from '$app/paths';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 
 	interface MemLinkData {
 		Title: string;
@@ -44,8 +45,13 @@
 	</div>
 
 	{#if loading && !data}
-		<div class="space-y-4 animate-pulse">
-			<div class="h-44 bg-slate-900 rounded-lg"></div>
+		<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col gap-4">
+			{#each Array(4) as _}
+				<div class="flex flex-col gap-2">
+					<Skeleton width="8rem" height="0.6rem" />
+					<Skeleton width="70%" height="0.9rem" />
+				</div>
+			{/each}
 		</div>
 	{:else if error}
 		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">
