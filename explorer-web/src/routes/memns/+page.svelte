@@ -4,6 +4,7 @@
 	import { toast } from '$lib/toast';
 	import { base } from '$app/paths';
 	import Skeleton from '$lib/components/Skeleton.svelte';
+	import ActionMenu from '$lib/components/ActionMenu.svelte';
 	import Icon from '@iconify/svelte';
 
 	interface Key {
@@ -261,13 +262,12 @@
 										>
 											Select to Publish
 										</button>
-										<button 
-											onclick={() => triggerDeleteKey(key.name)}
-											class="p-2 rounded-lg bg-red-950/20 hover:bg-red-950/40 text-red-400 border border-red-900/30 transition-colors"
-											title="Delete Key"
-										>
-											<Icon icon="ph:trash" class="w-4 h-4" />
-										</button>
+										<ActionMenu
+											target={key.memns_name.replace('/memns/', '')}
+											kind="memns"
+											inspectHref={`${base}/memns/${key.memns_name.replace('/memns/', '')}`}
+											onDelete={() => triggerDeleteKey(key.name)}
+										/>
 									</div>
 								</div>
 							{/each}
