@@ -73,7 +73,7 @@ func TestLoadConfig_MissingFile(t *testing.T) {
 	}
 	// The error must mention the init hint so the operator can
 	// self-help instead of digging through log files.
-	if !contains(err.Error(), "membuss-cli init") {
+	if !contains(err.Error(), "membuss init") {
 		t.Fatalf("error must mention init hint, got: %v", err)
 	}
 }

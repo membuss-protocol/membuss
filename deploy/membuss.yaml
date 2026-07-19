@@ -41,7 +41,7 @@ data_dir: /var/lib/membuss
 gateway_addr: 0.0.0.0:8080
 api_addr:     0.0.0.0:5001
 
-# gRPC for membuss-cli.
+# gRPC for the membuss CLI.
 grpc_addr: 0.0.0.0:50051
 
 # Anchor mode is off by default; turn on via MEMBUSS_ANCHOR_MODE=true.

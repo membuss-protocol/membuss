@@ -2,7 +2,7 @@
 // used by cmd/membuss. It wires the gRPC service to the
 // live subsystems: Mem-Store, Memex, the libp2p host, the
 // DHT, PEX, the herald, and the anchor engine.
-package main
+package daemon
 
 import (
 	"bytes"

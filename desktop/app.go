@@ -250,15 +250,15 @@ func (a *App) VerifyInstallation() map[string]any {
 	if runtime.GOOS == "windows" {
 		exeExt = ".exe"
 	}
+	// Single unified binary: membuss is both node and CLI. The
+	// cli_bin_ok flag is kept in the result (mirrors daemon_bin_ok)
+	// for frontend compatibility, but both now refer to the one
+	// binary.
 	daemonPath := filepath.Join(cfg.DataDir, "bin", "membuss"+exeExt)
-	cliPath := filepath.Join(cfg.DataDir, "bin", "membuss-cli"+exeExt)
 
 	if _, err := os.Stat(daemonPath); err != nil {
 		result["valid"] = false
 		result["daemon_bin_ok"] = false
-	}
-	if _, err := os.Stat(cliPath); err != nil {
-		result["valid"] = false
 		result["cli_bin_ok"] = false
 	}
 
@@ -352,8 +352,8 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 		if runtime.GOOS == "windows" {
 			exeExt = ".exe"
 		}
-		cliPath := filepath.Join(a.config.DataDir, "bin", "membuss-cli"+exeExt)
-		currentVer = getInstalledBinaryVersion(cliPath)
+		binPath := filepath.Join(a.config.DataDir, "bin", "membuss"+exeExt)
+		currentVer = getInstalledBinaryVersion(binPath)
 		if currentVer == "" {
 			currentVer = version.Version
 		}
@@ -422,30 +422,21 @@ func (a *App) UpgradeBinaries() error {
 	wailsRuntime.LogInfo(a.ctx, "stopping node and force killing processes before upgrading...")
 	_ = a.daemonManager.Stop()
 	_ = killProcess("membuss*")
-	_ = killProcess("membuss-cli*")
 	time.Sleep(1 * time.Second)
 
-	// 2. Remove old binaries
+	// 2. Remove old binary
 	exeExt := ""
 	if runtime.GOOS == "windows" {
 		exeExt = ".exe"
 	}
 	daemonPath := filepath.Join(a.config.DataDir, "bin", "membuss"+exeExt)
-	cliPath := filepath.Join(a.config.DataDir, "bin", "membuss-cli"+exeExt)
 
-	wailsRuntime.LogInfo(a.ctx, "removing old binaries...")
+	wailsRuntime.LogInfo(a.ctx, "removing old binary...")
 	if err := os.Remove(daemonPath); err != nil && !os.IsNotExist(err) {
 		oldPath := daemonPath + ".old"
 		_ = os.Remove(oldPath) // remove previous old file if any
 		if renameErr := os.Rename(daemonPath, oldPath); renameErr != nil {
 			return fmt.Errorf("failed to remove or rename old daemon binary: %w", err)
-		}
-	}
-	if err := os.Remove(cliPath); err != nil && !os.IsNotExist(err) {
-		oldPath := cliPath + ".old"
-		_ = os.Remove(oldPath) // remove previous old file if any
-		if renameErr := os.Rename(cliPath, oldPath); renameErr != nil {
-			return fmt.Errorf("failed to remove or rename old CLI binary: %w", err)
 		}
 	}
 
@@ -595,7 +586,6 @@ func (a *App) ForceKillNode() error {
 	wailsRuntime.LogInfo(a.ctx, "force killing node daemon processes...")
 	_ = a.daemonManager.Stop()
 	_ = killProcess("membuss*")
-	_ = killProcess("membuss-cli*")
 	time.Sleep(500 * time.Millisecond)
 	return nil
 }

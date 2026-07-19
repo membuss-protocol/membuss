@@ -3,7 +3,7 @@
 // aggregate byte progress, seals, and produces a resolvable tree
 // whose files download byte-for-byte. This is the local half of
 // the AddDirStream gRPC used by `membuss-cli add <dir>`.
-package main
+package daemon
 
 import (
 	"context"

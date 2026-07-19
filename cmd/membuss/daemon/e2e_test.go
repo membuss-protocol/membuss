@@ -5,7 +5,7 @@
 // We use os.Executable() to find the test binary, then exec
 // the membuss binary alongside it. The CLI is driven by the
 // same gRPC client we use in unit tests.
-package main
+package daemon
 
 import (
 	"bytes"

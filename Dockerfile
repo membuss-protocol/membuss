@@ -42,9 +42,8 @@ ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
 RUN mkdir -p /out \
     && go build -trimpath -ldflags "-s -w -X github.com/nnlgsakib/membuss/core/version.GitCommit=${GIT_COMMIT} -X github.com/nnlgsakib/membuss/core/version.BuildTime=${BUILD_TIME}" -o /out/membuss            ./cmd/membuss \
-    && go build -trimpath -ldflags "-s -w -X github.com/nnlgsakib/membuss/core/version.GitCommit=${GIT_COMMIT} -X github.com/nnlgsakib/membuss/core/version.BuildTime=${BUILD_TIME}" -o /out/membuss-cli        ./cmd/membuss-cli \
     && go build -trimpath -ldflags "-s -w" -o /out/membuss-entrypoint ./cmd/membuss-entrypoint \
-    && strip /out/membuss /out/membuss-cli /out/membuss-entrypoint
+    && strip /out/membuss /out/membuss-entrypoint
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
@@ -62,9 +61,10 @@ LABEL org.opencontainers.image.title="membuss" \
       org.opencontainers.image.source="https://github.com/nnlgsakib/membuss" \
       org.opencontainers.image.licenses="MIT"
 
-# Copy the binaries produced by the builder stage.
+# Copy the unified binary produced by the builder stage. It is
+# both the node daemon and the operator CLI (`membuss daemon
+# start` runs the node; `membuss <cmd>` drives a running node).
 COPY --from=builder /out/membuss     /usr/local/bin/membuss
-COPY --from=builder /out/membuss-cli /usr/local/bin/membuss-cli
 
 # Ship a container-friendly default config and the GeoLite2
 # geolocation database. The entrypoint shim renders the
@@ -93,7 +93,7 @@ EXPOSE 4001 4001/udp 4002 5001 8080 50051
 # times out after 5s, and is considered healthy after one
 # success. It is intentionally short and unprivileged.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["/usr/local/bin/membuss-cli", "--addr", "127.0.0.1:50051", "ping"]
+    CMD ["/usr/local/bin/membuss", "--addr", "127.0.0.1:50051", "ping"]
 
 # The container is a long-running daemon. The entrypoint
 # shim renders the env-var-driven config, chowns the data

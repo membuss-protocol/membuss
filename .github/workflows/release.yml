@@ -135,25 +135,17 @@ jobs:
         run: |
           go build -trimpath -ldflags "-s -w -X github.com/nnlgsakib/membuss/rpc/server.Build=${{ github.ref_name }}" -o bin/membuss${{ matrix.ext }} ./cmd/membuss
 
-      - name: Build CLI
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          go build -trimpath -ldflags "-s -w" -o bin/membuss-cli${{ matrix.ext }} ./cmd/membuss-cli
-
       - name: Package binaries (zip)
         if: matrix.archive == 'zip'
         run: |
           cd bin
-          zip -r ../membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.zip membuss${{ matrix.ext }} membuss-cli${{ matrix.ext }}
+          zip -r ../membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.zip membuss${{ matrix.ext }}
 
       - name: Package binaries (tar.gz)
         if: matrix.archive == 'tar.gz'
         run: |
           cd bin
-          tar -czf ../membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz membuss${{ matrix.ext }} membuss-cli${{ matrix.ext }}
+          tar -czf ../membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz membuss${{ matrix.ext }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

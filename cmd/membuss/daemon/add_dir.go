@@ -3,7 +3,7 @@
 // reporting aggregate byte progress as it reads the files. It
 // is the directory counterpart to AddWithProgress and backs the
 // AddDirStream gRPC used by `membuss-cli add <dir>`.
-package main
+package daemon
 
 import (
 	"context"

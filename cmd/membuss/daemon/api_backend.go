@@ -3,7 +3,7 @@
 // envelopes and mid.MID values, while the gRPC Backend uses
 // string IDs and a different Stat shape. The two surfaces
 // stay on separate types to avoid signature collisions.
-package main
+package daemon
 
 import (
 	"bytes"

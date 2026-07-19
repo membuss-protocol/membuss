@@ -206,39 +206,42 @@ Membuss builds with **CGO disabled**, producing static binaries.
 git clone https://github.com/nnlgsakib/membuss
 cd membuss
 make build
-# -> bin/membuss     (daemon)
-# -> bin/membuss-cli (CLI)
+# -> bin/membuss     (single binary: node + CLI)
 ```
 
-`make build` compiles the SvelteKit explorer first, then the Go binaries. To skip the frontend and build the binaries alone:
+`make build` compiles the SvelteKit explorer first, then the Go binary. `membuss` is one unified executable — it runs the node *and* acts as the operator CLI. To skip the frontend and build the binary alone:
 
 ```bash
-CGO_ENABLED=0 go build -o bin/membuss     ./cmd/membuss
-CGO_ENABLED=0 go build -o bin/membuss-cli ./cmd/membuss-cli
+CGO_ENABLED=0 go build -o bin/membuss ./cmd/membuss
 ```
 
 ### Run
 
 ```bash
-./bin/membuss -config membuss.yaml
+# Initialize the data directory (identity + config), then run the node:
+./bin/membuss init
+./bin/membuss daemon start
 # Mem-Gate gateway : http://127.0.0.1:8080
 # Node API         : http://127.0.0.1:5001
 # gRPC             : 127.0.0.1:50051
 # libp2p           : tcp/4001, quic/4001, ws/4002
+
+# The legacy standalone form is still supported:
+./bin/membuss -config membuss.yaml
 ```
 
 ### Use
 
 ```bash
 # Upload a file
-./bin/membuss-cli add ./video.mp4
+./bin/membuss add ./video.mp4
 # -> membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm
 
 # Upload a directory (served as a browsable MemFS tree)
-./bin/membuss-cli add ./my-site
+./bin/membuss add ./my-site
 
 # Fetch content back
-./bin/membuss-cli get membafzbeidr5pk2… -o copy.mp4
+./bin/membuss get membafzbeidr5pk2… -o copy.mp4
 
 # Browse in the explorer
 # open http://127.0.0.1:8080/explorer/
@@ -341,8 +344,10 @@ Responses use a JSON envelope: `{"ok": true, "data": {…}}` or `{"ok": false, "
 
 ## CLI
 
+`membuss` is a single binary that is both the node and the operator client. The same executable runs the daemon (`membuss daemon start`) and drives a running node over gRPC / HTTP.
+
 ```
-membuss-cli <command> [flags]
+membuss <command> [flags]
 ```
 
 | Command | Description |
@@ -404,7 +409,7 @@ Because the MID is the SHA-256 of the serialized node, identical content produce
 ## Development
 
 ```bash
-make build          # daemon + CLI (CGO disabled)
+make build          # single membuss binary: node + CLI (CGO disabled)
 make test           # go test ./... -race -count=1
 make lint           # golangci-lint
 make proto          # regenerate protobuf bindings

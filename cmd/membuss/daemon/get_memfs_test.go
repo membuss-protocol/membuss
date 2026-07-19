@@ -3,7 +3,7 @@
 // /api/v1/add path and by every directory child), not just
 // plain DAGNode trees. A regression here surfaces as a
 // downloaded 0-byte file.
-package main
+package daemon
 
 import (
 	"bytes"

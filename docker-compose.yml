@@ -10,7 +10,7 @@
 #   docker compose build
 #   docker compose up -d
 #   docker compose logs -f membuss
-#   docker compose exec membuss membuss-cli peers
+#   docker compose exec membuss membuss peers
 #
 # Stop & wipe the local state:
 #   docker compose down -v
@@ -32,7 +32,7 @@ services:
       - "4002:4002/tcp" # libp2p WebSocket
       - "5001:5001/tcp" # Node API (local control plane)
       - "8081:8080/tcp" # Mem-Gate public HTTP gateway
-      - "50051:50051/tcp" # gRPC (membuss-cli)
+      - "50051:50051/tcp" # gRPC (membuss CLI)
 
     volumes:
       - membuss-data:/var/lib/membuss
@@ -50,7 +50,7 @@ services:
       test:
         [
           "CMD",
-          "/usr/local/bin/membuss-cli",
+          "/usr/local/bin/membuss",
           "--addr",
           "127.0.0.1:50051",
           "ping",
