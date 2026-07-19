@@ -102,7 +102,6 @@ type DeleteResult struct {
 	BytesFreed    uint64
 }
 
-
 // DirectoryPart is one file in a multipart directory upload.
 type DirectoryPart struct {
 	// Path is the slash-separated path of the file
@@ -130,9 +129,9 @@ type LsEntry struct {
 
 // AddResult is the return value of Backend.Add.
 type AddResult struct {
-	MID      string
-	Size     uint64
-	Blocks   uint64
+	MID    string
+	Size   uint64
+	Blocks uint64
 	// Name and MimeType are the per-MID ObjectInfo
 	// that the HTTP API captured at upload time.
 	Name     string
@@ -147,15 +146,15 @@ type SealResult struct {
 
 // StatInfo is the return value of Backend.Stat.
 type StatInfo struct {
-	Present  bool
-	Size     uint64
-	Blocks   uint64
-	Sealed   bool
+	Present bool
+	Size    uint64
+	Blocks  uint64
+	Sealed  bool
 	// Name and MimeType are the per-MID ObjectInfo
 	// captured at Add time, or empty for content
 	// added by an older daemon.
-	Name     string
-	MimeType string
+	Name          string
+	MimeType      string
 	Sealers       int
 	AnchorSealers int
 }
@@ -256,7 +255,15 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		})
 	})
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(a.cfg.ReadTimeout))
+	// Propagate a per-request deadline to handlers (so slow DHT /
+	// store lookups cancel on time) WITHOUT writing a response
+	// ourselves. chi's middleware.Timeout writes a 504 in a defer,
+	// which double-writes when a handler has already emitted its
+	// own error envelope for the same deadline — surfacing as
+	// "superfluous response.WriteHeader" noise in the log. The
+	// outer http.TimeoutHandler in Handler() remains the hard
+	// response-writing safety net.
+	r.Use(ctxTimeout(a.cfg.ReadTimeout))
 
 	// Prometheus scrape endpoint, exempt from API-key auth.
 	if a.cfg.Metrics != nil {
@@ -300,6 +307,26 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		r.Post("/descriptor/import", a.handleDescriptorImport)
 	})
 	return r
+}
+
+// ctxTimeout returns middleware that bounds each request with a
+// context deadline and cancels it when the handler returns. Unlike
+// chi's middleware.Timeout it never writes to the ResponseWriter,
+// so a handler that has already emitted its own error for the same
+// deadline does not trigger a duplicate WriteHeader. A zero or
+// negative timeout disables the deadline (pass-through).
+func ctxTimeout(timeout time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if timeout <= 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // --- response envelope ---
@@ -667,7 +694,6 @@ func (a *NodeAPI) handleDelete(w http.ResponseWriter, r *http.Request) {
 		"bytes_freed":    res.BytesFreed,
 	})
 }
-
 
 // --- helpers ---
 
