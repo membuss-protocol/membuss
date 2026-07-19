@@ -97,9 +97,15 @@ func TestGetWithProgress_MemFSFile(t *testing.T) {
 	payload := bytes.Repeat([]byte("xyz"), 100000) // ~300 KB, 2 blocks
 	m := addMemFSFile(t, b, "prog.bin", payload)
 
-	rc, err := b.GetWithProgress(context.Background(), m.String(), 0, 0, nil)
+	rc, meta, err := b.GetWithProgress(context.Background(), m.String(), 0, 0, nil)
 	if err != nil {
 		t.Fatalf("GetWithProgress: %v", err)
+	}
+	if meta.Name != "prog.bin" {
+		t.Fatalf("meta.Name = %q, want prog.bin", meta.Name)
+	}
+	if meta.Size != uint64(len(payload)) {
+		t.Fatalf("meta.Size = %d, want %d", meta.Size, len(payload))
 	}
 	defer rc.Close()
 	got, err := io.ReadAll(rc)

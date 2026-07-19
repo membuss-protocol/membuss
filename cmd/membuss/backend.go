@@ -88,6 +88,14 @@ var _ serverpkg.Backend = (*daemonBackend)(nil)
 // announces it to the DHT. chunker/chunkSize come from the
 // gRPC request; if empty/zero, fixed 256 KiB is used.
 func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string) (serverpkg.AddResult, error) {
+	return b.AddWithProgress(ctx, path, chunker, chunkSize, sealRoot, name, mimeType, nil)
+}
+
+// AddWithProgress ingests a local file, reporting bytes read
+// from the source through progressFn (when non-nil) so callers
+// can stream ingest progress. It is the single ingest
+// implementation; Add is the no-progress wrapper.
+func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string, progressFn func(processed, total uint64)) (serverpkg.AddResult, error) {
 	if path == "" {
 		return serverpkg.AddResult{}, errors.New("add: empty path")
 	}
@@ -104,6 +112,23 @@ func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize
 	}
 	defer f.Close()
 
+	// Total size drives the progress denominator. A stat
+	// failure is non-fatal: progress just reports an unknown
+	// total (0).
+	var totalBytes uint64
+	if fi, serr := f.Stat(); serr == nil && fi.Size() > 0 {
+		totalBytes = uint64(fi.Size())
+	}
+
+	// Wrap the source so the chunker's reads drive progress.
+	// The DAG builder pulls the whole file through this reader,
+	// so the byte counter tracks ingest faithfully regardless
+	// of chunker choice.
+	var src io.Reader = f
+	if progressFn != nil {
+		src = &countingReader{r: f, total: totalBytes, fn: progressFn}
+	}
+
 	// Pick a chunker. Default is fixed 256 KiB.
 	var factory chunk.ChunkerFactory
 	switch chunker {
@@ -118,7 +143,7 @@ func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize
 		}
 		factory = chunk.NewFixed(size)
 	}
-	c, err := factory(f)
+	c, err := factory(src)
 	if err != nil {
 		return serverpkg.AddResult{}, fmt.Errorf("add: chunker: %w", err)
 	}
@@ -133,6 +158,16 @@ func (b *daemonBackend) Add(ctx context.Context, path, chunker string, chunkSize
 	blocks, size, err := countDAG(b.store, root)
 	if err != nil {
 		return serverpkg.AddResult{}, fmt.Errorf("add: count: %w", err)
+	}
+
+	// Emit a terminal 100% so a fast ingest that never
+	// tripped the throttle still lands on a full bar.
+	if progressFn != nil {
+		final := totalBytes
+		if final == 0 {
+			final = size
+		}
+		progressFn(final, final)
 	}
 
 	// Phase 19: persist the per-MID ObjectInfo so the
@@ -236,14 +271,14 @@ func (b *daemonBackend) Get(ctx context.Context, midStr string, offset, limit ui
 // is called as blocks arrive with the running total of bytes
 // received and total bytes (total may be 0 until all blocks
 // are known).
-func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, error) {
+func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, serverpkg.ContentMeta, error) {
 	root, err := mid.Parse(midStr)
 	if err != nil {
-		return nil, fmt.Errorf("get: parse mid: %w", err)
+		return nil, serverpkg.ContentMeta{}, fmt.Errorf("get: parse mid: %w", err)
 	}
 	has, err := b.store.Has(root)
 	if err != nil {
-		return nil, err
+		return nil, serverpkg.ContentMeta{}, err
 	}
 	if has {
 		if complete, cerr := isDAGComplete(b.store, root); cerr != nil || !complete {
@@ -277,11 +312,58 @@ func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offs
 			}
 		}
 		if !has {
-			return nil, fmt.Errorf("get: mid not found locally and no provider available")
+			return nil, serverpkg.ContentMeta{}, fmt.Errorf("get: mid not found locally and no provider available")
 		}
 	}
 
-	return b.resolveContent(ctx, root, offset, limit)
+	rc, err := b.resolveContent(ctx, root, offset, limit)
+	if err != nil {
+		return nil, serverpkg.ContentMeta{}, err
+	}
+	// Metadata is now resolvable locally: the ObjectInfo was
+	// either written at Add time or delivered over the wire by
+	// Memex during the fetch above (see Engine.StoreObjectInfos).
+	// The server sends this to the client as a header frame so
+	// downloads pulled from the network are named / sized just
+	// like local ones, instead of falling back to <mid>.bin.
+	return rc, b.contentMeta(ctx, root), nil
+}
+
+// contentMeta collects the best-effort user-facing metadata
+// for a resolved root: the persisted ObjectInfo name / MIME
+// type, and the total content size.
+//
+// Size is resolved the same way the gateway computes it, so
+// downloads report the real byte count instead of 0: for a
+// MemFS file node it is the node's logical TotalSize (a DAG
+// walk over the node only sums the envelope/link blocks, not
+// the file payload, which is why the ObjectInfo fallback
+// alone reported 0); for a plain Merkle-DAG root it is the
+// sum of all block bytes.
+func (b *daemonBackend) contentMeta(ctx context.Context, root mid.MID) serverpkg.ContentMeta {
+	var meta serverpkg.ContentMeta
+	if oi, err := store.GetObjectInfo(b.store, root); err == nil {
+		meta.Name = oi.Name
+		meta.MimeType = oi.MimeType
+		meta.Size = oi.Size
+	}
+	if meta.Size == 0 {
+		if root.Codec() == mid.CodecMemFS {
+			mr := memfs.NewResolver(b.store)
+			if node, err := mr.Resolve(ctx, root); err == nil {
+				meta.Size = node.TotalSize()
+				if meta.MimeType == "" {
+					meta.MimeType = node.MimeType()
+				}
+			}
+		} else if _, size, err := countDAG(b.store, root); err == nil {
+			meta.Size = size
+		}
+	}
+	if meta.MimeType == "" {
+		meta.MimeType = store.SniffMime(meta.Name)
+	}
+	return meta
 }
 
 // resolveContent reassembles the content of root into a
@@ -401,6 +483,7 @@ func (b *daemonBackend) Seal(ctx context.Context, midStr string, recursive bool)
 	}
 	return serverpkg.SealResult{Pinned: blocks, Already: false}, nil
 }
+
 // Unseal removes the pin on midStr.
 func (b *daemonBackend) Unseal(ctx context.Context, midStr string) (uint64, error) {
 	root, err := mid.Parse(midStr)
@@ -608,7 +691,6 @@ func (b *daemonBackend) Delete(ctx context.Context, midStr string) (serverpkg.De
 	return serverpkg.DeleteResult{}, errors.New("delete: store does not support recursive deletion")
 }
 
-
 // AnchorStatus returns the anchor engine's stats. If the
 // anchor engine is not running, returns zero-valued info
 // with the host's PeerID.
@@ -664,6 +746,28 @@ func walkDAG(bs store.Store, root mid.MID, visit func(mid.MID) error) error {
 	})
 }
 
+// countingReader wraps a reader and reports the running byte
+// count through fn on every read. It is used to drive ingest
+// progress: the DAG builder pulls the whole source through it,
+// so the count tracks how much of the file has been consumed.
+// fn must be cheap and non-blocking (the server funnels it
+// through a non-blocking channel send).
+type countingReader struct {
+	r     io.Reader
+	total uint64
+	read  uint64
+	fn    func(processed, total uint64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.read += uint64(n)
+		c.fn(c.read, c.total)
+	}
+	return n, err
+}
+
 // sectionReader returns an io.ReadCloser that yields up to
 // limit bytes from rc starting at offset.
 func sectionReader(rc io.Reader, offset, limit uint64) io.Reader {
@@ -711,4 +815,3 @@ func isDAGComplete(s store.Store, root mid.MID) (bool, error) {
 	}
 	return true, nil
 }
-

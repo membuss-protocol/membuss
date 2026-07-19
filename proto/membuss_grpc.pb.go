@@ -133,6 +133,8 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	MembussNode_Add_FullMethodName          = "/membuss.v1.MembussNode/Add"
+	MembussNode_AddStream_FullMethodName    = "/membuss.v1.MembussNode/AddStream"
+	MembussNode_AddDirStream_FullMethodName = "/membuss.v1.MembussNode/AddDirStream"
 	MembussNode_Get_FullMethodName          = "/membuss.v1.MembussNode/Get"
 	MembussNode_Seal_FullMethodName         = "/membuss.v1.MembussNode/Seal"
 	MembussNode_Unseal_FullMethodName       = "/membuss.v1.MembussNode/Unseal"
@@ -152,6 +154,19 @@ const (
 // dials this; humans usually interact with it through membuss-cli.
 type MembussNodeClient interface {
 	Add(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (*AddResponse, error)
+	// AddStream ingests a local file exactly like Add but streams
+	// progress frames while the daemon reads/chunks/hashes it,
+	// ending with a single result frame. The request is identical
+	// to Add's.
+	AddStream(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AddProgress], error)
+	// AddDirStream ingests a local directory as a single MemFS DIR
+	// tree, streaming byte-level progress frames while the daemon
+	// walks/reads/chunks the tree and ending with a single result
+	// frame. The daemon reads the directory from its own filesystem
+	// (req.path is a local directory path, exactly like AddStream
+	// reads a local file); req.name optionally overrides the root
+	// directory name. The response reuses AddProgress.
+	AddDirStream(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AddProgress], error)
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetChunk], error)
 	Seal(ctx context.Context, in *SealRequest, opts ...grpc.CallOption) (*SealResponse, error)
 	Unseal(ctx context.Context, in *UnsealRequest, opts ...grpc.CallOption) (*UnsealResponse, error)
@@ -181,9 +196,47 @@ func (c *membussNodeClient) Add(ctx context.Context, in *AddRequest, opts ...grp
 	return out, nil
 }
 
+func (c *membussNodeClient) AddStream(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AddProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &MembussNode_ServiceDesc.Streams[0], MembussNode_AddStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AddRequest, AddProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MembussNode_AddStreamClient = grpc.ServerStreamingClient[AddProgress]
+
+func (c *membussNodeClient) AddDirStream(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AddProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &MembussNode_ServiceDesc.Streams[1], MembussNode_AddDirStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AddRequest, AddProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MembussNode_AddDirStreamClient = grpc.ServerStreamingClient[AddProgress]
+
 func (c *membussNodeClient) Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &MembussNode_ServiceDesc.Streams[0], MembussNode_Get_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &MembussNode_ServiceDesc.Streams[2], MembussNode_Get_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +341,19 @@ func (c *membussNodeClient) Delete(ctx context.Context, in *DeleteRequest, opts 
 // dials this; humans usually interact with it through membuss-cli.
 type MembussNodeServer interface {
 	Add(context.Context, *AddRequest) (*AddResponse, error)
+	// AddStream ingests a local file exactly like Add but streams
+	// progress frames while the daemon reads/chunks/hashes it,
+	// ending with a single result frame. The request is identical
+	// to Add's.
+	AddStream(*AddRequest, grpc.ServerStreamingServer[AddProgress]) error
+	// AddDirStream ingests a local directory as a single MemFS DIR
+	// tree, streaming byte-level progress frames while the daemon
+	// walks/reads/chunks the tree and ending with a single result
+	// frame. The daemon reads the directory from its own filesystem
+	// (req.path is a local directory path, exactly like AddStream
+	// reads a local file); req.name optionally overrides the root
+	// directory name. The response reuses AddProgress.
+	AddDirStream(*AddRequest, grpc.ServerStreamingServer[AddProgress]) error
 	Get(*GetRequest, grpc.ServerStreamingServer[GetChunk]) error
 	Seal(context.Context, *SealRequest) (*SealResponse, error)
 	Unseal(context.Context, *UnsealRequest) (*UnsealResponse, error)
@@ -309,6 +375,12 @@ type UnimplementedMembussNodeServer struct{}
 
 func (UnimplementedMembussNodeServer) Add(context.Context, *AddRequest) (*AddResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Add not implemented")
+}
+func (UnimplementedMembussNodeServer) AddStream(*AddRequest, grpc.ServerStreamingServer[AddProgress]) error {
+	return status.Error(codes.Unimplemented, "method AddStream not implemented")
+}
+func (UnimplementedMembussNodeServer) AddDirStream(*AddRequest, grpc.ServerStreamingServer[AddProgress]) error {
+	return status.Error(codes.Unimplemented, "method AddDirStream not implemented")
 }
 func (UnimplementedMembussNodeServer) Get(*GetRequest, grpc.ServerStreamingServer[GetChunk]) error {
 	return status.Error(codes.Unimplemented, "method Get not implemented")
@@ -375,6 +447,28 @@ func _MembussNode_Add_Handler(srv interface{}, ctx context.Context, dec func(int
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _MembussNode_AddStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AddRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(MembussNodeServer).AddStream(m, &grpc.GenericServerStream[AddRequest, AddProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MembussNode_AddStreamServer = grpc.ServerStreamingServer[AddProgress]
+
+func _MembussNode_AddDirStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AddRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(MembussNodeServer).AddDirStream(m, &grpc.GenericServerStream[AddRequest, AddProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MembussNode_AddDirStreamServer = grpc.ServerStreamingServer[AddProgress]
 
 func _MembussNode_Get_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(GetRequest)
@@ -576,6 +670,16 @@ var MembussNode_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "AddStream",
+			Handler:       _MembussNode_AddStream_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "AddDirStream",
+			Handler:       _MembussNode_AddDirStream_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "Get",
 			Handler:       _MembussNode_Get_Handler,
