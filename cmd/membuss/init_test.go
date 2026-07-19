@@ -1,4 +1,4 @@
-// Tests for `membuss-cli init`. The init command is the
+// Tests for `membuss init`. The init command is the
 // canonical way to bring a fresh node online; the tests
 // here run runInit directly so they don't need a daemon or
 // a real libp2p stack.
@@ -191,7 +191,7 @@ func TestPrintInitSummary_Output(t *testing.T) {
 		"Initialized membuss node at: /tmp/datadir",
 		"12D3KooTest",
 		"/tmp/datadir/config.yaml",
-		"membuss-cli daemon start",
+		"membuss daemon start",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary missing %q\n---\n%s\n---", want, out)

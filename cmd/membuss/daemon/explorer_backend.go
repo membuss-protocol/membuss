@@ -3,7 +3,7 @@
 // together the live subsystems (store, PEX, DHT, anchor
 // engine, host identity, herald, store size) into the
 // read-only surface the explorer needs.
-package main
+package daemon
 
 import (
 	"context"

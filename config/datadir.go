@@ -1,5 +1,5 @@
 ﻿// Phase 16: data-directory resolution and the YAML-with-comments
-// serializer used by `membuss-cli init`.
+// serializer used by `membuss init`.
 //
 // The data directory is the single place a node keeps its
 // long-lived state: the YAML config, the libp2p Ed25519
@@ -30,7 +30,7 @@ const DataDirEnv = "MEMBUSS_DATADIR"
 const DefaultDataDirName = ".memdata"
 
 // ConfigFileName is the YAML config filename written by
-// `membuss-cli init` and read by LoadConfig.
+// `membuss init` and read by LoadConfig.
 const ConfigFileName = "config.yaml"
 
 // IdentityFileName is the Ed25519 private-key filename. The
@@ -73,7 +73,7 @@ func ResolveDataDir(flagValue string) string {
 }
 
 // IsInitialized reports whether datadir has been initialised by
-// `membuss-cli init` (i.e. contains a config.yaml). It does NOT
+// `membuss init` (i.e. contains a config.yaml). It does NOT
 // validate the contents of that file; LoadConfig is responsible
 // for parse errors.
 func IsInitialized(datadir string) bool {
@@ -87,7 +87,7 @@ func IsInitialized(datadir string) bool {
 // LoadConfig reads the config.yaml in datadir, applies the
 // defaults from DefaultConfig, and returns the result. If the
 // file is missing it returns an error telling the operator to
-// run `membuss-cli init` so the failure mode is self-explanatory
+// run `membuss init` so the failure mode is self-explanatory
 // instead of a bare "open ... : no such file or directory".
 func LoadConfig(datadir string) (*Config, error) {
 	if datadir == "" {
@@ -99,7 +99,7 @@ func LoadConfig(datadir string) (*Config, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf(
 				"config: node not initialized at %s: "+
-					"run `membuss-cli init --datadir %s` first",
+					"run `membuss init --datadir %s` first",
 				datadir, datadir)
 		}
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
@@ -116,7 +116,7 @@ func LoadConfig(datadir string) (*Config, error) {
 
 // DefaultConfig returns a Config populated with the safe defaults
 // from Default(), but with DataDir set to the given path (which
-// is also validated by Validate). This is what `membuss-cli
+// is also validated by Validate). This is what `membuss
 // init` writes to disk.
 func DefaultConfig(datadir string) *Config {
 	cfg := Default()

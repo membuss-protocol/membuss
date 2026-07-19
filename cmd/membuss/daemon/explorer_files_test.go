@@ -4,7 +4,7 @@
 // file list was served from an in-memory allRoots cache that
 // only the explorer's own HTTP handlers populated, so CLI/gRPC
 // uploads stayed invisible until restart.
-package main
+package daemon
 
 import (
 	"context"

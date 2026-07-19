@@ -39,7 +39,7 @@ func main() {
 }
 
 func run() error {
-	// Optional data-dir init: run `membuss-cli init` on the
+	// Optional data-dir init: run `membuss init` on the
 	// datadir so the container has a fresh identity on first
 	// boot. Idempotent; --force re-runs it.
 	//
@@ -62,11 +62,11 @@ func run() error {
 		if os.Getenv("MEMBUSS_FORCE_INIT") == "true" {
 			initArgs = append(initArgs, "--force")
 		}
-		initCmd := exec.Command("/usr/local/bin/membuss-cli", initArgs...)
+		initCmd := exec.Command("/usr/local/bin/membuss", initArgs...)
 		initCmd.Stdout = os.Stdout
 		initCmd.Stderr = os.Stderr
 		if err := initCmd.Run(); err != nil {
-			return fmt.Errorf("membuss-cli init: %w", err)
+			return fmt.Errorf("membuss init: %w", err)
 		}
 	}
 

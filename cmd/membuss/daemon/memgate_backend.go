@@ -1,7 +1,7 @@
 // memgateAdapter is the production implementation of
 // memgate.Backend, backed by the daemonBackend. Resolve
 // falls back to Memex when the requested MID is not local.
-package main
+package daemon
 
 import (
 	"bytes"

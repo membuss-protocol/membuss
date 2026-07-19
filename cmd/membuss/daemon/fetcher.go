@@ -2,7 +2,7 @@
 // anchor engine only cares that the local blockstore is
 // populated, so the io.Reader returned by Session.Fetch is
 // fully consumed (and discarded).
-package main
+package daemon
 
 import (
 	"context"

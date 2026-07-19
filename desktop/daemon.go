@@ -456,19 +456,14 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 		if runtime.GOOS == "windows" {
 			exeExt = ".exe"
 		}
+		// Single unified binary: membuss is both node and CLI.
 		daemonSrc := filepath.Join(rootBin, "membuss"+exeExt)
-		cliSrc := filepath.Join(rootBin, "membuss-cli"+exeExt)
 
-		progressCb(60, "Copying local development binaries...")
-		
+		progressCb(60, "Copying local development binary...")
+
 		err = copyFile(daemonSrc, filepath.Join(binDir, "membuss"+exeExt))
 		if err != nil {
-			return "", fmt.Errorf("failed to copy local daemon binary: %w", err)
-		}
-		
-		err = copyFile(cliSrc, filepath.Join(binDir, "membuss-cli"+exeExt))
-		if err != nil {
-			return "", fmt.Errorf("failed to copy local CLI binary: %w", err)
+			return "", fmt.Errorf("failed to copy local membuss binary: %w", err)
 		}
 
 		progressCb(100, "Local installation complete!")
@@ -547,7 +542,7 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 }
 
 // findLocalBinaries attempts to dynamically locate the directory containing
-// the built membuss and membuss-cli binaries.
+// the built membuss binary (the single unified node+CLI executable).
 func findLocalBinaries() (string, error) {
 	exeExt := ""
 	if runtime.GOOS == "windows" {
@@ -569,11 +564,8 @@ func findLocalBinaries() (string, error) {
 
 		for _, cand := range candidates {
 			daemonPath := filepath.Join(cand, "membuss"+exeExt)
-			cliPath := filepath.Join(cand, "membuss-cli"+exeExt)
 			if fi1, err1 := os.Stat(daemonPath); err1 == nil && !fi1.IsDir() {
-				if fi2, err2 := os.Stat(cliPath); err2 == nil && !fi2.IsDir() {
-					return cand, nil
-				}
+				return cand, nil
 			}
 		}
 	}
@@ -590,24 +582,15 @@ func findLocalBinaries() (string, error) {
 		}
 		for _, cand := range candidates {
 			daemonPath := filepath.Join(cand, "membuss"+exeExt)
-			cliPath := filepath.Join(cand, "membuss-cli"+exeExt)
 			if fi1, err1 := os.Stat(daemonPath); err1 == nil && !fi1.IsDir() {
-				if fi2, err2 := os.Stat(cliPath); err2 == nil && !fi2.IsDir() {
-					return cand, nil
-				}
+				return cand, nil
 			}
 		}
 	}
 
-	// 3. Try finding them in system PATH
+	// 3. Try finding it in system PATH
 	if p1, err1 := exec.LookPath("membuss"); err1 == nil {
-		if p2, err2 := exec.LookPath("membuss-cli"); err2 == nil {
-			dDir := filepath.Dir(p1)
-			cDir := filepath.Dir(p2)
-			if dDir == cDir {
-				return dDir, nil
-			}
-		}
+		return filepath.Dir(p1), nil
 	}
 
 	return "", fmt.Errorf("local development binaries not found")

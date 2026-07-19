@@ -1,7 +1,7 @@
 // gRPC server setup for the Membuss daemon. Kept in a small
 // dedicated file so test code can swap in a different
 // constructor.
-package main
+package daemon
 
 import "google.golang.org/grpc"
 

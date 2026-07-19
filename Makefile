@@ -1,7 +1,7 @@
 # Membuss Makefile
 #
 # Targets:
-#   make build          build frontend, then compile the daemon and CLI into bin/
+#   make build          build frontend, then compile the unified membuss binary into bin/
 #   make frontend       build the explorer web UI (Vite)
 #   make frontend-dev   run the explorer web UI in dev mode (Vite)
 #   make proto          regenerate protobuf Go bindings into proto/
@@ -47,8 +47,9 @@ else
     TEST_CGO     := 0
 endif
 BUILD_DIR     := bin
-DAEMON_BIN    := $(BUILD_DIR)/membuss$(BIN_EXT)
-CLI_BIN       := $(BUILD_DIR)/membuss-cli$(BIN_EXT)
+# Single unified binary: membuss is both the node daemon and the
+# operator CLI (run the node with `membuss daemon start`).
+MEMBUSS_BIN   := $(BUILD_DIR)/membuss$(BIN_EXT)
 CONFIG_FILE   ?= membuss.yaml
 FRONTEND_DIR  := explorer-web
 NPM           ?= npm
@@ -76,8 +77,7 @@ endif
 LDFLAGS    := -ldflags "-X github.com/nnlgsakib/membuss/core/version.GitCommit=$(GIT_COMMIT) -X github.com/nnlgsakib/membuss/core/version.BuildTime=$(BUILD_TIME)"
 
 build: frontend
-	$(GO) build $(LDFLAGS) -o $(DAEMON_BIN)  ./cmd/membuss
-	$(GO) build $(LDFLAGS) -o $(CLI_BIN)     ./cmd/membuss-cli
+	$(GO) build $(LDFLAGS) -o $(MEMBUSS_BIN)  ./cmd/membuss
 
 frontend:
 	cd $(FRONTEND_DIR) && $(NPM) install && $(NPM) run build
@@ -103,7 +103,7 @@ lint:
 	fi
 
 run-daemon: build
-	$(DAEMON_BIN) -config $(CONFIG_FILE)
+	$(MEMBUSS_BIN) daemon start -config $(CONFIG_FILE)
 
 tidy:
 	$(GO) mod tidy

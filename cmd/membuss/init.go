@@ -1,4 +1,4 @@
-// Phase 16: `membuss-cli init`.
+// Phase 16: `membuss init`.
 //
 // The init command is the canonical way to bring a fresh node
 // online. It is intentionally self-contained: it does not dial
@@ -14,7 +14,7 @@
 // is a no-op (exit 0) unless --force is supplied. --force
 // re-generates the identity and overwrites the config; the
 // datastore and bloom snapshot are left in place (init is
-// not a destructive operation; a separate `membuss-cli gc` or
+// not a destructive operation; a separate `membuss gc` or
 // manual cleanup is required for that).
 package main
 
@@ -63,7 +63,7 @@ the default knobs. The data directory is resolved from
 If the data directory is already initialised, init is a no-op
 unless --force is supplied; --force re-generates the identity
 and overwrites the config. The on-disk datastore and bloom
-filter snapshot are left untouched (use ` + "`membuss-cli gc`" + `
+filter snapshot are left untouched (use ` + "`membuss gc`" + `
 or remove them manually if you want a truly clean start).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			datadir := config.ResolveDataDir(cmd.Flag("datadir").Value.String())
@@ -176,7 +176,7 @@ func runInit(datadir string, force bool) (*InitResult, error) {
 }
 
 // printInitSummary writes a human-readable summary to w. The
-// shape is intentionally narrow so a future `membuss-cli init
+// shape is intentionally narrow so a future `membuss init
 // --json` could re-use the same fields.
 func printInitSummary(w io.Writer, r *InitResult) {
 	if r == nil {
@@ -192,7 +192,7 @@ func printInitSummary(w io.Writer, r *InitResult) {
 	fmt.Fprintf(tw, "  Logs:\t%s\n", r.LogsPath)
 	_ = tw.Flush()
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Edit config.yaml then run: membuss-cli daemon start")
+	fmt.Fprintln(w, "Edit config.yaml then run: membuss daemon start")
 	// A single blank line keeps the next shell prompt separated
 	// without an extra newline in non-interactive contexts.
 	fmt.Fprintln(w, "")
