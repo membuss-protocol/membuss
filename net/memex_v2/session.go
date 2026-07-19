@@ -75,8 +75,8 @@ type wantState struct {
 }
 
 type Session struct {
-	cfg SessionConfig
-	ctx context.Context
+	cfg    SessionConfig
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	mu              sync.Mutex
@@ -91,10 +91,10 @@ type Session struct {
 	activeProviders map[peer.ID]*pooledStream
 	failedProviders map[peer.ID]struct{}
 	managerWakeCh   chan struct{}
-	
-	resolvedCh      chan struct{}
-	walkerDone      chan struct{}
-	doneWg          sync.WaitGroup
+
+	resolvedCh chan struct{}
+	walkerDone chan struct{}
+	doneWg     sync.WaitGroup
 }
 
 func NewSession(cfg SessionConfig) (*Session, error) {
@@ -194,6 +194,38 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 		s.providerManagerLoop(ctx, fanout)
 	}()
 
+	// Progress reporting. Fetch resolves the whole DAG before
+	// returning a reader, so unlike FetchStream there is no
+	// byte counter to draw from; we report block resolution
+	// instead. Without this the caller sees no signal at all
+	// until the entire object has been pulled — a long silent
+	// stall on large objects. The ticker stops when the
+	// resolution loop closes done.
+	progressStop := make(chan struct{})
+	if s.cfg.ProgressFn != nil {
+		go func() {
+			t := time.NewTicker(200 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-progressStop:
+					return
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					s.mu.Lock()
+					resolved := uint64(len(s.resolved))
+					total := uint64(len(s.enqueued))
+					s.mu.Unlock()
+					s.cfg.ProgressFn(ProgressUpdate{
+						BlocksResolved: resolved,
+						BlocksTotal:    total,
+					})
+				}
+			}
+		}()
+	}
+
 	// Wait for resolution loop
 	seenWalked := make(map[string]struct{})
 	done := make(chan struct{})
@@ -242,14 +274,27 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+		close(progressStop)
 		return nil, ctx.Err()
 	}
+	close(progressStop)
 
 	cancel()
 	s.doneWg.Wait()
 
 	if !s.allResolved() {
 		return nil, errors.New("memex session: not all blocks resolved")
+	}
+
+	// Emit a terminal update so the caller sees 100% of blocks
+	// resolved before the reader is drained; the ticker may
+	// have stopped a beat short of the final block.
+	if s.cfg.ProgressFn != nil {
+		s.mu.Lock()
+		resolved := uint64(len(s.resolved))
+		total := uint64(len(s.enqueued))
+		s.mu.Unlock()
+		s.cfg.ProgressFn(ProgressUpdate{BlocksResolved: resolved, BlocksTotal: total})
 	}
 
 	resolver := dag.NewResolver(asBlockstore(s.cfg.Engine.bs, s))

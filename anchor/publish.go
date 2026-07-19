@@ -119,6 +119,7 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 	}
 
 	type result struct {
+		peer peer.ID
 		mids []mid.MID
 		err  error
 	}
@@ -126,7 +127,7 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 	for _, p := range peers {
 		go func(pid peer.ID) {
 			mids, err := fetchPeerSealed(ctx, h, pid)
-			results <- result{mids: mids, err: err}
+			results <- result{peer: pid, mids: mids, err: err}
 		}(p)
 	}
 
@@ -138,16 +139,19 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 		}
 		for _, m := range r.mids {
 			if _, exists := known[m.String()]; !exists {
-				out = append(out, ContentAnnouncement{MID: m})
+				out = append(out, ContentAnnouncement{MID: m, Source: r.peer})
 			}
 		}
 	}
 	return out, nil
 }
 
-// ContentAnnouncement is a MID discovered from a peer.
+// ContentAnnouncement is a MID discovered from a peer, along with
+// the peer that announced it so the engine can fetch directly from
+// the source before DHT provider records exist.
 type ContentAnnouncement struct {
-	MID mid.MID
+	MID    mid.MID
+	Source peer.ID
 }
 
 // fetchPeerSealed opens a content-exchange stream to pid,

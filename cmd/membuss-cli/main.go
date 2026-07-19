@@ -23,8 +23,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/memlink"
@@ -163,12 +166,37 @@ func newAddCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
-			// Phase 17: when the path is a directory, route
-			// to the MemFS /add/dir HTTP endpoint so the
-			// result is a single DIR MID that resolves to
-			// the whole tree.
+			// When the path is a directory, ingest it as a
+			// single MemFS DIR tree. The default route is the
+			// streaming AddDirStream gRPC (progress bar, same
+			// transport as single-file add); a daemon that
+			// predates the RPC transparently falls back to the
+			// /add/dir HTTP endpoint.
 			if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-				return addDirectoryHTTP(cmd, path, dirName)
+				return withConn(func(mc membusspb.MembussNodeClient, _ membusspb.NodeClient) error {
+					ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Minute)
+					defer cancel()
+					req := &membusspb.AddRequest{
+						Path:      path,
+						Chunker:   chunker,
+						ChunkSize: chunkSize,
+						NoSeal:    noSeal,
+						Name:      dirName,
+					}
+					resp, err := addDirWithProgress(ctx, mc, req, cmd.ErrOrStderr())
+					if err != nil {
+						if status.Code(err) == codes.Unimplemented {
+							return addDirectoryHTTP(cmd, path, dirName)
+						}
+						return err
+					}
+					tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+					fmt.Fprintf(tw, "MID\t%s\n", resp.Mid)
+					fmt.Fprintf(tw, "size\t%s (%d bytes)\n", formatBytes(resp.Size), resp.Size)
+					fmt.Fprintf(tw, "blocks\t%d\n", resp.Blocks)
+					fmt.Fprintf(tw, "sealed\t%t\n", resp.Sealed)
+					return tw.Flush()
+				})
 			}
 			if wrapDir {
 				return addFileHTTP(cmd, path, true)
@@ -176,12 +204,13 @@ func newAddCmd() *cobra.Command {
 			return withConn(func(mc membusspb.MembussNodeClient, _ membusspb.NodeClient) error {
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
-				resp, err := mc.Add(ctx, &membusspb.AddRequest{
+				req := &membusspb.AddRequest{
 					Path:      args[0],
 					Chunker:   chunker,
 					ChunkSize: chunkSize,
 					NoSeal:    noSeal,
-				})
+				}
+				resp, err := addWithProgress(ctx, mc, req, cmd.ErrOrStderr())
 				if err != nil {
 					return err
 				}
@@ -202,6 +231,103 @@ func newAddCmd() *cobra.Command {
 	return c
 }
 
+// addWithProgress ingests via the streaming AddStream RPC,
+// drawing a byte-level progress bar (on a tty) while the daemon
+// reads and chunks the file, and returns the final result. If
+// the daemon is older and does not implement AddStream, it
+// transparently falls back to the unary Add RPC.
+func addWithProgress(ctx context.Context, mc membusspb.MembussNodeClient, req *membusspb.AddRequest, progressW io.Writer) (*membusspb.AddResponse, error) {
+	stream, err := mc.AddStream(ctx, req)
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return mc.Add(ctx, req)
+		}
+		return nil, err
+	}
+
+	bar := newProgressBar(progressW, "uploading "+filepath.Base(req.GetPath()))
+	var final *membusspb.AddResponse
+	for {
+		frame, rerr := stream.Recv()
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			// A daemon that advertises the method but streams
+			// nothing (older stub) surfaces here; fall back.
+			if status.Code(rerr) == codes.Unimplemented {
+				return mc.Add(ctx, req)
+			}
+			bar.clear()
+			return nil, rerr
+		}
+		if frame.GetDone() {
+			final = &membusspb.AddResponse{
+				Mid:    frame.GetMid(),
+				Size:   frame.GetSize(),
+				Blocks: frame.GetBlocks(),
+				Sealed: frame.GetSealed(),
+			}
+			continue
+		}
+		bar.render(frame.GetBytesProcessed(), frame.GetTotalBytes(), 0, false)
+	}
+	if final == nil {
+		bar.clear()
+		return nil, errors.New("add: stream closed without a result")
+	}
+	// Land the bar on 100% before finishing.
+	bar.render(final.Size, final.Size, 0, true)
+	bar.finish()
+	return final, nil
+}
+
+// addDirWithProgress ingests a directory via the streaming
+// AddDirStream RPC, drawing a byte-level progress bar while the
+// daemon walks and chunks the tree. It returns codes.Unimplemented
+// verbatim when the daemon predates the RPC so the caller can fall
+// back to the HTTP directory-upload path.
+func addDirWithProgress(ctx context.Context, mc membusspb.MembussNodeClient, req *membusspb.AddRequest, progressW io.Writer) (*membusspb.AddResponse, error) {
+	stream, err := mc.AddDirStream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	label := req.GetName()
+	if label == "" {
+		label = filepath.Base(req.GetPath())
+	}
+	bar := newProgressBar(progressW, "uploading "+label+"/")
+	var final *membusspb.AddResponse
+	for {
+		frame, rerr := stream.Recv()
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			bar.clear()
+			return nil, rerr
+		}
+		if frame.GetDone() {
+			final = &membusspb.AddResponse{
+				Mid:    frame.GetMid(),
+				Size:   frame.GetSize(),
+				Blocks: frame.GetBlocks(),
+				Sealed: frame.GetSealed(),
+			}
+			continue
+		}
+		bar.render(frame.GetBytesProcessed(), frame.GetTotalBytes(), 0, false)
+	}
+	if final == nil {
+		bar.clear()
+		return nil, errors.New("add: stream closed without a result")
+	}
+	bar.render(final.Size, final.Size, 0, true)
+	bar.finish()
+	return final, nil
+}
+
 // --- get ---
 
 func newGetCmd() *cobra.Command {
@@ -212,31 +338,44 @@ func newGetCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "get <MID> [-o file]",
-		Short: "Fetch the content of a MID and write to a file (or stdout)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Download the content of a MID to a file (use -o - to stream to stdout)",
+		Long: "Download the content of a MID.\n\n" +
+			"By default the file is saved to the current directory using the\n" +
+			"uploader-supplied name and type (the same metadata the explorer\n" +
+			"uses), falling back to <MID>.bin when no name is recorded. A name\n" +
+			"clash is resolved by appending \" (n)\" rather than overwriting.\n\n" +
+			"Pass -o <file> to choose the path, -o <dir> to save into a directory\n" +
+			"under the recorded name, or -o - to stream raw bytes to stdout for\n" +
+			"piping.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConn(func(mc membusspb.MembussNodeClient, _ membusspb.NodeClient) error {
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
 
+				// Fetch the stored metadata once: name + mime,
+				// mirroring how the explorer names downloads.
+				var meta *membusspb.StatResponse
+				if st, err := mc.Stat(ctx, &membusspb.StatRequest{Mid: args[0]}); err == nil {
+					meta = st
+				}
+
 				// Probe if it is a directory via HTTP ls API
 				lsURL := httpBase() + "/api/v1/ls/" + args[0]
 				var isDir bool
-				var dirName string
 				if resp, err := http.Get(lsURL); err == nil {
 					defer resp.Body.Close()
 					if resp.StatusCode == 200 {
 						isDir = true
-						if statResp, err := mc.Stat(ctx, &membusspb.StatRequest{Mid: args[0]}); err == nil {
-							dirName = statResp.Name
-						}
 					}
 				}
 
 				if isDir {
 					targetDir := outPath
 					if targetDir == "" || targetDir == "-" {
-						targetDir = dirName
+						if meta != nil {
+							targetDir = meta.Name
+						}
 						if targetDir == "" {
 							targetDir = args[0]
 						}
@@ -253,22 +392,69 @@ func newGetCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				var out io.Writer
-				if outPath == "" || outPath == "-" {
-					out = cmd.OutOrStdout()
-				} else {
-					f, err := os.Create(outPath)
-					if err != nil {
-						return err
-					}
-					defer f.Close()
-					out = f
+
+				// Only an explicit "-o -" streams to stdout;
+				// otherwise we always write a real file so a
+				// bare `get` no longer floods the terminal with
+				// raw bytes. The destination file is created
+				// lazily once the metadata is known: the daemon
+				// sends a header frame with the authoritative
+				// name / MIME type / size, which is the only
+				// source that also covers content pulled from
+				// the network (the pre-Get Stat is empty for a
+				// MID that was not local). We seed from the
+				// local Stat as a fallback for older daemons
+				// that do not emit a header frame.
+				toStdout := outPath == "-"
+				var (
+					out      io.Writer
+					f        *os.File
+					destPath string
+					name     = downloadName(args[0], meta)
+					mimeType string
+				)
+				if meta != nil {
+					mimeType = meta.MimeType
 				}
+				if toStdout {
+					out = cmd.OutOrStdout()
+				}
+				// ensureOut creates the destination file on first
+				// payload byte if the header frame did not already
+				// trigger creation, so a download always lands
+				// somewhere even against an older daemon.
+				ensureOut := func() error {
+					if toStdout || out != nil {
+						return nil
+					}
+					var derr error
+					destPath, derr = resolveDownloadPath(outPath, name)
+					if derr != nil {
+						return derr
+					}
+					f, derr = os.Create(destPath)
+					if derr != nil {
+						return derr
+					}
+					out = f
+					return nil
+				}
+				defer func() {
+					if f != nil {
+						_ = f.Close()
+					}
+				}()
+
+				// Progress is a single in-place line on stderr,
+				// so it is safe even when the payload streams to
+				// stdout. On a non-terminal stderr it stays
+				// silent instead of spamming control characters.
+				prog := newProgressBar(cmd.ErrOrStderr(), name)
 				var (
 					total      uint64
 					received   uint64
-					startTime  = time.Now()
 					blocksRecv uint64
+					fetching   bool
 				)
 				for {
 					frame, err := stream.Recv()
@@ -276,49 +462,340 @@ func newGetCmd() *cobra.Command {
 						break
 					}
 					if err != nil {
+						prog.clear()
 						return err
 					}
-					if _, err := out.Write(frame.Data); err != nil {
-						return err
+
+					// Fetch-phase progress: the daemon is still
+					// pulling blocks from the network; no payload
+					// yet.
+					if frame.GetProgressOnly() {
+						fetching = true
+						prog.renderFetch(frame.GetFetchedBlocks(), frame.GetTotalBlocks())
+						continue
 					}
-					n := uint64(len(frame.Data))
-					received += n
-					blocksRecv++
+
+					// Header frame: authoritative metadata. Adopt
+					// the network-resolved name / mime / size and
+					// (re)label the progress bar before payload.
+					if frame.GetIsHeader() {
+						if n := sanitizeDownloadName(frame.GetName()); n != "" {
+							name = n
+							prog.label = name
+						}
+						if frame.GetMimeType() != "" {
+							mimeType = frame.GetMimeType()
+						}
+						if frame.GetTotalSize() > 0 {
+							total = frame.GetTotalSize()
+						}
+						if fetching {
+							// Clear the fetch line so the byte bar
+							// starts fresh.
+							prog.clear()
+							prog.firstDraw = true
+						}
+						continue
+					}
+
+					if len(frame.Data) > 0 {
+						if err := ensureOut(); err != nil {
+							prog.clear()
+							return err
+						}
+						if _, err := out.Write(frame.Data); err != nil {
+							prog.clear()
+							return err
+						}
+						received += uint64(len(frame.Data))
+						blocksRecv++
+					}
 					if frame.Total > 0 {
 						total = frame.Total
 					}
-					if outPath == "-" || outPath == "" {
-						elapsed := time.Since(startTime).Seconds()
-						var pct int
-						var sizeStr string
-						if total > 0 {
-							pct = int(received * 100 / total)
-							sizeStr = fmt.Sprintf("%s / %s", formatBytes(received), formatBytes(total))
-						} else {
-							pct = 0
-							sizeStr = fmt.Sprintf("%s / ?", formatBytes(received))
-						}
-						var rate string
-						if elapsed > 0 {
-							rate = fmt.Sprintf("%.0f blocks/s", float64(blocksRecv)/elapsed)
-						}
-						fmt.Fprintf(cmd.ErrOrStderr(), "\rFetching %s... [%-20s] %d%% (%s) %s", args[0], strings.Repeat("=", pct/5)+strings.Repeat(" ", 20-pct/5), pct, sizeStr, rate)
+					prog.render(received, total, blocksRecv, false)
+				}
+				// A zero-byte object still needs its file created.
+				if err := ensureOut(); err != nil {
+					prog.clear()
+					return err
+				}
+				prog.render(received, total, blocksRecv, true)
+				prog.finish()
+				if !toStdout {
+					if mimeType == "" {
+						mimeType = "application/octet-stream"
 					}
-				}
-				if outPath == "-" || outPath == "" {
-					fmt.Fprintf(cmd.ErrOrStderr(), "\n")
-				}
-				if outPath != "" && outPath != "-" {
-					fmt.Fprintf(cmd.ErrOrStderr(), "wrote %d bytes to %s\n", received, outPath)
+					fmt.Fprintf(cmd.ErrOrStderr(), "Saved %s (%s, %s) to %s\n", name, mimeType, formatBytes(received), destPath)
 				}
 				return nil
 			})
 		},
 	}
-	c.Flags().StringVarP(&outPath, "out", "o", "", "output file (default: stdout)")
+	c.Flags().StringVarP(&outPath, "out", "o", "", "output path: a file, a directory, or - for stdout (default: recorded filename in the current directory)")
 	c.Flags().Uint64Var(&offset, "offset", 0, "byte offset to start at")
 	c.Flags().Uint64Var(&limit, "limit", 0, "maximum bytes (0 = until EOF)")
 	return c
+}
+
+// progressBar renders a single, in-place download progress line
+// on an io.Writer (stderr). It solves two problems with the naive
+// "\r"+Fprintf approach: (1) on a non-terminal writer it stays
+// silent so redirected/piped output is not polluted with control
+// bytes, and (2) it throttles redraws and fits the line to the
+// terminal width so a long MID/filename can never wrap onto a new
+// physical line (which is what turned one progress line into
+// thousands).
+type progressBar struct {
+	w         io.Writer
+	label     string // filename or MID being fetched
+	tty       bool   // w is an interactive terminal
+	start     time.Time
+	last      time.Time // last redraw, for throttling
+	lastLen   int       // width of the last line drawn, to erase cleanly
+	firstDraw bool
+}
+
+func newProgressBar(w io.Writer, label string) *progressBar {
+	return &progressBar{
+		w:         w,
+		label:     label,
+		tty:       isTerminalWriter(w),
+		start:     time.Now(),
+		firstDraw: true,
+	}
+}
+
+const progressBarWidth = 20
+
+// render draws the bar. It is a no-op on a non-tty writer (unless
+// force is set, which prints a final plain summary line). Redraws
+// are throttled to ~15/s so a fast stream does not thrash the
+// terminal.
+func (p *progressBar) render(received, total, blocks uint64, force bool) {
+	if !p.tty {
+		return
+	}
+	now := time.Now()
+	if !force && !p.firstDraw && now.Sub(p.last) < 66*time.Millisecond {
+		return
+	}
+	p.firstDraw = false
+	p.last = now
+
+	elapsed := now.Sub(p.start).Seconds()
+	var pct int
+	var sizeStr string
+	if total > 0 {
+		pct = int(received * 100 / total)
+		if pct > 100 {
+			pct = 100
+		}
+		sizeStr = fmt.Sprintf("%s / %s", formatBytes(received), formatBytes(total))
+	} else {
+		sizeStr = fmt.Sprintf("%s / ?", formatBytes(received))
+	}
+	filled := pct * progressBarWidth / 100
+	bar := strings.Repeat("=", filled) + strings.Repeat(" ", progressBarWidth-filled)
+	var rate string
+	if elapsed > 0 {
+		rate = fmt.Sprintf(" %s/s", formatBytes(uint64(float64(received)/elapsed)))
+	}
+
+	line := fmt.Sprintf("%s [%s] %3d%% (%s)%s", p.label, bar, pct, sizeStr, rate)
+	line = fitToWidth(line, terminalWidth(p.w))
+
+	// Pad with spaces to erase any remnant of a longer prior line,
+	// then carriage-return to the start (no newline).
+	pad := ""
+	if d := p.lastLen - len(line); d > 0 {
+		pad = strings.Repeat(" ", d)
+	}
+	fmt.Fprintf(p.w, "\r%s%s", line, pad)
+	p.lastLen = len(line)
+}
+
+// renderFetch draws progress for the network-fetch phase, where
+// the daemon is pulling blocks from peers before any payload
+// byte is available. It reports block resolution (fetched /
+// total) rather than bytes, so the user sees the download is
+// alive instead of a silent stall. Throttled and tty-gated like
+// render.
+func (p *progressBar) renderFetch(fetched, total uint64) {
+	if !p.tty {
+		return
+	}
+	now := time.Now()
+	if !p.firstDraw && now.Sub(p.last) < 66*time.Millisecond {
+		return
+	}
+	p.firstDraw = false
+	p.last = now
+
+	var pct int
+	var countStr string
+	if total > 0 {
+		pct = int(fetched * 100 / total)
+		if pct > 100 {
+			pct = 100
+		}
+		countStr = fmt.Sprintf("%d / %d blocks", fetched, total)
+	} else {
+		countStr = fmt.Sprintf("%d blocks", fetched)
+	}
+	filled := pct * progressBarWidth / 100
+	bar := strings.Repeat("=", filled) + strings.Repeat(" ", progressBarWidth-filled)
+
+	line := fmt.Sprintf("%s [%s] %3d%% (fetching %s)", p.label, bar, pct, countStr)
+	line = fitToWidth(line, terminalWidth(p.w))
+
+	pad := ""
+	if d := p.lastLen - len(line); d > 0 {
+		pad = strings.Repeat(" ", d)
+	}
+	fmt.Fprintf(p.w, "\r%s%s", line, pad)
+	p.lastLen = len(line)
+}
+
+// finish terminates the progress line with a newline so following
+// output starts cleanly. No-op on non-tty (nothing was drawn).
+func (p *progressBar) finish() {
+	if p.tty {
+		fmt.Fprint(p.w, "\n")
+	}
+}
+
+// clear wipes the current progress line (used before printing an
+// error so it does not get tangled with the bar).
+func (p *progressBar) clear() {
+	if p.tty && p.lastLen > 0 {
+		fmt.Fprintf(p.w, "\r%s\r", strings.Repeat(" ", p.lastLen))
+		p.lastLen = 0
+	}
+}
+
+// fitToWidth truncates s (with an ellipsis) so it never exceeds
+// width columns, keeping the whole line on one physical row. A
+// width <= 0 (unknown) means no truncation.
+func fitToWidth(s string, width int) string {
+	if width <= 0 || len(s) <= width {
+		return s
+	}
+	if width <= 1 {
+		return s[:width]
+	}
+	return s[:width-1] + "…"
+}
+
+// isTerminalWriter reports whether w is an interactive terminal we
+// can safely draw an in-place progress bar on. Anything that is
+// not an *os.File (e.g. a test buffer or a pipe) is treated as
+// non-interactive so progress control bytes never leak into
+// captured or redirected output.
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(f.Fd()))
+}
+
+// terminalWidth returns the column count of w's terminal, or 0 when
+// it cannot be determined (in which case the caller does not
+// truncate). We leave one column of slack so the cursor parking at
+// the end of a full-width line cannot force a wrap.
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	cols, _, err := term.GetSize(int(f.Fd()))
+	if err != nil || cols <= 0 {
+		return 0
+	}
+	return cols - 1
+}
+
+// downloadName picks the on-disk filename for a MID download,
+// mirroring the gateway/explorer convention: the uploader-supplied
+// name wins, falling back to "<mid>.bin". The result is sanitized
+// so a hostile name cannot escape the target directory or inject
+// path separators.
+func downloadName(midStr string, meta *membusspb.StatResponse) string {
+	name := ""
+	if meta != nil {
+		name = meta.Name
+	}
+	name = sanitizeDownloadName(name)
+	if name == "" {
+		name = midStr + ".bin"
+	}
+	return name
+}
+
+// resolveDownloadPath maps the -o value + derived name to a
+// concrete, non-clobbering destination path:
+//   - ""            -> <name> in the current directory
+//   - existing dir  -> <name> inside that directory
+//   - anything else -> used verbatim (the user chose it)
+//
+// For the first two cases a name clash is resolved by appending
+// " (n)" before the extension, like a browser download.
+func resolveDownloadPath(outPath, name string) (string, error) {
+	if outPath == "" {
+		return uniquePath(name), nil
+	}
+	if fi, err := os.Stat(outPath); err == nil && fi.IsDir() {
+		return uniquePath(filepath.Join(outPath, name)), nil
+	}
+	// Explicit path: honor it as-is (overwrite allowed — the
+	// caller named the file). Ensure the parent exists.
+	if dir := filepath.Dir(outPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+	}
+	return outPath, nil
+}
+
+// uniquePath returns p if nothing exists there, otherwise the
+// first "<base> (n)<ext>" variant that is free.
+func uniquePath(p string) string {
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	ext := filepath.Ext(p)
+	base := strings.TrimSuffix(p, ext)
+	for i := 1; ; i++ {
+		cand := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
+}
+
+// sanitizeDownloadName strips path separators and control/reserved
+// characters so a recorded name is safe to use as a bare filename.
+// It matches the gateway's sanitizeFilename plus a defense against
+// "." / ".." and any leading directory component.
+func sanitizeDownloadName(s string) string {
+	// Take only the final path element to defeat embedded
+	// separators, then map out anything unsafe.
+	s = filepath.Base(filepath.FromSlash(s))
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		switch r {
+		case '"', '\\', '/', '<', '>', '|', ':', '*', '?':
+			return '_'
+		}
+		return r
+	}, s)
+	if s == "." || s == ".." {
+		return ""
+	}
+	return s
 }
 
 func downloadDirRecursive(ctx context.Context, mc membusspb.MembussNodeClient, midStr, localPath string, errWriter io.Writer) error {
@@ -465,7 +942,6 @@ func newDeleteCmd() *cobra.Command {
 		},
 	}
 }
-
 
 // --- stat ---
 
@@ -1773,8 +2249,8 @@ func newDescriptorMetaCmd() *cobra.Command {
 				return fmt.Errorf("meta: %s: %s", resp.Status, string(body))
 			}
 			var env struct {
-				OK   bool                   `json:"ok"`
-				Data map[string]interface{} `json:"data"`
+				OK    bool                   `json:"ok"`
+				Data  map[string]interface{} `json:"data"`
 				Error string                 `json:"error"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {

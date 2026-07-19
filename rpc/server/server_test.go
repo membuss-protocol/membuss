@@ -43,16 +43,33 @@ func (m *memBackend) Add(ctx context.Context, path, chunker string, chunkSize ui
 	return AddResult{MID: m.root, Size: m.rootSize, Blocks: m.leafBlocks, Sealed: m.sealed}, nil
 }
 
-func (m *memBackend) Get(ctx context.Context, midStr string, offset, limit uint64) (io.ReadCloser, error) {
-	return m.GetWithProgress(ctx, midStr, offset, limit, nil)
+func (m *memBackend) AddWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string, progressFn func(processed, total uint64)) (AddResult, error) {
+	res, err := m.Add(ctx, path, chunker, chunkSize, sealRoot, name, mimeType)
+	if err == nil && progressFn != nil {
+		progressFn(res.Size, res.Size)
+	}
+	return res, err
 }
 
-func (m *memBackend) GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, error) {
+func (m *memBackend) AddDirWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name string, progressFn func(processed, total uint64)) (AddResult, error) {
+	res, err := m.Add(ctx, path, chunker, chunkSize, sealRoot, name, "inode/directory")
+	if err == nil && progressFn != nil {
+		progressFn(res.Size, res.Size)
+	}
+	return res, err
+}
+
+func (m *memBackend) Get(ctx context.Context, midStr string, offset, limit uint64) (io.ReadCloser, error) {
+	rc, _, err := m.GetWithProgress(ctx, midStr, offset, limit, nil)
+	return rc, err
+}
+
+func (m *memBackend) GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, ContentMeta, error) {
 	data := []byte("hello world!")
 	if progressFn != nil {
 		progressFn(memex.ProgressUpdate{BlocksResolved: uint64(len(data)), BlocksTotal: uint64(len(data))})
 	}
-	return io.NopCloser(bytes.NewReader(data)), nil
+	return io.NopCloser(bytes.NewReader(data)), ContentMeta{Name: "hello.txt", MimeType: "text/plain", Size: uint64(len(data))}, nil
 }
 
 func (m *memBackend) Seal(ctx context.Context, midStr string, recursive bool) (SealResult, error) {
@@ -102,7 +119,6 @@ func (m *memBackend) GC(ctx context.Context, all bool) (GCInfo, error) {
 func (m *memBackend) Delete(ctx context.Context, midStr string) (DeleteResult, error) {
 	return DeleteResult{BlocksDeleted: 1, BytesFreed: 1024}, nil
 }
-
 
 func (m *memBackend) AnchorStatus() AnchorInfo {
 	return m.anchor
@@ -174,6 +190,110 @@ func TestAdd_RejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestAddStream_ProgressThenResult(t *testing.T) {
+	cli, _ := dial(t, &memBackend{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := cli.AddStream(ctx, &membusspb.AddRequest{Path: "/tmp/x"})
+	if err != nil {
+		t.Fatalf("addstream: %v", err)
+	}
+	var sawProgress, sawDone bool
+	var final *membusspb.AddProgress
+	for {
+		frame, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		if frame.GetDone() {
+			sawDone = true
+			final = frame
+			continue
+		}
+		// A progress frame must never carry result fields.
+		if frame.GetMid() != "" {
+			t.Errorf("progress frame carried a mid")
+		}
+		sawProgress = true
+	}
+	if !sawProgress {
+		t.Errorf("expected at least one progress frame")
+	}
+	if !sawDone || final == nil {
+		t.Fatal("expected a done frame")
+	}
+	if final.GetMid() == "" || !final.GetSealed() {
+		t.Errorf("done frame missing result fields: %+v", final)
+	}
+	if final.GetSize() == 0 || final.GetBlocks() == 0 {
+		t.Errorf("done frame size/blocks not set: %+v", final)
+	}
+}
+
+func TestAddStream_RejectsEmptyPath(t *testing.T) {
+	cli, _ := dial(t, &memBackend{})
+	stream, err := cli.AddStream(context.Background(), &membusspb.AddRequest{})
+	if err != nil {
+		t.Fatalf("addstream open: %v", err)
+	}
+	if _, err := stream.Recv(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestAddDirStream_ProgressThenResult(t *testing.T) {
+	cli, _ := dial(t, &memBackend{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := cli.AddDirStream(ctx, &membusspb.AddRequest{Path: "/tmp/dir", Name: "dir"})
+	if err != nil {
+		t.Fatalf("adddirstream: %v", err)
+	}
+	var sawProgress, sawDone bool
+	var final *membusspb.AddProgress
+	for {
+		frame, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		if frame.GetDone() {
+			sawDone = true
+			final = frame
+			continue
+		}
+		if frame.GetMid() != "" {
+			t.Errorf("progress frame carried a mid")
+		}
+		sawProgress = true
+	}
+	if !sawProgress {
+		t.Errorf("expected at least one progress frame")
+	}
+	if !sawDone || final == nil {
+		t.Fatal("expected a done frame")
+	}
+	if final.GetMid() == "" || !final.GetSealed() {
+		t.Errorf("done frame missing result fields: %+v", final)
+	}
+}
+
+func TestAddDirStream_RejectsEmptyPath(t *testing.T) {
+	cli, _ := dial(t, &memBackend{})
+	stream, err := cli.AddDirStream(context.Background(), &membusspb.AddRequest{})
+	if err != nil {
+		t.Fatalf("adddirstream open: %v", err)
+	}
+	if _, err := stream.Recv(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestGet_StreamsContent(t *testing.T) {
 	cli, _ := dial(t, &memBackend{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -184,6 +304,7 @@ func TestGet_StreamsContent(t *testing.T) {
 	}
 	var got []byte
 	var idx uint64
+	var sawHeader bool
 	for {
 		frame, err := stream.Recv()
 		if err == io.EOF {
@@ -192,11 +313,33 @@ func TestGet_StreamsContent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("recv: %v", err)
 		}
+		// Progress frames carry no payload and precede the header.
+		if frame.GetProgressOnly() {
+			continue
+		}
+		// The header frame carries the resolved metadata and no
+		// payload; it must arrive before any payload frame.
+		if frame.GetIsHeader() {
+			if len(got) != 0 {
+				t.Errorf("header arrived after payload bytes")
+			}
+			sawHeader = true
+			if frame.GetName() != "hello.txt" {
+				t.Errorf("header name: got %q want hello.txt", frame.GetName())
+			}
+			if frame.GetTotalSize() != uint64(len("hello world!")) {
+				t.Errorf("header size: got %d want %d", frame.GetTotalSize(), len("hello world!"))
+			}
+			continue
+		}
 		got = append(got, frame.Data...)
 		if frame.Index != idx {
 			t.Errorf("index: got %d want %d", frame.Index, idx)
 		}
 		idx++
+	}
+	if !sawHeader {
+		t.Errorf("no header frame received")
 	}
 	if string(got) != "hello world!" {
 		t.Errorf("content: got %q", got)

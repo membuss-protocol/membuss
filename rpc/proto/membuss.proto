@@ -26,6 +26,19 @@ message PingResponse {
 // dials this; humans usually interact with it through membuss-cli.
 service MembussNode {
   rpc Add(AddRequest) returns (AddResponse);
+  // AddStream ingests a local file exactly like Add but streams
+  // progress frames while the daemon reads/chunks/hashes it,
+  // ending with a single result frame. The request is identical
+  // to Add's.
+  rpc AddStream(AddRequest) returns (stream AddProgress);
+  // AddDirStream ingests a local directory as a single MemFS DIR
+  // tree, streaming byte-level progress frames while the daemon
+  // walks/reads/chunks the tree and ending with a single result
+  // frame. The daemon reads the directory from its own filesystem
+  // (req.path is a local directory path, exactly like AddStream
+  // reads a local file); req.name optionally overrides the root
+  // directory name. The response reuses AddProgress.
+  rpc AddDirStream(AddRequest) returns (stream AddProgress);
   rpc Get(GetRequest) returns (stream GetChunk);
   rpc Seal(SealRequest) returns (SealResponse);
   rpc Unseal(UnsealRequest) returns (UnsealResponse);
@@ -59,6 +72,24 @@ message AddResponse {
   bool sealed = 4;
 }
 
+// AddProgress is a frame of the AddStream response. Progress
+// frames (done=false) carry the running byte count against the
+// total file size while the daemon ingests. The final frame
+// (done=true) carries the same fields as AddResponse.
+message AddProgress {
+  bool done = 1;
+
+  // Ingest progress, populated while done=false.
+  uint64 bytes_processed = 2;
+  uint64 total_bytes = 3;
+
+  // Result, populated on the final frame (done=true).
+  string mid = 4;
+  uint64 size = 5;
+  uint64 blocks = 6;
+  bool sealed = 7;
+}
+
 message GetRequest {
   string mid = 1;
   uint64 offset = 2;
@@ -69,6 +100,32 @@ message GetChunk {
   bytes data = 1;
   uint64 index = 2;
   uint64 total = 3;
+
+  // progress_only marks a frame that carries no payload
+  // (data is empty) and exists solely to report fetch
+  // progress while the daemon pulls the object from the
+  // network. Clients that do not understand these fields
+  // simply see an empty data frame and ignore it.
+  bool progress_only = 4;
+  // is_header marks the single leading frame that carries
+  // the resolved object metadata (name, mime_type,
+  // total_size) so the client can name the download and
+  // size the progress bar before payload bytes arrive.
+  bool is_header = 5;
+
+  // Object metadata, populated on the header frame. Empty
+  // on payload/progress frames.
+  string name = 6;
+  string mime_type = 7;
+  uint64 total_size = 8;
+
+  // Block-level fetch progress, populated on progress_only
+  // frames while the object is being pulled from the
+  // network. fetched_blocks/total_blocks describe DAG
+  // resolution; bytes_fetched is the running byte count.
+  uint64 fetched_blocks = 9;
+  uint64 total_blocks = 10;
+  uint64 bytes_fetched = 11;
 }
 
 message SealRequest {

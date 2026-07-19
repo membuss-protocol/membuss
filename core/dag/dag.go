@@ -12,14 +12,18 @@
 // core/mid). The MID of an internal node is the multihash of the
 // canonical DAGNode form (protobuf-marshaled with the Mid field
 // unset). The on-disk block is that same canonical form, so the
-// Blockstore integrity check (which re-hashes the stored bytes)
-// passes by construction.
+// Blockstore integrity check (which re-hashes on write) passes by
+// construction, and the Resolver re-hashes again on read so that
+// corrupted or substituted blocks are never served.
 //
-// Build is bottom-up. A small input that produces N chunks is
-// collapsed into ceil(N / fanout) internal nodes, then those
-// internal nodes are themselves collapsed until a single root
-// remains. A single-chunk input collapses to a single leaf whose
-// MID is the root.
+// Build is bottom-up and fully streaming: it consumes one chunk at
+// a time and collapses each tree level into a parent as soon as it
+// fills to Fanout children, so peak memory is O(Fanout · depth)
+// rather than O(leafCount). The tree shape — and therefore the root
+// MID — is identical to a level-complete batch reduction: N chunks
+// collapse into ceil(N / Fanout) internal nodes, which collapse
+// again until a single root remains. A single-chunk input collapses
+// to a single leaf whose MID is the root.
 package dag
 
 import (
@@ -82,9 +86,19 @@ func NewBuilder(bs store.Blockstore) *Builder {
 // Build consumes all blocks from c, writes every block (leaf and
 // internal) into the Blockstore, and returns the MID of the root.
 //
-// Build is streaming at the chunk level: it reads one chunk at a
-// time, accumulates them, and emits internal nodes in fixed-size
-// batches. Memory usage is O(fanout) per layer.
+// Build is fully streaming: it reads one chunk at a time and never
+// materialises the complete list of leaf MIDs. Each leaf is written
+// immediately and pushed into a per-level buffer that flushes into a
+// parent node as soon as it fills to Fanout children. Peak memory is
+// therefore O(Fanout · treeDepth) — a few kilobytes even for a
+// terabyte input — rather than O(leafCount).
+//
+// The tree produced is byte-identical to a level-complete bottom-up
+// reduction: because leaves arrive in order and each level flushes
+// at exactly Fanout, the grouping boundaries ([0,F), [F,2F), …) and
+// the trailing partial group match the batch algorithm exactly, so
+// the root MID is unchanged. A single-chunk input collapses to the
+// leaf itself (no wrapping internal node).
 func (b *Builder) Build(c chunk.Chunker) (mid.MID, error) {
 	if b.bs == nil {
 		return mid.MID{}, errors.New("dag: nil blockstore")
@@ -93,84 +107,123 @@ func (b *Builder) Build(c chunk.Chunker) (mid.MID, error) {
 		return mid.MID{}, errors.New("dag: nil chunker")
 	}
 
-	leaves, err := b.collectLeaves(c)
-	if err != nil {
-		return mid.MID{}, err
-	}
-	if len(leaves) == 0 {
-		return mid.MID{}, errors.New("dag: empty input")
-	}
-	if len(leaves) == 1 {
-		return leaves[0], nil
-	}
-
-	current := leaves
-	for len(current) > 1 {
-		next, err := b.reduceLevel(current)
-		if err != nil {
-			return mid.MID{}, err
-		}
-		current = next
-	}
-	return current[0], nil
-}
-
-// collectLeaves drains c, writes each leaf to the blockstore, and
-// returns the ordered list of leaf MIDs.
-func (b *Builder) collectLeaves(c chunk.Chunker) ([]mid.MID, error) {
-	var leaves []mid.MID
+	bld := &levelStack{bs: b.bs}
+	sawLeaf := false
 	for {
 		blk, err := c.Next()
 		if errors.Is(err, io.EOF) {
-			return leaves, nil
+			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("dag: read chunk: %w", err)
+			return mid.MID{}, fmt.Errorf("dag: read chunk: %w", err)
 		}
 		if blk.Size() == 0 {
-			return nil, errors.New("dag: empty chunk")
+			return mid.MID{}, errors.New("dag: empty chunk")
 		}
 		leafMID := blk.MID()
 		if leafMID.IsZero() {
-			return nil, errors.New("dag: chunk has zero MID")
+			return mid.MID{}, errors.New("dag: chunk has zero MID")
 		}
 		if err := b.bs.Put(leafMID, blk.Data()); err != nil {
-			return nil, fmt.Errorf("dag: store leaf: %w", err)
+			return mid.MID{}, fmt.Errorf("dag: store leaf: %w", err)
 		}
-		leaves = append(leaves, leafMID)
+		if err := bld.push(0, leafMID); err != nil {
+			return mid.MID{}, err
+		}
+		sawLeaf = true
 	}
+	if !sawLeaf {
+		return mid.MID{}, errors.New("dag: empty input")
+	}
+	return bld.finalize()
 }
 
-// reduceLevel turns a slice of MIDs into the MIDs of the parent
-// layer by grouping children in batches of Fanout. The on-disk
-// representation of each parent is the canonical DAGNode
-// protobuf form (with the Mid field unset); the resolver
-// recognises this form and re-attaches the MID at decode time.
-func (b *Builder) reduceLevel(level []mid.MID) ([]mid.MID, error) {
-	if len(level) == 0 {
-		return nil, errors.New("dag: reduceLevel called on empty level")
+// levelStack accumulates MIDs bottom-up, one buffer per tree level.
+// Each buffer holds at most Fanout entries; on overflow it is
+// collapsed into a single parent MID that is pushed one level up.
+type levelStack struct {
+	bs     store.Blockstore
+	levels [][]mid.MID
+}
+
+// push appends m to the buffer for the given level. If that buffer
+// reaches Fanout entries it is immediately collapsed into a parent
+// node (written to the blockstore) that is pushed to level+1, which
+// may cascade further.
+func (s *levelStack) push(level int, m mid.MID) error {
+	for len(s.levels) <= level {
+		s.levels = append(s.levels, nil)
 	}
-	parents := make([]mid.MID, 0, (len(level)+Fanout-1)/Fanout)
-	for start := 0; start < len(level); start += Fanout {
-		end := start + Fanout
-		if end > len(level) {
-			end = len(level)
+	s.levels[level] = append(s.levels[level], m)
+	if len(s.levels[level]) < Fanout {
+		return nil
+	}
+	parent, err := s.collapse(s.levels[level])
+	if err != nil {
+		return err
+	}
+	s.levels[level] = s.levels[level][:0]
+	return s.push(level+1, parent)
+}
+
+// finalize flushes the remaining partial buffers bottom-up and
+// returns the single root MID. A lone surviving node is returned
+// as-is (never wrapped), matching the batch algorithm's
+// "reduce while len > 1" termination.
+func (s *levelStack) finalize() (mid.MID, error) {
+	for i := 0; i < len(s.levels); i++ {
+		if len(s.levels[i]) == 0 {
+			continue
 		}
-		childMIDs := level[start:end]
-		links := make([]string, len(childMIDs))
-		for i, c := range childMIDs {
-			links[i] = c.String()
+		// If no higher level holds anything and this level has a
+		// single node, that node is the root — return it without
+		// wrapping it in a redundant internal node.
+		if len(s.levels[i]) == 1 && s.topmost(i) {
+			return s.levels[i][0], nil
 		}
-		canonical := &membusspb.DAGNode{Links: links}
-		raw, err := proto.Marshal(canonical)
+		parent, err := s.collapse(s.levels[i])
 		if err != nil {
-			return nil, fmt.Errorf("dag: marshal node: %w", err)
+			return mid.MID{}, err
 		}
-		nodeMID := mid.FromBytes(raw)
-		if err := b.bs.Put(nodeMID, raw); err != nil {
-			return nil, fmt.Errorf("dag: store internal: %w", err)
+		s.levels[i] = s.levels[i][:0]
+		if err := s.push(i+1, parent); err != nil {
+			return mid.MID{}, err
 		}
-		parents = append(parents, nodeMID)
 	}
-	return parents, nil
+	return mid.MID{}, errors.New("dag: empty input")
+}
+
+// topmost reports whether every level above i is empty.
+func (s *levelStack) topmost(i int) bool {
+	for j := i + 1; j < len(s.levels); j++ {
+		if len(s.levels[j]) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// collapse builds an internal node over the given children and
+// writes it to the blockstore. The on-disk representation is the
+// canonical DAGNode protobuf form (with the Mid field unset); the
+// resolver recognises this form and re-attaches the MID at decode
+// time.
+func (s *levelStack) collapse(children []mid.MID) (mid.MID, error) {
+	if len(children) == 0 {
+		return mid.MID{}, errors.New("dag: collapse called on empty group")
+	}
+	links := make([]string, len(children))
+	for i, c := range children {
+		links[i] = c.String()
+	}
+	canonical := &membusspb.DAGNode{Links: links}
+	raw, err := proto.Marshal(canonical)
+	if err != nil {
+		return mid.MID{}, fmt.Errorf("dag: marshal node: %w", err)
+	}
+	nodeMID := mid.FromBytes(raw)
+	if err := s.bs.Put(nodeMID, raw); err != nil {
+		return mid.MID{}, fmt.Errorf("dag: store internal: %w", err)
+	}
+	return nodeMID, nil
 }

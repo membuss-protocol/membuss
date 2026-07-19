@@ -392,6 +392,104 @@ func (x *AddResponse) GetSealed() bool {
 	return false
 }
 
+// AddProgress is a frame of the AddStream response. Progress
+// frames (done=false) carry the running byte count against the
+// total file size while the daemon ingests. The final frame
+// (done=true) carries the same fields as AddResponse.
+type AddProgress struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Done  bool                   `protobuf:"varint,1,opt,name=done,proto3" json:"done,omitempty"`
+	// Ingest progress, populated while done=false.
+	BytesProcessed uint64 `protobuf:"varint,2,opt,name=bytes_processed,json=bytesProcessed,proto3" json:"bytes_processed,omitempty"`
+	TotalBytes     uint64 `protobuf:"varint,3,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	// Result, populated on the final frame (done=true).
+	Mid           string `protobuf:"bytes,4,opt,name=mid,proto3" json:"mid,omitempty"`
+	Size          uint64 `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`
+	Blocks        uint64 `protobuf:"varint,6,opt,name=blocks,proto3" json:"blocks,omitempty"`
+	Sealed        bool   `protobuf:"varint,7,opt,name=sealed,proto3" json:"sealed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddProgress) Reset() {
+	*x = AddProgress{}
+	mi := &file_membuss_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddProgress) ProtoMessage() {}
+
+func (x *AddProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_membuss_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddProgress.ProtoReflect.Descriptor instead.
+func (*AddProgress) Descriptor() ([]byte, []int) {
+	return file_membuss_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AddProgress) GetDone() bool {
+	if x != nil {
+		return x.Done
+	}
+	return false
+}
+
+func (x *AddProgress) GetBytesProcessed() uint64 {
+	if x != nil {
+		return x.BytesProcessed
+	}
+	return 0
+}
+
+func (x *AddProgress) GetTotalBytes() uint64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *AddProgress) GetMid() string {
+	if x != nil {
+		return x.Mid
+	}
+	return ""
+}
+
+func (x *AddProgress) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *AddProgress) GetBlocks() uint64 {
+	if x != nil {
+		return x.Blocks
+	}
+	return 0
+}
+
+func (x *AddProgress) GetSealed() bool {
+	if x != nil {
+		return x.Sealed
+	}
+	return false
+}
+
 type GetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Mid           string                 `protobuf:"bytes,1,opt,name=mid,proto3" json:"mid,omitempty"`
@@ -403,7 +501,7 @@ type GetRequest struct {
 
 func (x *GetRequest) Reset() {
 	*x = GetRequest{}
-	mi := &file_membuss_proto_msgTypes[4]
+	mi := &file_membuss_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +513,7 @@ func (x *GetRequest) String() string {
 func (*GetRequest) ProtoMessage() {}
 
 func (x *GetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[4]
+	mi := &file_membuss_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +526,7 @@ func (x *GetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRequest.ProtoReflect.Descriptor instead.
 func (*GetRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{4}
+	return file_membuss_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetRequest) GetMid() string {
@@ -453,17 +551,40 @@ func (x *GetRequest) GetLimit() uint64 {
 }
 
 type GetChunk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
-	Index         uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Total         uint64                 `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Data  []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Index uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	Total uint64                 `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
+	// progress_only marks a frame that carries no payload
+	// (data is empty) and exists solely to report fetch
+	// progress while the daemon pulls the object from the
+	// network. Clients that do not understand these fields
+	// simply see an empty data frame and ignore it.
+	ProgressOnly bool `protobuf:"varint,4,opt,name=progress_only,json=progressOnly,proto3" json:"progress_only,omitempty"`
+	// is_header marks the single leading frame that carries
+	// the resolved object metadata (name, mime_type,
+	// total_size) so the client can name the download and
+	// size the progress bar before payload bytes arrive.
+	IsHeader bool `protobuf:"varint,5,opt,name=is_header,json=isHeader,proto3" json:"is_header,omitempty"`
+	// Object metadata, populated on the header frame. Empty
+	// on payload/progress frames.
+	Name      string `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
+	MimeType  string `protobuf:"bytes,7,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	TotalSize uint64 `protobuf:"varint,8,opt,name=total_size,json=totalSize,proto3" json:"total_size,omitempty"`
+	// Block-level fetch progress, populated on progress_only
+	// frames while the object is being pulled from the
+	// network. fetched_blocks/total_blocks describe DAG
+	// resolution; bytes_fetched is the running byte count.
+	FetchedBlocks uint64 `protobuf:"varint,9,opt,name=fetched_blocks,json=fetchedBlocks,proto3" json:"fetched_blocks,omitempty"`
+	TotalBlocks   uint64 `protobuf:"varint,10,opt,name=total_blocks,json=totalBlocks,proto3" json:"total_blocks,omitempty"`
+	BytesFetched  uint64 `protobuf:"varint,11,opt,name=bytes_fetched,json=bytesFetched,proto3" json:"bytes_fetched,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetChunk) Reset() {
 	*x = GetChunk{}
-	mi := &file_membuss_proto_msgTypes[5]
+	mi := &file_membuss_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -475,7 +596,7 @@ func (x *GetChunk) String() string {
 func (*GetChunk) ProtoMessage() {}
 
 func (x *GetChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[5]
+	mi := &file_membuss_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -488,7 +609,7 @@ func (x *GetChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChunk.ProtoReflect.Descriptor instead.
 func (*GetChunk) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{5}
+	return file_membuss_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetChunk) GetData() []byte {
@@ -512,6 +633,62 @@ func (x *GetChunk) GetTotal() uint64 {
 	return 0
 }
 
+func (x *GetChunk) GetProgressOnly() bool {
+	if x != nil {
+		return x.ProgressOnly
+	}
+	return false
+}
+
+func (x *GetChunk) GetIsHeader() bool {
+	if x != nil {
+		return x.IsHeader
+	}
+	return false
+}
+
+func (x *GetChunk) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetChunk) GetMimeType() string {
+	if x != nil {
+		return x.MimeType
+	}
+	return ""
+}
+
+func (x *GetChunk) GetTotalSize() uint64 {
+	if x != nil {
+		return x.TotalSize
+	}
+	return 0
+}
+
+func (x *GetChunk) GetFetchedBlocks() uint64 {
+	if x != nil {
+		return x.FetchedBlocks
+	}
+	return 0
+}
+
+func (x *GetChunk) GetTotalBlocks() uint64 {
+	if x != nil {
+		return x.TotalBlocks
+	}
+	return 0
+}
+
+func (x *GetChunk) GetBytesFetched() uint64 {
+	if x != nil {
+		return x.BytesFetched
+	}
+	return 0
+}
+
 type SealRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Mid           string                 `protobuf:"bytes,1,opt,name=mid,proto3" json:"mid,omitempty"`
@@ -522,7 +699,7 @@ type SealRequest struct {
 
 func (x *SealRequest) Reset() {
 	*x = SealRequest{}
-	mi := &file_membuss_proto_msgTypes[6]
+	mi := &file_membuss_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -534,7 +711,7 @@ func (x *SealRequest) String() string {
 func (*SealRequest) ProtoMessage() {}
 
 func (x *SealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[6]
+	mi := &file_membuss_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -547,7 +724,7 @@ func (x *SealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SealRequest.ProtoReflect.Descriptor instead.
 func (*SealRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{6}
+	return file_membuss_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SealRequest) GetMid() string {
@@ -574,7 +751,7 @@ type SealResponse struct {
 
 func (x *SealResponse) Reset() {
 	*x = SealResponse{}
-	mi := &file_membuss_proto_msgTypes[7]
+	mi := &file_membuss_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -586,7 +763,7 @@ func (x *SealResponse) String() string {
 func (*SealResponse) ProtoMessage() {}
 
 func (x *SealResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[7]
+	mi := &file_membuss_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -599,7 +776,7 @@ func (x *SealResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SealResponse.ProtoReflect.Descriptor instead.
 func (*SealResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{7}
+	return file_membuss_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SealResponse) GetPinned() uint64 {
@@ -625,7 +802,7 @@ type UnsealRequest struct {
 
 func (x *UnsealRequest) Reset() {
 	*x = UnsealRequest{}
-	mi := &file_membuss_proto_msgTypes[8]
+	mi := &file_membuss_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -637,7 +814,7 @@ func (x *UnsealRequest) String() string {
 func (*UnsealRequest) ProtoMessage() {}
 
 func (x *UnsealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[8]
+	mi := &file_membuss_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -650,7 +827,7 @@ func (x *UnsealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnsealRequest.ProtoReflect.Descriptor instead.
 func (*UnsealRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{8}
+	return file_membuss_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *UnsealRequest) GetMid() string {
@@ -669,7 +846,7 @@ type UnsealResponse struct {
 
 func (x *UnsealResponse) Reset() {
 	*x = UnsealResponse{}
-	mi := &file_membuss_proto_msgTypes[9]
+	mi := &file_membuss_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +858,7 @@ func (x *UnsealResponse) String() string {
 func (*UnsealResponse) ProtoMessage() {}
 
 func (x *UnsealResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[9]
+	mi := &file_membuss_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,7 +871,7 @@ func (x *UnsealResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnsealResponse.ProtoReflect.Descriptor instead.
 func (*UnsealResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{9}
+	return file_membuss_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *UnsealResponse) GetRemoved() uint64 {
@@ -713,7 +890,7 @@ type StatRequest struct {
 
 func (x *StatRequest) Reset() {
 	*x = StatRequest{}
-	mi := &file_membuss_proto_msgTypes[10]
+	mi := &file_membuss_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +902,7 @@ func (x *StatRequest) String() string {
 func (*StatRequest) ProtoMessage() {}
 
 func (x *StatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[10]
+	mi := &file_membuss_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +915,7 @@ func (x *StatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatRequest.ProtoReflect.Descriptor instead.
 func (*StatRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{10}
+	return file_membuss_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StatRequest) GetMid() string {
@@ -767,7 +944,7 @@ type StatResponse struct {
 
 func (x *StatResponse) Reset() {
 	*x = StatResponse{}
-	mi := &file_membuss_proto_msgTypes[11]
+	mi := &file_membuss_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -779,7 +956,7 @@ func (x *StatResponse) String() string {
 func (*StatResponse) ProtoMessage() {}
 
 func (x *StatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[11]
+	mi := &file_membuss_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -792,7 +969,7 @@ func (x *StatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatResponse.ProtoReflect.Descriptor instead.
 func (*StatResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{11}
+	return file_membuss_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *StatResponse) GetPresent() bool {
@@ -876,7 +1053,7 @@ type ErasureInfo struct {
 
 func (x *ErasureInfo) Reset() {
 	*x = ErasureInfo{}
-	mi := &file_membuss_proto_msgTypes[12]
+	mi := &file_membuss_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -888,7 +1065,7 @@ func (x *ErasureInfo) String() string {
 func (*ErasureInfo) ProtoMessage() {}
 
 func (x *ErasureInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[12]
+	mi := &file_membuss_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -901,7 +1078,7 @@ func (x *ErasureInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErasureInfo.ProtoReflect.Descriptor instead.
 func (*ErasureInfo) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{12}
+	return file_membuss_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ErasureInfo) GetDataShards() uint32 {
@@ -939,7 +1116,7 @@ type NodePeerInfo struct {
 
 func (x *NodePeerInfo) Reset() {
 	*x = NodePeerInfo{}
-	mi := &file_membuss_proto_msgTypes[13]
+	mi := &file_membuss_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -951,7 +1128,7 @@ func (x *NodePeerInfo) String() string {
 func (*NodePeerInfo) ProtoMessage() {}
 
 func (x *NodePeerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[13]
+	mi := &file_membuss_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -964,7 +1141,7 @@ func (x *NodePeerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodePeerInfo.ProtoReflect.Descriptor instead.
 func (*NodePeerInfo) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{13}
+	return file_membuss_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *NodePeerInfo) GetPeerId() string {
@@ -997,7 +1174,7 @@ type PeersRequest struct {
 
 func (x *PeersRequest) Reset() {
 	*x = PeersRequest{}
-	mi := &file_membuss_proto_msgTypes[14]
+	mi := &file_membuss_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1009,7 +1186,7 @@ func (x *PeersRequest) String() string {
 func (*PeersRequest) ProtoMessage() {}
 
 func (x *PeersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[14]
+	mi := &file_membuss_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1022,7 +1199,7 @@ func (x *PeersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeersRequest.ProtoReflect.Descriptor instead.
 func (*PeersRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{14}
+	return file_membuss_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PeersRequest) GetLimit() uint32 {
@@ -1042,7 +1219,7 @@ type PeersResponse struct {
 
 func (x *PeersResponse) Reset() {
 	*x = PeersResponse{}
-	mi := &file_membuss_proto_msgTypes[15]
+	mi := &file_membuss_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1054,7 +1231,7 @@ func (x *PeersResponse) String() string {
 func (*PeersResponse) ProtoMessage() {}
 
 func (x *PeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[15]
+	mi := &file_membuss_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1067,7 +1244,7 @@ func (x *PeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeersResponse.ProtoReflect.Descriptor instead.
 func (*PeersResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{15}
+	return file_membuss_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PeersResponse) GetPeers() []*NodePeerInfo {
@@ -1094,7 +1271,7 @@ type DHTPeekRequest struct {
 
 func (x *DHTPeekRequest) Reset() {
 	*x = DHTPeekRequest{}
-	mi := &file_membuss_proto_msgTypes[16]
+	mi := &file_membuss_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1106,7 +1283,7 @@ func (x *DHTPeekRequest) String() string {
 func (*DHTPeekRequest) ProtoMessage() {}
 
 func (x *DHTPeekRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[16]
+	mi := &file_membuss_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1119,7 +1296,7 @@ func (x *DHTPeekRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DHTPeekRequest.ProtoReflect.Descriptor instead.
 func (*DHTPeekRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{16}
+	return file_membuss_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DHTPeekRequest) GetMid() string {
@@ -1145,7 +1322,7 @@ type DHTPeekResponse struct {
 
 func (x *DHTPeekResponse) Reset() {
 	*x = DHTPeekResponse{}
-	mi := &file_membuss_proto_msgTypes[17]
+	mi := &file_membuss_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1157,7 +1334,7 @@ func (x *DHTPeekResponse) String() string {
 func (*DHTPeekResponse) ProtoMessage() {}
 
 func (x *DHTPeekResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[17]
+	mi := &file_membuss_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1170,7 +1347,7 @@ func (x *DHTPeekResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DHTPeekResponse.ProtoReflect.Descriptor instead.
 func (*DHTPeekResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{17}
+	return file_membuss_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DHTPeekResponse) GetProviders() []*NodePeerInfo {
@@ -1189,7 +1366,7 @@ type GCRequest struct {
 
 func (x *GCRequest) Reset() {
 	*x = GCRequest{}
-	mi := &file_membuss_proto_msgTypes[18]
+	mi := &file_membuss_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1201,7 +1378,7 @@ func (x *GCRequest) String() string {
 func (*GCRequest) ProtoMessage() {}
 
 func (x *GCRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[18]
+	mi := &file_membuss_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1214,7 +1391,7 @@ func (x *GCRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GCRequest.ProtoReflect.Descriptor instead.
 func (*GCRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{18}
+	return file_membuss_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GCRequest) GetAll() bool {
@@ -1234,7 +1411,7 @@ type GCResponse struct {
 
 func (x *GCResponse) Reset() {
 	*x = GCResponse{}
-	mi := &file_membuss_proto_msgTypes[19]
+	mi := &file_membuss_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1246,7 +1423,7 @@ func (x *GCResponse) String() string {
 func (*GCResponse) ProtoMessage() {}
 
 func (x *GCResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[19]
+	mi := &file_membuss_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1259,7 +1436,7 @@ func (x *GCResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GCResponse.ProtoReflect.Descriptor instead.
 func (*GCResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{19}
+	return file_membuss_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GCResponse) GetBytesFreed() uint64 {
@@ -1284,7 +1461,7 @@ type AnchorStatusRequest struct {
 
 func (x *AnchorStatusRequest) Reset() {
 	*x = AnchorStatusRequest{}
-	mi := &file_membuss_proto_msgTypes[20]
+	mi := &file_membuss_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1296,7 +1473,7 @@ func (x *AnchorStatusRequest) String() string {
 func (*AnchorStatusRequest) ProtoMessage() {}
 
 func (x *AnchorStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[20]
+	mi := &file_membuss_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1309,7 +1486,7 @@ func (x *AnchorStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnchorStatusRequest.ProtoReflect.Descriptor instead.
 func (*AnchorStatusRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{20}
+	return file_membuss_proto_rawDescGZIP(), []int{21}
 }
 
 type AnchorStatusResponse struct {
@@ -1326,7 +1503,7 @@ type AnchorStatusResponse struct {
 
 func (x *AnchorStatusResponse) Reset() {
 	*x = AnchorStatusResponse{}
-	mi := &file_membuss_proto_msgTypes[21]
+	mi := &file_membuss_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1338,7 +1515,7 @@ func (x *AnchorStatusResponse) String() string {
 func (*AnchorStatusResponse) ProtoMessage() {}
 
 func (x *AnchorStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[21]
+	mi := &file_membuss_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1351,7 +1528,7 @@ func (x *AnchorStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnchorStatusResponse.ProtoReflect.Descriptor instead.
 func (*AnchorStatusResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{21}
+	return file_membuss_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *AnchorStatusResponse) GetPeerId() string {
@@ -1408,7 +1585,7 @@ type Block struct {
 
 func (x *Block) Reset() {
 	*x = Block{}
-	mi := &file_membuss_proto_msgTypes[22]
+	mi := &file_membuss_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1420,7 +1597,7 @@ func (x *Block) String() string {
 func (*Block) ProtoMessage() {}
 
 func (x *Block) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[22]
+	mi := &file_membuss_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1433,7 +1610,7 @@ func (x *Block) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Block.ProtoReflect.Descriptor instead.
 func (*Block) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{22}
+	return file_membuss_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Block) GetData() []byte {
@@ -1469,7 +1646,7 @@ type DAGNode struct {
 
 func (x *DAGNode) Reset() {
 	*x = DAGNode{}
-	mi := &file_membuss_proto_msgTypes[23]
+	mi := &file_membuss_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1481,7 +1658,7 @@ func (x *DAGNode) String() string {
 func (*DAGNode) ProtoMessage() {}
 
 func (x *DAGNode) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[23]
+	mi := &file_membuss_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1494,7 +1671,7 @@ func (x *DAGNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DAGNode.ProtoReflect.Descriptor instead.
 func (*DAGNode) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{23}
+	return file_membuss_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DAGNode) GetLinks() []string {
@@ -1531,7 +1708,7 @@ type Shard struct {
 
 func (x *Shard) Reset() {
 	*x = Shard{}
-	mi := &file_membuss_proto_msgTypes[24]
+	mi := &file_membuss_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1543,7 +1720,7 @@ func (x *Shard) String() string {
 func (*Shard) ProtoMessage() {}
 
 func (x *Shard) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[24]
+	mi := &file_membuss_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1556,7 +1733,7 @@ func (x *Shard) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Shard.ProtoReflect.Descriptor instead.
 func (*Shard) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{24}
+	return file_membuss_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *Shard) GetData() []byte {
@@ -1601,7 +1778,7 @@ type ErasureManifest struct {
 
 func (x *ErasureManifest) Reset() {
 	*x = ErasureManifest{}
-	mi := &file_membuss_proto_msgTypes[25]
+	mi := &file_membuss_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1613,7 +1790,7 @@ func (x *ErasureManifest) String() string {
 func (*ErasureManifest) ProtoMessage() {}
 
 func (x *ErasureManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[25]
+	mi := &file_membuss_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1626,7 +1803,7 @@ func (x *ErasureManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErasureManifest.ProtoReflect.Descriptor instead.
 func (*ErasureManifest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{25}
+	return file_membuss_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ErasureManifest) GetOriginalMid() string {
@@ -1687,7 +1864,7 @@ type PeerInfo struct {
 
 func (x *PeerInfo) Reset() {
 	*x = PeerInfo{}
-	mi := &file_membuss_proto_msgTypes[26]
+	mi := &file_membuss_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1699,7 +1876,7 @@ func (x *PeerInfo) String() string {
 func (*PeerInfo) ProtoMessage() {}
 
 func (x *PeerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[26]
+	mi := &file_membuss_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1712,7 +1889,7 @@ func (x *PeerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerInfo.ProtoReflect.Descriptor instead.
 func (*PeerInfo) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{26}
+	return file_membuss_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *PeerInfo) GetPeerId() string {
@@ -1788,7 +1965,7 @@ type PEXMessage struct {
 
 func (x *PEXMessage) Reset() {
 	*x = PEXMessage{}
-	mi := &file_membuss_proto_msgTypes[27]
+	mi := &file_membuss_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1800,7 +1977,7 @@ func (x *PEXMessage) String() string {
 func (*PEXMessage) ProtoMessage() {}
 
 func (x *PEXMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[27]
+	mi := &file_membuss_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1813,7 +1990,7 @@ func (x *PEXMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PEXMessage.ProtoReflect.Descriptor instead.
 func (*PEXMessage) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{27}
+	return file_membuss_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PEXMessage) GetPeers() []*PeerInfo {
@@ -1835,7 +2012,7 @@ type WantEntry struct {
 
 func (x *WantEntry) Reset() {
 	*x = WantEntry{}
-	mi := &file_membuss_proto_msgTypes[28]
+	mi := &file_membuss_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1847,7 +2024,7 @@ func (x *WantEntry) String() string {
 func (*WantEntry) ProtoMessage() {}
 
 func (x *WantEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[28]
+	mi := &file_membuss_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1860,7 +2037,7 @@ func (x *WantEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WantEntry.ProtoReflect.Descriptor instead.
 func (*WantEntry) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{28}
+	return file_membuss_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *WantEntry) GetMid() string {
@@ -1902,7 +2079,7 @@ type MemexMessage struct {
 
 func (x *MemexMessage) Reset() {
 	*x = MemexMessage{}
-	mi := &file_membuss_proto_msgTypes[29]
+	mi := &file_membuss_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1914,7 +2091,7 @@ func (x *MemexMessage) String() string {
 func (*MemexMessage) ProtoMessage() {}
 
 func (x *MemexMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[29]
+	mi := &file_membuss_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1927,7 +2104,7 @@ func (x *MemexMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemexMessage.ProtoReflect.Descriptor instead.
 func (*MemexMessage) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{29}
+	return file_membuss_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *MemexMessage) GetWants() []*WantEntry {
@@ -1996,7 +2173,7 @@ type ObjectInfo struct {
 
 func (x *ObjectInfo) Reset() {
 	*x = ObjectInfo{}
-	mi := &file_membuss_proto_msgTypes[30]
+	mi := &file_membuss_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2008,7 +2185,7 @@ func (x *ObjectInfo) String() string {
 func (*ObjectInfo) ProtoMessage() {}
 
 func (x *ObjectInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[30]
+	mi := &file_membuss_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2021,7 +2198,7 @@ func (x *ObjectInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectInfo.ProtoReflect.Descriptor instead.
 func (*ObjectInfo) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{30}
+	return file_membuss_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ObjectInfo) GetName() string {
@@ -2061,7 +2238,7 @@ type BloomAnnouncement struct {
 
 func (x *BloomAnnouncement) Reset() {
 	*x = BloomAnnouncement{}
-	mi := &file_membuss_proto_msgTypes[31]
+	mi := &file_membuss_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2073,7 +2250,7 @@ func (x *BloomAnnouncement) String() string {
 func (*BloomAnnouncement) ProtoMessage() {}
 
 func (x *BloomAnnouncement) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[31]
+	mi := &file_membuss_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2086,7 +2263,7 @@ func (x *BloomAnnouncement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BloomAnnouncement.ProtoReflect.Descriptor instead.
 func (*BloomAnnouncement) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{31}
+	return file_membuss_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *BloomAnnouncement) GetBloomFilter() []byte {
@@ -2138,7 +2315,7 @@ type MemFSNode struct {
 
 func (x *MemFSNode) Reset() {
 	*x = MemFSNode{}
-	mi := &file_membuss_proto_msgTypes[32]
+	mi := &file_membuss_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2150,7 +2327,7 @@ func (x *MemFSNode) String() string {
 func (*MemFSNode) ProtoMessage() {}
 
 func (x *MemFSNode) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[32]
+	mi := &file_membuss_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2163,7 +2340,7 @@ func (x *MemFSNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemFSNode.ProtoReflect.Descriptor instead.
 func (*MemFSNode) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{32}
+	return file_membuss_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *MemFSNode) GetType() MemFSType {
@@ -2242,7 +2419,7 @@ type MemFSBlock struct {
 
 func (x *MemFSBlock) Reset() {
 	*x = MemFSBlock{}
-	mi := &file_membuss_proto_msgTypes[33]
+	mi := &file_membuss_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2254,7 +2431,7 @@ func (x *MemFSBlock) String() string {
 func (*MemFSBlock) ProtoMessage() {}
 
 func (x *MemFSBlock) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[33]
+	mi := &file_membuss_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2267,7 +2444,7 @@ func (x *MemFSBlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemFSBlock.ProtoReflect.Descriptor instead.
 func (*MemFSBlock) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{33}
+	return file_membuss_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *MemFSBlock) GetMid() []byte {
@@ -2299,7 +2476,7 @@ type DirEntry struct {
 
 func (x *DirEntry) Reset() {
 	*x = DirEntry{}
-	mi := &file_membuss_proto_msgTypes[34]
+	mi := &file_membuss_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2311,7 +2488,7 @@ func (x *DirEntry) String() string {
 func (*DirEntry) ProtoMessage() {}
 
 func (x *DirEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[34]
+	mi := &file_membuss_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2324,7 +2501,7 @@ func (x *DirEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirEntry.ProtoReflect.Descriptor instead.
 func (*DirEntry) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{34}
+	return file_membuss_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *DirEntry) GetName() string {
@@ -2369,7 +2546,7 @@ type MemFSMeta struct {
 
 func (x *MemFSMeta) Reset() {
 	*x = MemFSMeta{}
-	mi := &file_membuss_proto_msgTypes[35]
+	mi := &file_membuss_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2381,7 +2558,7 @@ func (x *MemFSMeta) String() string {
 func (*MemFSMeta) ProtoMessage() {}
 
 func (x *MemFSMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[35]
+	mi := &file_membuss_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2394,7 +2571,7 @@ func (x *MemFSMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemFSMeta.ProtoReflect.Descriptor instead.
 func (*MemFSMeta) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{35}
+	return file_membuss_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *MemFSMeta) GetMimeType() string {
@@ -2420,7 +2597,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_membuss_proto_msgTypes[36]
+	mi := &file_membuss_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2432,7 +2609,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[36]
+	mi := &file_membuss_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2445,7 +2622,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{36}
+	return file_membuss_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *DeleteRequest) GetMid() string {
@@ -2465,7 +2642,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_membuss_proto_msgTypes[37]
+	mi := &file_membuss_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2477,7 +2654,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[37]
+	mi := &file_membuss_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2490,7 +2667,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{37}
+	return file_membuss_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *DeleteResponse) GetBlocksDeleted() uint64 {
@@ -2519,7 +2696,7 @@ type DescriptorBlock struct {
 
 func (x *DescriptorBlock) Reset() {
 	*x = DescriptorBlock{}
-	mi := &file_membuss_proto_msgTypes[38]
+	mi := &file_membuss_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2531,7 +2708,7 @@ func (x *DescriptorBlock) String() string {
 func (*DescriptorBlock) ProtoMessage() {}
 
 func (x *DescriptorBlock) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[38]
+	mi := &file_membuss_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2544,7 +2721,7 @@ func (x *DescriptorBlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescriptorBlock.ProtoReflect.Descriptor instead.
 func (*DescriptorBlock) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{38}
+	return file_membuss_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *DescriptorBlock) GetMid() string {
@@ -2582,7 +2759,7 @@ type DescriptorErasure struct {
 
 func (x *DescriptorErasure) Reset() {
 	*x = DescriptorErasure{}
-	mi := &file_membuss_proto_msgTypes[39]
+	mi := &file_membuss_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2594,7 +2771,7 @@ func (x *DescriptorErasure) String() string {
 func (*DescriptorErasure) ProtoMessage() {}
 
 func (x *DescriptorErasure) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[39]
+	mi := &file_membuss_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2607,7 +2784,7 @@ func (x *DescriptorErasure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescriptorErasure.ProtoReflect.Descriptor instead.
 func (*DescriptorErasure) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{39}
+	return file_membuss_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *DescriptorErasure) GetDataShards() uint32 {
@@ -2663,7 +2840,7 @@ type DescriptorPayload struct {
 
 func (x *DescriptorPayload) Reset() {
 	*x = DescriptorPayload{}
-	mi := &file_membuss_proto_msgTypes[40]
+	mi := &file_membuss_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2675,7 +2852,7 @@ func (x *DescriptorPayload) String() string {
 func (*DescriptorPayload) ProtoMessage() {}
 
 func (x *DescriptorPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_membuss_proto_msgTypes[40]
+	mi := &file_membuss_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2688,7 +2865,7 @@ func (x *DescriptorPayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescriptorPayload.ProtoReflect.Descriptor instead.
 func (*DescriptorPayload) Descriptor() ([]byte, []int) {
-	return file_membuss_proto_rawDescGZIP(), []int{40}
+	return file_membuss_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *DescriptorPayload) GetRootMid() string {
@@ -2806,16 +2983,35 @@ const file_membuss_proto_rawDesc = "" +
 	"\x03mid\x18\x01 \x01(\tR\x03mid\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x04R\x04size\x12\x16\n" +
 	"\x06blocks\x18\x03 \x01(\x04R\x06blocks\x12\x16\n" +
-	"\x06sealed\x18\x04 \x01(\bR\x06sealed\"L\n" +
+	"\x06sealed\x18\x04 \x01(\bR\x06sealed\"\xc1\x01\n" +
+	"\vAddProgress\x12\x12\n" +
+	"\x04done\x18\x01 \x01(\bR\x04done\x12'\n" +
+	"\x0fbytes_processed\x18\x02 \x01(\x04R\x0ebytesProcessed\x12\x1f\n" +
+	"\vtotal_bytes\x18\x03 \x01(\x04R\n" +
+	"totalBytes\x12\x10\n" +
+	"\x03mid\x18\x04 \x01(\tR\x03mid\x12\x12\n" +
+	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x16\n" +
+	"\x06blocks\x18\x06 \x01(\x04R\x06blocks\x12\x16\n" +
+	"\x06sealed\x18\a \x01(\bR\x06sealed\"L\n" +
 	"\n" +
 	"GetRequest\x12\x10\n" +
 	"\x03mid\x18\x01 \x01(\tR\x03mid\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x04R\x05limit\"J\n" +
+	"\x05limit\x18\x03 \x01(\x04R\x05limit\"\xcb\x02\n" +
 	"\bGetChunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x14\n" +
-	"\x05total\x18\x03 \x01(\x04R\x05total\"=\n" +
+	"\x05total\x18\x03 \x01(\x04R\x05total\x12#\n" +
+	"\rprogress_only\x18\x04 \x01(\bR\fprogressOnly\x12\x1b\n" +
+	"\tis_header\x18\x05 \x01(\bR\bisHeader\x12\x12\n" +
+	"\x04name\x18\x06 \x01(\tR\x04name\x12\x1b\n" +
+	"\tmime_type\x18\a \x01(\tR\bmimeType\x12\x1d\n" +
+	"\n" +
+	"total_size\x18\b \x01(\x04R\ttotalSize\x12%\n" +
+	"\x0efetched_blocks\x18\t \x01(\x04R\rfetchedBlocks\x12!\n" +
+	"\ftotal_blocks\x18\n" +
+	" \x01(\x04R\vtotalBlocks\x12#\n" +
+	"\rbytes_fetched\x18\v \x01(\x04R\fbytesFetched\"=\n" +
 	"\vSealRequest\x12\x10\n" +
 	"\x03mid\x18\x01 \x01(\tR\x03mid\x12\x1c\n" +
 	"\trecursive\x18\x02 \x01(\bR\trecursive\"@\n" +
@@ -3015,9 +3211,11 @@ const file_membuss_proto_rawDesc = "" +
 	"\aSYMLINK\x10\x03\x12\f\n" +
 	"\bMETADATA\x10\x042A\n" +
 	"\x04Node\x129\n" +
-	"\x04Ping\x12\x17.membuss.v1.PingRequest\x1a\x18.membuss.v1.PingResponse2\xfe\x04\n" +
+	"\x04Ping\x12\x17.membuss.v1.PingRequest\x1a\x18.membuss.v1.PingResponse2\x81\x06\n" +
 	"\vMembussNode\x126\n" +
-	"\x03Add\x12\x16.membuss.v1.AddRequest\x1a\x17.membuss.v1.AddResponse\x125\n" +
+	"\x03Add\x12\x16.membuss.v1.AddRequest\x1a\x17.membuss.v1.AddResponse\x12>\n" +
+	"\tAddStream\x12\x16.membuss.v1.AddRequest\x1a\x17.membuss.v1.AddProgress0\x01\x12A\n" +
+	"\fAddDirStream\x12\x16.membuss.v1.AddRequest\x1a\x17.membuss.v1.AddProgress0\x01\x125\n" +
 	"\x03Get\x12\x16.membuss.v1.GetRequest\x1a\x14.membuss.v1.GetChunk0\x01\x129\n" +
 	"\x04Seal\x12\x17.membuss.v1.SealRequest\x1a\x18.membuss.v1.SealResponse\x12?\n" +
 	"\x06Unseal\x12\x19.membuss.v1.UnsealRequest\x1a\x1a.membuss.v1.UnsealResponse\x129\n" +
@@ -3041,7 +3239,7 @@ func file_membuss_proto_rawDescGZIP() []byte {
 }
 
 var file_membuss_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_membuss_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_membuss_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_membuss_proto_goTypes = []any{
 	(Reachability)(0),            // 0: membuss.v1.Reachability
 	(MemFSType)(0),               // 1: membuss.v1.MemFSType
@@ -3049,88 +3247,93 @@ var file_membuss_proto_goTypes = []any{
 	(*PingResponse)(nil),         // 3: membuss.v1.PingResponse
 	(*AddRequest)(nil),           // 4: membuss.v1.AddRequest
 	(*AddResponse)(nil),          // 5: membuss.v1.AddResponse
-	(*GetRequest)(nil),           // 6: membuss.v1.GetRequest
-	(*GetChunk)(nil),             // 7: membuss.v1.GetChunk
-	(*SealRequest)(nil),          // 8: membuss.v1.SealRequest
-	(*SealResponse)(nil),         // 9: membuss.v1.SealResponse
-	(*UnsealRequest)(nil),        // 10: membuss.v1.UnsealRequest
-	(*UnsealResponse)(nil),       // 11: membuss.v1.UnsealResponse
-	(*StatRequest)(nil),          // 12: membuss.v1.StatRequest
-	(*StatResponse)(nil),         // 13: membuss.v1.StatResponse
-	(*ErasureInfo)(nil),          // 14: membuss.v1.ErasureInfo
-	(*NodePeerInfo)(nil),         // 15: membuss.v1.NodePeerInfo
-	(*PeersRequest)(nil),         // 16: membuss.v1.PeersRequest
-	(*PeersResponse)(nil),        // 17: membuss.v1.PeersResponse
-	(*DHTPeekRequest)(nil),       // 18: membuss.v1.DHTPeekRequest
-	(*DHTPeekResponse)(nil),      // 19: membuss.v1.DHTPeekResponse
-	(*GCRequest)(nil),            // 20: membuss.v1.GCRequest
-	(*GCResponse)(nil),           // 21: membuss.v1.GCResponse
-	(*AnchorStatusRequest)(nil),  // 22: membuss.v1.AnchorStatusRequest
-	(*AnchorStatusResponse)(nil), // 23: membuss.v1.AnchorStatusResponse
-	(*Block)(nil),                // 24: membuss.v1.Block
-	(*DAGNode)(nil),              // 25: membuss.v1.DAGNode
-	(*Shard)(nil),                // 26: membuss.v1.Shard
-	(*ErasureManifest)(nil),      // 27: membuss.v1.ErasureManifest
-	(*PeerInfo)(nil),             // 28: membuss.v1.PeerInfo
-	(*PEXMessage)(nil),           // 29: membuss.v1.PEXMessage
-	(*WantEntry)(nil),            // 30: membuss.v1.WantEntry
-	(*MemexMessage)(nil),         // 31: membuss.v1.MemexMessage
-	(*ObjectInfo)(nil),           // 32: membuss.v1.ObjectInfo
-	(*BloomAnnouncement)(nil),    // 33: membuss.v1.BloomAnnouncement
-	(*MemFSNode)(nil),            // 34: membuss.v1.MemFSNode
-	(*MemFSBlock)(nil),           // 35: membuss.v1.MemFSBlock
-	(*DirEntry)(nil),             // 36: membuss.v1.DirEntry
-	(*MemFSMeta)(nil),            // 37: membuss.v1.MemFSMeta
-	(*DeleteRequest)(nil),        // 38: membuss.v1.DeleteRequest
-	(*DeleteResponse)(nil),       // 39: membuss.v1.DeleteResponse
-	(*DescriptorBlock)(nil),      // 40: membuss.v1.DescriptorBlock
-	(*DescriptorErasure)(nil),    // 41: membuss.v1.DescriptorErasure
-	(*DescriptorPayload)(nil),    // 42: membuss.v1.DescriptorPayload
-	nil,                          // 43: membuss.v1.MemexMessage.ObjectInfosEntry
-	nil,                          // 44: membuss.v1.MemFSMeta.AttrsEntry
+	(*AddProgress)(nil),          // 6: membuss.v1.AddProgress
+	(*GetRequest)(nil),           // 7: membuss.v1.GetRequest
+	(*GetChunk)(nil),             // 8: membuss.v1.GetChunk
+	(*SealRequest)(nil),          // 9: membuss.v1.SealRequest
+	(*SealResponse)(nil),         // 10: membuss.v1.SealResponse
+	(*UnsealRequest)(nil),        // 11: membuss.v1.UnsealRequest
+	(*UnsealResponse)(nil),       // 12: membuss.v1.UnsealResponse
+	(*StatRequest)(nil),          // 13: membuss.v1.StatRequest
+	(*StatResponse)(nil),         // 14: membuss.v1.StatResponse
+	(*ErasureInfo)(nil),          // 15: membuss.v1.ErasureInfo
+	(*NodePeerInfo)(nil),         // 16: membuss.v1.NodePeerInfo
+	(*PeersRequest)(nil),         // 17: membuss.v1.PeersRequest
+	(*PeersResponse)(nil),        // 18: membuss.v1.PeersResponse
+	(*DHTPeekRequest)(nil),       // 19: membuss.v1.DHTPeekRequest
+	(*DHTPeekResponse)(nil),      // 20: membuss.v1.DHTPeekResponse
+	(*GCRequest)(nil),            // 21: membuss.v1.GCRequest
+	(*GCResponse)(nil),           // 22: membuss.v1.GCResponse
+	(*AnchorStatusRequest)(nil),  // 23: membuss.v1.AnchorStatusRequest
+	(*AnchorStatusResponse)(nil), // 24: membuss.v1.AnchorStatusResponse
+	(*Block)(nil),                // 25: membuss.v1.Block
+	(*DAGNode)(nil),              // 26: membuss.v1.DAGNode
+	(*Shard)(nil),                // 27: membuss.v1.Shard
+	(*ErasureManifest)(nil),      // 28: membuss.v1.ErasureManifest
+	(*PeerInfo)(nil),             // 29: membuss.v1.PeerInfo
+	(*PEXMessage)(nil),           // 30: membuss.v1.PEXMessage
+	(*WantEntry)(nil),            // 31: membuss.v1.WantEntry
+	(*MemexMessage)(nil),         // 32: membuss.v1.MemexMessage
+	(*ObjectInfo)(nil),           // 33: membuss.v1.ObjectInfo
+	(*BloomAnnouncement)(nil),    // 34: membuss.v1.BloomAnnouncement
+	(*MemFSNode)(nil),            // 35: membuss.v1.MemFSNode
+	(*MemFSBlock)(nil),           // 36: membuss.v1.MemFSBlock
+	(*DirEntry)(nil),             // 37: membuss.v1.DirEntry
+	(*MemFSMeta)(nil),            // 38: membuss.v1.MemFSMeta
+	(*DeleteRequest)(nil),        // 39: membuss.v1.DeleteRequest
+	(*DeleteResponse)(nil),       // 40: membuss.v1.DeleteResponse
+	(*DescriptorBlock)(nil),      // 41: membuss.v1.DescriptorBlock
+	(*DescriptorErasure)(nil),    // 42: membuss.v1.DescriptorErasure
+	(*DescriptorPayload)(nil),    // 43: membuss.v1.DescriptorPayload
+	nil,                          // 44: membuss.v1.MemexMessage.ObjectInfosEntry
+	nil,                          // 45: membuss.v1.MemFSMeta.AttrsEntry
 }
 var file_membuss_proto_depIdxs = []int32{
-	14, // 0: membuss.v1.StatResponse.erasure:type_name -> membuss.v1.ErasureInfo
-	15, // 1: membuss.v1.PeersResponse.peers:type_name -> membuss.v1.NodePeerInfo
-	15, // 2: membuss.v1.DHTPeekResponse.providers:type_name -> membuss.v1.NodePeerInfo
+	15, // 0: membuss.v1.StatResponse.erasure:type_name -> membuss.v1.ErasureInfo
+	16, // 1: membuss.v1.PeersResponse.peers:type_name -> membuss.v1.NodePeerInfo
+	16, // 2: membuss.v1.DHTPeekResponse.providers:type_name -> membuss.v1.NodePeerInfo
 	0,  // 3: membuss.v1.PeerInfo.reachability:type_name -> membuss.v1.Reachability
-	28, // 4: membuss.v1.PEXMessage.peers:type_name -> membuss.v1.PeerInfo
-	30, // 5: membuss.v1.MemexMessage.wants:type_name -> membuss.v1.WantEntry
-	24, // 6: membuss.v1.MemexMessage.blocks:type_name -> membuss.v1.Block
-	43, // 7: membuss.v1.MemexMessage.object_infos:type_name -> membuss.v1.MemexMessage.ObjectInfosEntry
+	29, // 4: membuss.v1.PEXMessage.peers:type_name -> membuss.v1.PeerInfo
+	31, // 5: membuss.v1.MemexMessage.wants:type_name -> membuss.v1.WantEntry
+	25, // 6: membuss.v1.MemexMessage.blocks:type_name -> membuss.v1.Block
+	44, // 7: membuss.v1.MemexMessage.object_infos:type_name -> membuss.v1.MemexMessage.ObjectInfosEntry
 	1,  // 8: membuss.v1.MemFSNode.type:type_name -> membuss.v1.MemFSType
-	35, // 9: membuss.v1.MemFSNode.blocks:type_name -> membuss.v1.MemFSBlock
-	36, // 10: membuss.v1.MemFSNode.entries:type_name -> membuss.v1.DirEntry
-	37, // 11: membuss.v1.MemFSNode.meta:type_name -> membuss.v1.MemFSMeta
+	36, // 9: membuss.v1.MemFSNode.blocks:type_name -> membuss.v1.MemFSBlock
+	37, // 10: membuss.v1.MemFSNode.entries:type_name -> membuss.v1.DirEntry
+	38, // 11: membuss.v1.MemFSNode.meta:type_name -> membuss.v1.MemFSMeta
 	1,  // 12: membuss.v1.DirEntry.type:type_name -> membuss.v1.MemFSType
-	44, // 13: membuss.v1.MemFSMeta.attrs:type_name -> membuss.v1.MemFSMeta.AttrsEntry
-	40, // 14: membuss.v1.DescriptorPayload.blocks:type_name -> membuss.v1.DescriptorBlock
-	41, // 15: membuss.v1.DescriptorPayload.erasure:type_name -> membuss.v1.DescriptorErasure
-	32, // 16: membuss.v1.MemexMessage.ObjectInfosEntry.value:type_name -> membuss.v1.ObjectInfo
+	45, // 13: membuss.v1.MemFSMeta.attrs:type_name -> membuss.v1.MemFSMeta.AttrsEntry
+	41, // 14: membuss.v1.DescriptorPayload.blocks:type_name -> membuss.v1.DescriptorBlock
+	42, // 15: membuss.v1.DescriptorPayload.erasure:type_name -> membuss.v1.DescriptorErasure
+	33, // 16: membuss.v1.MemexMessage.ObjectInfosEntry.value:type_name -> membuss.v1.ObjectInfo
 	2,  // 17: membuss.v1.Node.Ping:input_type -> membuss.v1.PingRequest
 	4,  // 18: membuss.v1.MembussNode.Add:input_type -> membuss.v1.AddRequest
-	6,  // 19: membuss.v1.MembussNode.Get:input_type -> membuss.v1.GetRequest
-	8,  // 20: membuss.v1.MembussNode.Seal:input_type -> membuss.v1.SealRequest
-	10, // 21: membuss.v1.MembussNode.Unseal:input_type -> membuss.v1.UnsealRequest
-	12, // 22: membuss.v1.MembussNode.Stat:input_type -> membuss.v1.StatRequest
-	16, // 23: membuss.v1.MembussNode.Peers:input_type -> membuss.v1.PeersRequest
-	18, // 24: membuss.v1.MembussNode.DHTPeek:input_type -> membuss.v1.DHTPeekRequest
-	20, // 25: membuss.v1.MembussNode.GC:input_type -> membuss.v1.GCRequest
-	22, // 26: membuss.v1.MembussNode.AnchorStatus:input_type -> membuss.v1.AnchorStatusRequest
-	38, // 27: membuss.v1.MembussNode.Delete:input_type -> membuss.v1.DeleteRequest
-	3,  // 28: membuss.v1.Node.Ping:output_type -> membuss.v1.PingResponse
-	5,  // 29: membuss.v1.MembussNode.Add:output_type -> membuss.v1.AddResponse
-	7,  // 30: membuss.v1.MembussNode.Get:output_type -> membuss.v1.GetChunk
-	9,  // 31: membuss.v1.MembussNode.Seal:output_type -> membuss.v1.SealResponse
-	11, // 32: membuss.v1.MembussNode.Unseal:output_type -> membuss.v1.UnsealResponse
-	13, // 33: membuss.v1.MembussNode.Stat:output_type -> membuss.v1.StatResponse
-	17, // 34: membuss.v1.MembussNode.Peers:output_type -> membuss.v1.PeersResponse
-	19, // 35: membuss.v1.MembussNode.DHTPeek:output_type -> membuss.v1.DHTPeekResponse
-	21, // 36: membuss.v1.MembussNode.GC:output_type -> membuss.v1.GCResponse
-	23, // 37: membuss.v1.MembussNode.AnchorStatus:output_type -> membuss.v1.AnchorStatusResponse
-	39, // 38: membuss.v1.MembussNode.Delete:output_type -> membuss.v1.DeleteResponse
-	28, // [28:39] is the sub-list for method output_type
-	17, // [17:28] is the sub-list for method input_type
+	4,  // 19: membuss.v1.MembussNode.AddStream:input_type -> membuss.v1.AddRequest
+	4,  // 20: membuss.v1.MembussNode.AddDirStream:input_type -> membuss.v1.AddRequest
+	7,  // 21: membuss.v1.MembussNode.Get:input_type -> membuss.v1.GetRequest
+	9,  // 22: membuss.v1.MembussNode.Seal:input_type -> membuss.v1.SealRequest
+	11, // 23: membuss.v1.MembussNode.Unseal:input_type -> membuss.v1.UnsealRequest
+	13, // 24: membuss.v1.MembussNode.Stat:input_type -> membuss.v1.StatRequest
+	17, // 25: membuss.v1.MembussNode.Peers:input_type -> membuss.v1.PeersRequest
+	19, // 26: membuss.v1.MembussNode.DHTPeek:input_type -> membuss.v1.DHTPeekRequest
+	21, // 27: membuss.v1.MembussNode.GC:input_type -> membuss.v1.GCRequest
+	23, // 28: membuss.v1.MembussNode.AnchorStatus:input_type -> membuss.v1.AnchorStatusRequest
+	39, // 29: membuss.v1.MembussNode.Delete:input_type -> membuss.v1.DeleteRequest
+	3,  // 30: membuss.v1.Node.Ping:output_type -> membuss.v1.PingResponse
+	5,  // 31: membuss.v1.MembussNode.Add:output_type -> membuss.v1.AddResponse
+	6,  // 32: membuss.v1.MembussNode.AddStream:output_type -> membuss.v1.AddProgress
+	6,  // 33: membuss.v1.MembussNode.AddDirStream:output_type -> membuss.v1.AddProgress
+	8,  // 34: membuss.v1.MembussNode.Get:output_type -> membuss.v1.GetChunk
+	10, // 35: membuss.v1.MembussNode.Seal:output_type -> membuss.v1.SealResponse
+	12, // 36: membuss.v1.MembussNode.Unseal:output_type -> membuss.v1.UnsealResponse
+	14, // 37: membuss.v1.MembussNode.Stat:output_type -> membuss.v1.StatResponse
+	18, // 38: membuss.v1.MembussNode.Peers:output_type -> membuss.v1.PeersResponse
+	20, // 39: membuss.v1.MembussNode.DHTPeek:output_type -> membuss.v1.DHTPeekResponse
+	22, // 40: membuss.v1.MembussNode.GC:output_type -> membuss.v1.GCResponse
+	24, // 41: membuss.v1.MembussNode.AnchorStatus:output_type -> membuss.v1.AnchorStatusResponse
+	40, // 42: membuss.v1.MembussNode.Delete:output_type -> membuss.v1.DeleteResponse
+	30, // [30:43] is the sub-list for method output_type
+	17, // [17:30] is the sub-list for method input_type
 	17, // [17:17] is the sub-list for extension type_name
 	17, // [17:17] is the sub-list for extension extendee
 	0,  // [0:17] is the sub-list for field type_name
@@ -3147,7 +3350,7 @@ func file_membuss_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_membuss_proto_rawDesc), len(file_membuss_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   43,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

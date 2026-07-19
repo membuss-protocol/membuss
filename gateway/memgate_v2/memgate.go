@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gabriel-vasile/mimetype"
@@ -26,8 +25,6 @@ import (
 
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
-	membusspb "github.com/nnlgsakib/membuss/proto"
-	"google.golang.org/protobuf/proto"
 )
 
 // // Backend is the contract Mem-Gate depends on. The daemon
@@ -129,6 +126,12 @@ type Config struct {
 	// MaxCacheBytes caps the in-memory LRU cache. Zero
 	// disables caching. Defaults to 64 MiB.
 	MaxCacheBytes uint64
+	// MaxCacheItemBytes caps the size of a single cacheable
+	// response. Responses larger than this are streamed to the
+	// client instead of being buffered into memory and cached,
+	// which bounds per-request heap use under concurrency. Zero
+	// defaults to 8 MiB; it is clamped to MaxCacheBytes.
+	MaxCacheItemBytes uint64
 	// ReadTimeout is the per-request read timeout. Defaults
 	// to 30s.
 	ReadTimeout time.Duration
@@ -154,7 +157,8 @@ type Config struct {
 type MemGate struct {
 	cfg             Config
 	router          chi.Router
-	lru             *lru
+	lru             *shardedLRU
+	blockLists      *blockListCache
 	ipLimiter       *ipLimiter
 	refererTracker  *RefererTracker
 	downloadManager *DownloadManager
@@ -175,10 +179,37 @@ func New(cfg Config) (*MemGate, error) {
 	if cfg.MaxCacheBytes == 0 {
 		cfg.MaxCacheBytes = 64 * 1024 * 1024
 	}
+	if cfg.MaxCacheItemBytes == 0 {
+		// Cap the size of any single cached item so one large
+		// response cannot dominate the cache or blow up per-request
+		// heap use. Items over this size are streamed, not buffered.
+		cfg.MaxCacheItemBytes = 8 * 1024 * 1024
+	}
+	// A single item can never exceed the whole cache.
+	if cfg.MaxCacheItemBytes > cfg.MaxCacheBytes {
+		cfg.MaxCacheItemBytes = cfg.MaxCacheBytes
+	}
+
+	// Choose the shard count so every cacheable item can actually fit
+	// in one shard. Otherwise an item larger than a shard's budget
+	// would pass the eligibility check, get buffered into memory, then
+	// be evicted immediately on put — paying the buffering cost for
+	// nothing. Each shard must hold at least MaxCacheItemBytes.
+	shardCount := defaultCacheShards
+	if cfg.MaxCacheItemBytes > 0 {
+		maxShards := int(cfg.MaxCacheBytes / cfg.MaxCacheItemBytes)
+		if maxShards < 1 {
+			maxShards = 1
+		}
+		if shardCount > maxShards {
+			shardCount = maxShards
+		}
+	}
 
 	mg := &MemGate{
 		cfg:             cfg,
-		lru:             newLRU(cfg.MaxCacheBytes),
+		lru:             newShardedLRU(cfg.MaxCacheBytes, shardCount),
+		blockLists:      newBlockListCache(defaultBlockListCacheEntries),
 		refererTracker:  NewRefererTracker(),
 		downloadManager: NewDownloadManager(),
 	}
@@ -720,8 +751,11 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 		return
 	}
 
-	// Cache eligibility: the whole content fits under MaxCacheBytes.
-	if info.Size > 0 && info.Size <= m.cfg.MaxCacheBytes {
+	// Cache eligibility: only buffer+cache items small enough to fit
+	// under MaxCacheItemBytes. Larger items are streamed below so a
+	// single response can never allocate more than MaxCacheItemBytes
+	// of heap, bounding memory use under concurrency.
+	if info.Size > 0 && info.Size <= m.cfg.MaxCacheItemBytes {
 		buf := make([]byte, info.Size)
 		if _, err := io.ReadFull(rc, buf); err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
@@ -963,128 +997,6 @@ func checkETag(w http.ResponseWriter, r *http.Request, etagValue string) bool {
 		return true
 	}
 	return false
-}
-
-// --- LRU ---
-
-// lru is a small bounded-byte LRU. The data structure is
-// hand-rolled so the package does not pull in a heavy
-// dependency. For a CDN edge, a simple list + map is more
-// than adequate.
-type lru struct {
-	mu       sync.Mutex
-	maxBytes uint64
-	curBytes uint64
-	// items is ordered most-recent-first.
-	items map[string]*listEntry
-	head  *listEntry
-	tail  *listEntry
-}
-
-type listEntry struct {
-	key  string
-	data []byte
-	prev *listEntry
-	next *listEntry
-}
-
-func newLRU(maxBytes uint64) *lru {
-	return &lru{maxBytes: maxBytes, items: make(map[string]*listEntry)}
-}
-
-func (l *lru) get(key string) ([]byte, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e, ok := l.items[key]
-	if !ok {
-		return nil, false
-	}
-	l.moveToFront(e)
-	return e.data, true
-}
-
-func (l *lru) put(key string, data []byte) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if e, ok := l.items[key]; ok {
-		l.curBytes -= uint64(len(e.data))
-		e.data = data
-		l.curBytes += uint64(len(data))
-		l.moveToFront(e)
-	} else {
-		e := &listEntry{key: key, data: data}
-		l.items[key] = e
-		l.curBytes += uint64(len(data))
-		l.pushFront(e)
-	}
-	for l.curBytes > l.maxBytes && l.tail != nil {
-		old := l.tail
-		l.remove(old)
-		delete(l.items, old.key)
-		l.curBytes -= uint64(len(old.data))
-	}
-}
-
-func (l *lru) moveToFront(e *listEntry) {
-	if l.head == e {
-		return
-	}
-	l.remove(e)
-	l.pushFront(e)
-}
-
-func (l *lru) pushFront(e *listEntry) {
-	e.prev = nil
-	e.next = l.head
-	if l.head != nil {
-		l.head.prev = e
-	}
-	l.head = e
-	if l.tail == nil {
-		l.tail = e
-	}
-}
-
-func (l *lru) remove(e *listEntry) {
-	if e.prev != nil {
-		e.prev.next = e.next
-	} else {
-		l.head = e.next
-	}
-	if e.next != nil {
-		e.next.prev = e.prev
-	} else {
-		l.tail = e.prev
-	}
-	e.prev, e.next = nil, nil
-}
-
-// len returns the current number of entries.
-func (l *lru) len() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.items)
-}
-
-// Bytes returns the current cache size in bytes.
-func (l *lru) bytes() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.curBytes
-}
-
-// MaxBytes returns the configured cache cap.
-func (l *lru) max() uint64 { return l.maxBytes }
-
-// MarshalJSON renders the cache as a small JSON object.
-func (l *lru) MarshalJSON() ([]byte, error) {
-	type view struct {
-		Entries int    `json:"entries"`
-		Bytes   uint64 `json:"bytes"`
-		Max     uint64 `json:"max_bytes"`
-	}
-	v := view{Entries: l.len(), Bytes: l.bytes(), Max: l.max()}
-	return json.Marshal(v)
 }
 
 // Phase 18: custom domain serving middleware.
@@ -1403,7 +1315,11 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	ct := DetectContentType(resolvedPath, nil, mimeType)
 	filename := filepath.Base(resolvedPath)
 
-	if size > 0 && size <= m.cfg.MaxCacheBytes {
+	// Only buffer+cache items small enough to fit under
+	// MaxCacheItemBytes. Larger files fall through to the streaming
+	// path below (which also serves Range requests), so a single
+	// response never allocates more than MaxCacheItemBytes of heap.
+	if size > 0 && size <= m.cfg.MaxCacheItemBytes {
 		buf := make([]byte, size)
 		if _, err := io.ReadFull(rc, buf); err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
@@ -1471,197 +1387,6 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	_, _ = io.Copy(w, rc)
 }
 
-type dagBlock struct {
-	mid    mid.MID
-	size   int64
-	offset int64
-}
-
-func buildBlockList(ctx context.Context, backend Backend, root mid.MID) ([]dagBlock, int64, error) {
-	raw, err := backend.RawBlock(ctx, root)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var blocks []dagBlock
-	var offset int64
-
-	if root.Codec() == mid.CodecMemFS {
-		var node membusspb.MemFSNode
-		if err := proto.Unmarshal(raw, &node); err != nil {
-			return nil, 0, err
-		}
-		if node.Type != membusspb.MemFSType_FILE {
-			return nil, 0, fmt.Errorf("memfs node is not a file")
-		}
-
-		var walkMemFS func(n *membusspb.MemFSNode) error
-		walkMemFS = func(n *membusspb.MemFSNode) error {
-			for _, b := range n.Blocks {
-				if b == nil || len(b.Mid) == 0 {
-					continue
-				}
-				var codec uint64 = mid.CodecMemFS
-				if b.Size > 0 {
-					codec = mid.CodecRaw
-				}
-				childMID, err := mid.FromMultihash(codec, b.Mid)
-				if err != nil {
-					return err
-				}
-
-				if b.Size > 0 {
-					blocks = append(blocks, dagBlock{
-						mid:    childMID,
-						size:   int64(b.Size),
-						offset: offset,
-					})
-					offset += int64(b.Size)
-				} else {
-					childRaw, err := backend.RawBlock(ctx, childMID)
-					if err != nil {
-						return err
-					}
-					var childNode membusspb.MemFSNode
-					if err := proto.Unmarshal(childRaw, &childNode); err != nil {
-						return err
-					}
-					if err := walkMemFS(&childNode); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
-		}
-
-		if err := walkMemFS(&node); err != nil {
-			return nil, 0, err
-		}
-		return blocks, offset, nil
-	} else {
-		var walkRawDAG func(curr mid.MID, rawBytes []byte) error
-		walkRawDAG = func(curr mid.MID, rawBytes []byte) error {
-			var node membusspb.DAGNode
-			if err := proto.Unmarshal(rawBytes, &node); err == nil && len(node.Links) > 0 {
-				for _, linkStr := range node.Links {
-					child, err := mid.Parse(linkStr)
-					if err != nil {
-						return err
-					}
-					childRaw, err := backend.RawBlock(ctx, child)
-					if err != nil {
-						return err
-					}
-					if err := walkRawDAG(child, childRaw); err != nil {
-						return err
-					}
-				}
-				return nil
-			}
-
-			size := int64(len(rawBytes))
-			blocks = append(blocks, dagBlock{
-				mid:    curr,
-				size:   size,
-				offset: offset,
-			})
-			offset += size
-			return nil
-		}
-
-		if err := walkRawDAG(root, raw); err != nil {
-			return nil, 0, err
-		}
-		return blocks, offset, nil
-	}
-}
-
-type dagReader struct {
-	ctx          context.Context
-	backend      Backend
-	blocks       []dagBlock
-	totalSize    int64
-	pos          int64
-	curBlockIdx  int
-	curBlockBuf  []byte
-}
-
-func newDagReader(ctx context.Context, backend Backend, blocks []dagBlock, totalSize int64) *dagReader {
-	return &dagReader{
-		ctx:         ctx,
-		backend:     backend,
-		blocks:      blocks,
-		totalSize:   totalSize,
-		curBlockIdx: -1,
-	}
-}
-
-func (r *dagReader) Read(p []byte) (int, error) {
-	if r.pos >= r.totalSize {
-		return 0, io.EOF
-	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-
-	idx := r.findBlockIndex(r.pos)
-	if idx < 0 || idx >= len(r.blocks) {
-		return 0, io.EOF
-	}
-
-	if r.curBlockIdx != idx || r.curBlockBuf == nil {
-		block := r.blocks[idx]
-		data, err := r.backend.RawBlock(r.ctx, block.mid)
-		if err != nil {
-			return 0, fmt.Errorf("read block %s: %w", block.mid.String(), err)
-		}
-		r.curBlockIdx = idx
-		r.curBlockBuf = data
-	}
-
-	block := r.blocks[idx]
-	offsetInBlock := r.pos - block.offset
-	if offsetInBlock >= int64(len(r.curBlockBuf)) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.curBlockBuf[offsetInBlock:])
-	r.pos += int64(n)
-	return n, nil
-}
-
-func (r *dagReader) Seek(offset int64, whence int) (int64, error) {
-	var target int64
-	switch whence {
-	case io.SeekStart:
-		target = offset
-	case io.SeekCurrent:
-		target = r.pos + offset
-	case io.SeekEnd:
-		target = r.totalSize + offset
-	default:
-		return 0, fmt.Errorf("invalid whence: %d", whence)
-	}
-	if target < 0 {
-		return 0, fmt.Errorf("negative seek target: %d", target)
-	}
-	r.pos = target
-	return r.pos, nil
-}
-
-func (r *dagReader) Close() error {
-	r.curBlockBuf = nil
-	return nil
-}
-
-func (r *dagReader) findBlockIndex(pos int64) int {
-	for i, b := range r.blocks {
-		if pos >= b.offset && pos < b.offset+b.size {
-			return i
-		}
-	}
-	return -1
-}
-
 func (m *MemGate) handleStreamRange(w http.ResponseWriter, r *http.Request, fileMID mid.MID, totalSize int64) bool {
 	rng := r.Header.Get("Range")
 	if rng == "" {
@@ -1674,7 +1399,7 @@ func (m *MemGate) handleStreamRange(w http.ResponseWriter, r *http.Request, file
 		return true
 	}
 
-	blocks, _, err := buildBlockList(r.Context(), m.cfg.Backend, fileMID)
+	blocks, _, err := m.cachedBlockList(r.Context(), fileMID)
 	if err != nil {
 		http.Error(w, "build block list: "+err.Error(), http.StatusInternalServerError)
 		return true

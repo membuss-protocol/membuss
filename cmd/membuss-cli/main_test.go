@@ -31,6 +31,10 @@ type fakeBackend struct {
 	dhtPeekProv []serverpkg.NodePeerInfo
 	peers       []serverpkg.NodePeerInfo
 	anchor      serverpkg.AnchorInfo
+	// name/mime are the stored ObjectInfo the daemon echoes
+	// back on Stat; the CLI uses them to name downloads.
+	name string
+	mime string
 }
 
 func (f *fakeBackend) Add(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string) (serverpkg.AddResult, error) {
@@ -43,16 +47,34 @@ func (f *fakeBackend) Add(ctx context.Context, path, chunker string, chunkSize u
 	return serverpkg.AddResult{MID: f.root, Size: f.rootSize, Blocks: f.leafBlocks, Sealed: sealRoot}, nil
 }
 
-func (f *fakeBackend) Get(ctx context.Context, midStr string, offset, limit uint64) (io.ReadCloser, error) {
-	return f.GetWithProgress(ctx, midStr, offset, limit, nil)
+func (f *fakeBackend) AddWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string, progressFn func(processed, total uint64)) (serverpkg.AddResult, error) {
+	res, err := f.Add(ctx, path, chunker, chunkSize, sealRoot, name, mimeType)
+	if err == nil && progressFn != nil {
+		progressFn(res.Size, res.Size)
+	}
+	return res, err
 }
 
-func (f *fakeBackend) GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, error) {
+func (f *fakeBackend) AddDirWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name string, progressFn func(processed, total uint64)) (serverpkg.AddResult, error) {
+	res, err := f.Add(ctx, path, chunker, chunkSize, sealRoot, name, "inode/directory")
+	if err == nil && progressFn != nil {
+		progressFn(res.Size, res.Size)
+	}
+	return res, err
+}
+
+func (f *fakeBackend) Get(ctx context.Context, midStr string, offset, limit uint64) (io.ReadCloser, error) {
+	rc, _, err := f.GetWithProgress(ctx, midStr, offset, limit, nil)
+	return rc, err
+}
+
+func (f *fakeBackend) GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, serverpkg.ContentMeta, error) {
 	body := []byte("the quick brown fox jumps over the lazy dog\n")
 	if progressFn != nil {
 		progressFn(memex.ProgressUpdate{BlocksResolved: uint64(len(body)), BlocksTotal: uint64(len(body))})
 	}
-	return io.NopCloser(bytes.NewReader(body)), nil
+	meta := serverpkg.ContentMeta{Name: f.name, MimeType: f.mime, Size: uint64(len(body))}
+	return io.NopCloser(bytes.NewReader(body)), meta, nil
 }
 
 func (f *fakeBackend) Seal(ctx context.Context, midStr string, recursive bool) (serverpkg.SealResult, error) {
@@ -78,7 +100,7 @@ func (f *fakeBackend) Stat(ctx context.Context, midStr string) (serverpkg.StatIn
 	if midStr != f.root {
 		return serverpkg.StatInfo{}, nil
 	}
-	return serverpkg.StatInfo{Present: true, Size: f.rootSize, Blocks: f.leafBlocks, Sealed: f.sealedSet[midStr], Codec: 0x55}, nil
+	return serverpkg.StatInfo{Present: true, Size: f.rootSize, Blocks: f.leafBlocks, Sealed: f.sealedSet[midStr], Codec: 0x55, Name: f.name, MimeType: f.mime}, nil
 }
 
 func (f *fakeBackend) Peers(limit uint32) ([]serverpkg.NodePeerInfo, uint32, error) {
@@ -100,7 +122,6 @@ func (f *fakeBackend) GC(ctx context.Context, all bool) (serverpkg.GCInfo, error
 func (f *fakeBackend) Delete(ctx context.Context, midStr string) (serverpkg.DeleteResult, error) {
 	return serverpkg.DeleteResult{BlocksDeleted: 1, BytesFreed: 4096}, nil
 }
-
 
 func (f *fakeBackend) AnchorStatus() serverpkg.AnchorInfo {
 	return f.anchor
@@ -138,10 +159,14 @@ func withCLI(t *testing.T, args []string, stdin io.Reader) (stdout, stderr strin
 		_ = os.Stdin
 	}
 
-	done := make(chan struct{})
+	// Copy both pipes concurrently. We must wait for BOTH goroutines
+	// to finish before reading the buffers, otherwise reading
+	// errBuf.String() races the stderr copy still writing into it.
+	outDone := make(chan struct{})
+	errDone := make(chan struct{})
 	var outBuf, errBuf bytes.Buffer
-	go func() { _, _ = io.Copy(&outBuf, rOut); close(done) }()
-	go func() { _, _ = io.Copy(&errBuf, rErr) }()
+	go func() { _, _ = io.Copy(&outBuf, rOut); close(outDone) }()
+	go func() { _, _ = io.Copy(&errBuf, rErr); close(errDone) }()
 
 	// Replace os.Args for the duration of this test.
 	oldArgs := os.Args
@@ -151,7 +176,8 @@ func withCLI(t *testing.T, args []string, stdin io.Reader) (stdout, stderr strin
 	err = newRootCmd().Execute()
 	_ = wOut.Close()
 	_ = wErr.Close()
-	<-done
+	<-outDone
+	<-errDone
 	return outBuf.String(), errBuf.String(), err
 }
 
@@ -219,6 +245,154 @@ func TestCLI_Get_ToFile(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "quick brown fox") {
 		t.Errorf("file content wrong: %q", got)
+	}
+}
+
+// chdirTemp switches the process into a fresh temp dir for the
+// duration of the test so default (cwd) downloads are isolated.
+func chdirTemp(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	return dir
+}
+
+// A bare `get` (no -o) must NOT dump raw bytes to stdout; it
+// downloads to a file named from the stored metadata, mirroring
+// the explorer.
+func TestCLI_Get_DefaultDownloadsToNamedFile(t *testing.T) {
+	b := &fakeBackend{root: "memfake", name: "report.txt", mime: "text/plain"}
+	addr, stop := startTestServer(t, b)
+	defer stop()
+	dir := chdirTemp(t)
+
+	out, errStr, err := withCLI(t, []string{"--addr", addr, "get", "memfake"}, nil)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Contains(out, "quick brown fox") {
+		t.Errorf("raw payload leaked to stdout: %q", out)
+	}
+	if !strings.Contains(errStr, "Saved") || !strings.Contains(errStr, "report.txt") {
+		t.Errorf("expected save notice mentioning filename; got stderr %q", errStr)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "report.txt"))
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if !strings.Contains(string(got), "quick brown fox") {
+		t.Errorf("downloaded content wrong: %q", got)
+	}
+}
+
+// With no recorded name, the fallback is "<mid>.bin".
+func TestCLI_Get_DefaultFallbackName(t *testing.T) {
+	addr, stop := startTestServer(t, &fakeBackend{})
+	defer stop()
+	dir := chdirTemp(t)
+
+	if _, _, err := withCLI(t, []string{"--addr", addr, "get", "memfake"}, nil); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "memfake.bin")); err != nil {
+		t.Errorf("expected fallback memfake.bin: %v", err)
+	}
+}
+
+// A name clash appends " (n)" instead of overwriting.
+func TestCLI_Get_DefaultAvoidsClobber(t *testing.T) {
+	b := &fakeBackend{root: "memfake", name: "data.txt"}
+	addr, stop := startTestServer(t, b)
+	defer stop()
+	dir := chdirTemp(t)
+
+	if err := os.WriteFile(filepath.Join(dir, "data.txt"), []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := withCLI(t, []string{"--addr", addr, "get", "memfake"}, nil); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	// Original untouched.
+	if got, _ := os.ReadFile(filepath.Join(dir, "data.txt")); string(got) != "existing" {
+		t.Errorf("original file was clobbered: %q", got)
+	}
+	// New file written alongside.
+	if _, err := os.Stat(filepath.Join(dir, "data (1).txt")); err != nil {
+		t.Errorf("expected non-clobbering variant data (1).txt: %v", err)
+	}
+}
+
+// -o pointing at a directory saves under the recorded name.
+func TestCLI_Get_OutDirUsesRecordedName(t *testing.T) {
+	b := &fakeBackend{root: "memfake", name: "photo.jpg"}
+	addr, stop := startTestServer(t, b)
+	defer stop()
+	dir := t.TempDir()
+
+	if _, _, err := withCLI(t, []string{"--addr", addr, "get", "memfake", "-o", dir}, nil); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "photo.jpg")); err != nil {
+		t.Errorf("expected photo.jpg inside output dir: %v", err)
+	}
+}
+
+func TestCLI_FitToWidth(t *testing.T) {
+	cases := []struct {
+		in    string
+		width int
+		want  string
+	}{
+		{"short", 0, "short"},   // unknown width: untouched
+		{"short", 100, "short"}, // fits: untouched
+		{"abcdefghij", 5, "abcd…"},
+		{"abcdefghij", 1, "a"},
+	}
+	for _, c := range cases {
+		if got := fitToWidth(c.in, c.width); got != c.want {
+			t.Errorf("fitToWidth(%q,%d) = %q, want %q", c.in, c.width, got, c.want)
+		}
+	}
+}
+
+// On a non-terminal writer (like a bytes.Buffer) the progress bar
+// must emit nothing — no carriage returns, no bar frames — so
+// redirected/piped output stays clean.
+func TestCLI_ProgressBar_SilentOnNonTTY(t *testing.T) {
+	var buf bytes.Buffer
+	p := newProgressBar(&buf, "file.bin")
+	for i := uint64(1); i <= 100; i++ {
+		p.render(i*1000, 100*1000, i, false)
+	}
+	p.render(100*1000, 100*1000, 100, true)
+	p.finish()
+	p.clear()
+	if buf.Len() != 0 {
+		t.Errorf("expected no output on non-tty writer, got %q", buf.String())
+	}
+}
+
+func TestCLI_SanitizeDownloadName(t *testing.T) {
+	cases := map[string]string{
+		"clean.txt":         "clean.txt",
+		"a/b/evil.txt":      "evil.txt",
+		"..":                "",
+		".":                 "",
+		"with:bad*chars?.x": "with_bad_chars_.x",
+		"":                  "",
+	}
+	for in, want := range cases {
+		if got := sanitizeDownloadName(in); got != want {
+			t.Errorf("sanitizeDownloadName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

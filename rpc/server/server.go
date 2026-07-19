@@ -31,6 +31,21 @@ type Backend interface {
 	// persisted as the per-MID ObjectInfo so the gateway
 	// can reproduce the user-facing metadata on download.
 	Add(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string) (AddResult, error)
+	// AddWithProgress ingests a local file exactly like Add,
+	// invoking progressFn as bytes are read from the source so
+	// the daemon can stream ingest progress to the client.
+	// progressFn receives the running byte count and the total
+	// file size (total is 0 when the size is unknown).
+	AddWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name, mimeType string, progressFn func(processed, total uint64)) (AddResult, error)
+	// AddDirWithProgress ingests a local directory as a single
+	// MemFS DIR tree. The daemon walks the directory from its own
+	// filesystem (path is a local directory path, exactly like
+	// AddWithProgress reads a local file). name optionally
+	// overrides the root directory name; when empty the directory
+	// basename is used. progressFn receives the running byte count
+	// aggregated across every file in the tree and the total tree
+	// size (total is 0 until the walk has sized every file).
+	AddDirWithProgress(ctx context.Context, path, chunker string, chunkSize uint32, sealRoot bool, name string, progressFn func(processed, total uint64)) (AddResult, error)
 	// Get resolves a MID locally if present; otherwise it falls
 	// back to fetching via Memex. The returned ReadCloser
 	// streams the bytes.
@@ -40,7 +55,14 @@ type Backend interface {
 	// progressFn is called as blocks arrive with the
 	// running total of bytes received and total bytes
 	// (total may be 0 until all blocks are known).
-	GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, error)
+	//
+	// The returned ContentMeta carries the object's
+	// name / MIME type / size, resolved after any network
+	// fetch completes, so the server can send them to the
+	// client as a header frame. The fetch is driven live:
+	// progressFn fires while blocks are still arriving, not
+	// only at the end.
+	GetWithProgress(ctx context.Context, midStr string, offset, limit uint64, progressFn func(update memex.ProgressUpdate)) (io.ReadCloser, ContentMeta, error)
 	// Seal pins the given MID, optionally recursive.
 	Seal(ctx context.Context, midStr string, recursive bool) (SealResult, error)
 	// Unseal removes the pin on a MID.
@@ -61,16 +83,28 @@ type Backend interface {
 
 // AddResult is the return value of Backend.Add.
 type AddResult struct {
-	MID      string
-	Size     uint64
-	Blocks   uint64
-	Sealed   bool
+	MID    string
+	Size   uint64
+	Blocks uint64
+	Sealed bool
 	// Name and MimeType echo back the values the
 	// caller passed in (after defaults / sniffing
 	// applied by the daemon) so the CLI / explorer
 	// can show them without a second round-trip.
 	Name     string
 	MimeType string
+}
+
+// ContentMeta carries the user-facing metadata for a
+// resolved object, returned by GetWithProgress once the
+// content is available locally (after any network fetch).
+// Fields are best-effort: Name / MimeType may be empty for
+// content added by an older daemon or ingested without a
+// name, in which case the client applies its own fallback.
+type ContentMeta struct {
+	Name     string
+	MimeType string
+	Size     uint64
 }
 
 // SealResult is the return value of Backend.Seal.
@@ -81,12 +115,12 @@ type SealResult struct {
 
 // StatInfo is the return value of Backend.Stat.
 type StatInfo struct {
-	Present       bool
-	Size          uint64
-	Blocks        uint64
-	Sealed        bool
-	Codec         uint64
-	Erasure       *ErasureInfo
+	Present bool
+	Size    uint64
+	Blocks  uint64
+	Sealed  bool
+	Codec   uint64
+	Erasure *ErasureInfo
 	// Name and MimeType are the per-MID ObjectInfo
 	// captured at Add time, or empty for content
 	// added by an older daemon.
@@ -187,71 +221,199 @@ func (s *Server) Add(ctx context.Context, req *membusspb.AddRequest) (*membusspb
 	}, nil
 }
 
+// AddStream ingests a file like Add but streams ingest progress
+// frames while the daemon reads and chunks it, ending with a
+// single done=true frame carrying the result.
+//
+// Like Get, the ingest runs on its own goroutine and reports
+// through a depth-1 drop-on-full channel; this (the only
+// sending goroutine) drains it, keeping gRPC's single-sender
+// requirement intact while never blocking the ingest on a slow
+// client.
+func (s *Server) AddStream(req *membusspb.AddRequest, stream membusspb.MembussNode_AddStreamServer) error {
+	if req.GetPath() == "" {
+		return status.Error(codes.InvalidArgument, "add: path required")
+	}
+	return streamAdd(stream, func(progressFn func(processed, total uint64)) (AddResult, error) {
+		return s.Backend.AddWithProgress(stream.Context(), req.GetPath(), req.GetChunker(), req.GetChunkSize(), !req.GetNoSeal(), req.GetName(), req.GetMimeType(), progressFn)
+	})
+}
+
+// AddDirStream ingests a local directory as a single MemFS DIR
+// tree, streaming the same AddProgress frames as AddStream. The
+// daemon walks the directory from its own filesystem, exactly
+// as AddStream reads a local file — the client only sends the
+// directory path (and optional name), never the file bytes.
+func (s *Server) AddDirStream(req *membusspb.AddRequest, stream membusspb.MembussNode_AddDirStreamServer) error {
+	if req.GetPath() == "" {
+		return status.Error(codes.InvalidArgument, "add: path required")
+	}
+	return streamAdd(stream, func(progressFn func(processed, total uint64)) (AddResult, error) {
+		return s.Backend.AddDirWithProgress(stream.Context(), req.GetPath(), req.GetChunker(), req.GetChunkSize(), !req.GetNoSeal(), req.GetName(), progressFn)
+	})
+}
+
+// streamAdd runs an ingest that reports byte progress and drives
+// the AddProgress stream shared by AddStream and AddDirStream.
+//
+// The ingest runs on its own goroutine and reports through a
+// depth-1 drop-on-full channel; this (the only sending
+// goroutine) drains it, keeping gRPC's single-sender requirement
+// intact while never blocking the ingest on a slow client.
+func streamAdd(stream grpc.ServerStreamingServer[membusspb.AddProgress], ingest func(progressFn func(processed, total uint64)) (AddResult, error)) error {
+	type prog struct{ processed, total uint64 }
+	progressCh := make(chan prog, 1)
+	progressFn := func(processed, total uint64) {
+		up := prog{processed: processed, total: total}
+		select {
+		case progressCh <- up:
+		default:
+			select {
+			case <-progressCh:
+			default:
+			}
+			select {
+			case progressCh <- up:
+			default:
+			}
+		}
+	}
+
+	type addResult struct {
+		res AddResult
+		err error
+	}
+	resCh := make(chan addResult, 1)
+	go func() {
+		res, err := ingest(progressFn)
+		resCh <- addResult{res: res, err: err}
+	}()
+
+	var out addResult
+	for waiting := true; waiting; {
+		select {
+		case p := <-progressCh:
+			if err := stream.Send(&membusspb.AddProgress{
+				BytesProcessed: p.processed,
+				TotalBytes:     p.total,
+			}); err != nil {
+				return err
+			}
+		case out = <-resCh:
+			waiting = false
+		case <-stream.Context().Done():
+			return status.FromContextError(stream.Context().Err()).Err()
+		}
+	}
+	if out.err != nil {
+		return status.Errorf(codes.Internal, "add: %v", out.err)
+	}
+	return stream.Send(&membusspb.AddProgress{
+		Done:   true,
+		Mid:    out.res.MID,
+		Size:   out.res.Size,
+		Blocks: out.res.Blocks,
+		Sealed: out.res.Sealed,
+	})
+}
+
 // Get streams a MID's content back to the caller in chunks.
+//
+// The stream is shaped as: zero or more progress_only frames
+// (emitted while the object is pulled from the network), then
+// exactly one is_header frame carrying the resolved name /
+// MIME type / total size, then the payload frames. Older
+// clients that ignore the new fields still see the payload
+// frames; the progress / header frames carry no data and are
+// harmless to skip.
 func (s *Server) Get(req *membusspb.GetRequest, stream membusspb.MembussNode_GetServer) error {
 	if req.GetMid() == "" {
 		return status.Error(codes.InvalidArgument, "get: mid required")
 	}
-	rc, err := s.Backend.GetWithProgress(stream.Context(), req.GetMid(), req.GetOffset(), req.GetLimit(), nil)
-	if err != nil {
-		return status.Errorf(codes.Internal, "get: %v", err)
-	}
-	defer rc.Close()
 
-	const frameSize = 64 * 1024
-	buf := make([]byte, frameSize)
-	var (
-		index uint64
-		total uint64
-	)
-	// We don't know the total up front; leave it 0.
-	for {
-		n, err := rc.Read(buf)
-		if n > 0 {
-			if err := stream.Send(&membusspb.GetChunk{Data: append([]byte(nil), buf[:n]...), Index: index, Total: total}); err != nil {
+	// progressFn runs on the Memex fetch goroutine; gRPC
+	// streams are not safe for concurrent Send from multiple
+	// goroutines, so progress updates are funnelled through a
+	// channel and drained by this (the only) sending goroutine.
+	// A depth-1 channel with drop-on-full keeps the fetch from
+	// blocking on a slow client while still surfacing the
+	// latest counts.
+	progressCh := make(chan memex.ProgressUpdate, 1)
+	progressFn := func(update memex.ProgressUpdate) {
+		select {
+		case progressCh <- update:
+		default:
+			select {
+			case <-progressCh:
+			default:
+			}
+			select {
+			case progressCh <- update:
+			default:
+			}
+		}
+	}
+
+	type getResult struct {
+		rc   io.ReadCloser
+		meta ContentMeta
+		err  error
+	}
+	resCh := make(chan getResult, 1)
+	go func() {
+		rc, meta, err := s.Backend.GetWithProgress(stream.Context(), req.GetMid(), req.GetOffset(), req.GetLimit(), progressFn)
+		resCh <- getResult{rc: rc, meta: meta, err: err}
+	}()
+
+	// Phase 1: forward progress frames until the fetch resolves.
+	var res getResult
+	for waiting := true; waiting; {
+		select {
+		case up := <-progressCh:
+			if err := stream.Send(&membusspb.GetChunk{
+				ProgressOnly:  true,
+				FetchedBlocks: up.BlocksResolved,
+				TotalBlocks:   up.BlocksTotal,
+				BytesFetched:  up.BytesDelivered,
+			}); err != nil {
 				return err
 			}
-			index++
-		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return status.Errorf(codes.Internal, "get: read: %v", err)
+		case res = <-resCh:
+			waiting = false
+		case <-stream.Context().Done():
+			return status.FromContextError(stream.Context().Err()).Err()
 		}
 	}
-}
-
-// GetWithProgress streams a MID's content back to the caller
-// in chunks, sending progress updates via the Total field
-// of each GetChunk when progressFn is non-nil.
-func (s *Server) GetWithProgress(req *membusspb.GetRequest, stream membusspb.MembussNode_GetServer) error {
-	if req.GetMid() == "" {
-		return status.Error(codes.InvalidArgument, "get: mid required")
+	if res.err != nil {
+		return status.Errorf(codes.Internal, "get: %v", res.err)
 	}
-	var lastTotal uint64
-	progressFn := func(update memex.ProgressUpdate) {
-		lastTotal = update.BlocksTotal
-	}
-	rc, err := s.Backend.GetWithProgress(stream.Context(), req.GetMid(), req.GetOffset(), req.GetLimit(), progressFn)
-	if err != nil {
-		return status.Errorf(codes.Internal, "get: %v", err)
-	}
+	rc := res.rc
 	defer rc.Close()
 
+	// Phase 2: header frame with the resolved metadata.
+	if err := stream.Send(&membusspb.GetChunk{
+		IsHeader:  true,
+		Name:      res.meta.Name,
+		MimeType:  res.meta.MimeType,
+		TotalSize: res.meta.Size,
+		Total:     res.meta.Size,
+	}); err != nil {
+		return err
+	}
+
+	// Phase 3: payload frames.
 	const frameSize = 64 * 1024
 	buf := make([]byte, frameSize)
-	var (
-		index uint64
-		total uint64
-	)
+	var index uint64
 	for {
 		n, err := rc.Read(buf)
 		if n > 0 {
-			if lastTotal > 0 {
-				total = lastTotal
-			}
-			if err := stream.Send(&membusspb.GetChunk{Data: append([]byte(nil), buf[:n]...), Index: index, Total: total}); err != nil {
+			if err := stream.Send(&membusspb.GetChunk{
+				Data:      append([]byte(nil), buf[:n]...),
+				Index:     index,
+				Total:     res.meta.Size,
+				TotalSize: res.meta.Size,
+			}); err != nil {
 				return err
 			}
 			index++
@@ -371,7 +533,6 @@ func (s *Server) Delete(ctx context.Context, req *membusspb.DeleteRequest) (*mem
 		BytesFreed:    res.BytesFreed,
 	}, nil
 }
-
 
 // AnchorStatus returns the anchor engine's stats.
 func (s *Server) AnchorStatus(ctx context.Context, req *membusspb.AnchorStatusRequest) (*membusspb.AnchorStatusResponse, error) {

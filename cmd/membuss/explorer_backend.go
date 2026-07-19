@@ -18,17 +18,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/nnlgsakib/membuss/anchor"
-	hostpkg "github.com/nnlgsakib/membuss/net/host"
-	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/descriptor"
+	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
+	"github.com/nnlgsakib/membuss/core/version"
 	explorer "github.com/nnlgsakib/membuss/gateway/explorer"
 	memgate "github.com/nnlgsakib/membuss/gateway/memgate_v2"
-	"github.com/nnlgsakib/membuss/core/version"
+	hostpkg "github.com/nnlgsakib/membuss/net/host"
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
@@ -145,7 +145,6 @@ func (a *explorerAdapter) DropAll(ctx context.Context) error {
 	a.statsMu.Unlock()
 	return nil
 }
-
 
 // Providers returns DHT-known providers for m.
 func (a *explorerAdapter) Providers(ctx context.Context, m mid.MID, limit int) ([]string, error) {
@@ -352,6 +351,18 @@ func (a *explorerAdapter) SealedMIDs(ctx context.Context) ([]mid.MID, error) {
 
 // AllStoredMIDs lists every root MID in the local store,
 // regardless of seal status, with its sealed flag.
+//
+// The union of roots is read directly from the store on every
+// call (sealed MIDs + ObjectInfo roots), so the file list
+// reflects reality no matter which path ingested the content:
+// the explorer's own HTTP handlers, the HTTP API, or the
+// gRPC/CLI add path. Every add path persists an ObjectInfo
+// with IsRoot=true before (optionally) sealing, so this union
+// is complete for sealed and unsealed uploads alike. We read
+// from the store rather than the in-memory allRoots cache
+// because the gRPC/CLI path writes to the store without going
+// through this adapter, and would otherwise stay invisible
+// until the daemon restarts.
 func (a *explorerAdapter) AllStoredMIDs(ctx context.Context) ([]explorer.StoredMIDView, error) {
 	b := a.b
 	if b.store == nil {
@@ -365,8 +376,21 @@ func (a *explorerAdapter) AllStoredMIDs(ctx context.Context) ([]explorer.StoredM
 	for _, m := range sealed {
 		sealedSet[m.String()] = struct{}{}
 	}
-	out := make([]explorer.StoredMIDView, 0, len(a.allRoots))
-	for key := range a.allRoots {
+
+	// Union of every known root: sealed roots plus ObjectInfo
+	// roots persisted by any add path.
+	roots := make(map[string]struct{}, len(sealed))
+	for key := range sealedSet {
+		roots[key] = struct{}{}
+	}
+	if objMIDs, oerr := b.store.AllObjectMIDs(); oerr == nil {
+		for _, m := range objMIDs {
+			roots[m.String()] = struct{}{}
+		}
+	}
+
+	out := make([]explorer.StoredMIDView, 0, len(roots))
+	for key := range roots {
 		m, err := mid.Parse(key)
 		if err != nil {
 			continue
@@ -615,13 +639,13 @@ func (a *explorerAdapter) Add(ctx context.Context, name string, r io.Reader) (ex
 
 	a.allRoots[res.MID.String()] = struct{}{}
 	return explorer.ContentInfo{
-		MID:           res.MID.String(),
-		Size:          res.Size,
-		Blocks:        res.Block,
-		Sealed:        true,
-		Name:          name,
-		MimeType:      mime,
-		Present:       true,
+		MID:      res.MID.String(),
+		Size:     res.Size,
+		Blocks:   res.Block,
+		Sealed:   true,
+		Name:     name,
+		MimeType: mime,
+		Present:  true,
 	}, nil
 }
 
@@ -709,13 +733,13 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 	a.allRoots[res.MID.String()] = struct{}{}
 
 	return explorer.ContentInfo{
-		MID:           res.MID.String(),
-		Size:          res.Size,
-		Blocks:        res.Block,
-		Sealed:        true,
-		Present:       true,
-		Name:          dirName,
-		MimeType:      "inode/directory",
+		MID:      res.MID.String(),
+		Size:     res.Size,
+		Blocks:   res.Block,
+		Sealed:   true,
+		Present:  true,
+		Name:     dirName,
+		MimeType: "inode/directory",
 	}, nil
 }
 
