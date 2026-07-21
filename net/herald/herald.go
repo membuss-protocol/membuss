@@ -37,6 +37,7 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -545,7 +546,7 @@ return nil // skip this MID in this cycle
 			}
 
 			// Walk the DAG but announce only MemFS entry nodes.
-			walkErr := store.Walk(h.cfg.Store, r, func(m mid.MID, _ bool) error {
+			walkErr := store.WalkOptions(h.cfg.Store, r, true, func(m mid.MID, _ bool) error {
 				if m.Equal(r) {
 					return nil
 				}
@@ -566,7 +567,9 @@ return nil // skip this MID in this cycle
 				return filterFn(m)
 			})
 			if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
-				log.Printf("herald: walk error for root %s: %v", r, walkErr)
+				if !errors.Is(walkErr, store.ErrNotFound) && !strings.Contains(walkErr.Error(), "not found") {
+					log.Printf("herald: walk error for root %s: %v", r, walkErr)
+				}
 			}
 			return nil
 		})

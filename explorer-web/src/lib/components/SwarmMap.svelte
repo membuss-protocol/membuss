@@ -127,11 +127,13 @@
 </script>
 
 <div class="swarm relative w-full overflow-hidden aspect-[2/1]">
-	<!-- Count + legend overlays -->
-	<div class="pointer-events-none absolute top-5 left-6 z-20 flex flex-col select-none">
+	<!-- Count overlay centered near bottom edge -->
+	<div class="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center select-none text-center">
 		<span class="font-display text-4xl leading-none text-slate-50 tabular-nums md:text-5xl">{peerCount}</span>
-		<span class="eyebrow mt-1.5">peers in swarm</span>
+		<span class="eyebrow mt-1">peers in swarm</span>
 	</div>
+
+	<!-- Legend -->
 	<div
 		class="pointer-events-none absolute right-6 bottom-4 z-20 flex select-none items-center gap-4 font-mono text-[9px] tracking-wider text-slate-400 uppercase"
 	>
@@ -148,7 +150,7 @@
 		aria-label="World map of {peerCount} connected swarm peers"
 	>
 		<defs>
-			<!-- Grid-dot fill for landmasses (IPFS-webui gridpattern) -->
+			<!-- Grid-dot fill for landmasses -->
 			<pattern id="landdots" width="6" height="6" patternUnits="userSpaceOnUse">
 				<circle cx="1.4" cy="1.4" r="1.1" fill="#e9e2d2" opacity="0.22" />
 			</pattern>
@@ -180,7 +182,7 @@
 		<path d={landPath} fill="url(#landdots)" stroke="none" />
 		<path d={bordersPath} fill="none" stroke="#e9e2d2" stroke-width="0.4" opacity="0.08" />
 
-		<!-- Transmission arcs: dark underside → bright edge → traveling packet -->
+		<!-- Transmission arcs -->
 		{#each links as l (l.id)}
 			<path d={l.top} fill="none" stroke="#0c1416" stroke-width="3.2" opacity="0.65" stroke-linecap="round" />
 			<path id={l.id} d={l.top} fill="none" stroke="url(#arc-{l.kind})" stroke-width="1.4" stroke-linecap="round" opacity="0.85" />
@@ -222,7 +224,7 @@
 		{/if}
 	</svg>
 
-	<!-- Cluster popover — lists every peer ID at this location -->
+	<!-- Cluster popover -->
 	{#if hover}
 		<div
 			role="tooltip"

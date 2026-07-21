@@ -32,6 +32,7 @@ import (
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/descriptor"
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
@@ -107,15 +108,18 @@ var ErrNotFound = errors.New("explorer: not found locally and no provider reacha
 // explorer renders. Defined here so the explorer package
 // does not have to import the api or pex packages.
 type PeerInfo struct {
-	PeerID    string
-	Addrs     []string
-	IsAnchor  bool
-	Connected bool
+	PeerID    string   `json:"PeerID"`
+	Addrs     []string `json:"Addrs"`
+	IsAnchor  bool     `json:"IsAnchor"`
+	Connected bool     `json:"Connected"`
 	// Geolocation fields — populated when EnableGeolocation is true.
-	Country string
-	City    string
-	Lat     float64
-	Lon     float64
+	Country      string   `json:"Country,omitempty"`
+	City         string   `json:"City,omitempty"`
+	Lat          float64  `json:"Lat,omitempty"`
+	Lon          float64  `json:"Lon,omitempty"`
+	LatencyMs    int64    `json:"LatencyMs"`
+	AgentVersion string   `json:"AgentVersion,omitempty"`
+	Streams      []string `json:"Streams,omitempty"`
 }
 
 // AnchorRow is one registered anchor peer.
@@ -336,9 +340,6 @@ type Config struct {
 	// lower on page-loaded UIs where users notice a
 	// stalled render.
 	ResolveTimeout time.Duration
-	// GeoResolver performs IP geolocation. May be nil
-	// when geolocation is disabled.
-	GeoResolver *GeoResolver
 	// TunnelManager handles the lifecycle of the ngrok tunnel.
 	TunnelManager *tunnel.Manager
 }
@@ -348,7 +349,6 @@ type Explorer struct {
 	cfg    Config
 	tpl    *template.Template
 	pages  map[string]*template.Template
-	geo    *GeoResolver
 	tunMgr *tunnel.Manager
 }
 
@@ -388,7 +388,6 @@ func New(cfg Config) (*Explorer, error) {
 		cfg:    cfg,
 		tpl:    tpl,
 		pages:  pages,
-		geo:    cfg.GeoResolver,
 		tunMgr: cfg.TunnelManager,
 	}, nil
 }
@@ -1060,41 +1059,16 @@ type peersData struct {
 func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	peers, _ := e.cfg.Backend.Peers(ctx, e.cfg.PeerLimit)
-	// Enrich peers with geolocation data when resolver is available.
-	if e.geo != nil {
-		for i := range peers {
-			if ip := firstPublicIP(peers[i].Addrs); ip != "" {
-				geo := e.geo.Lookup(ip)
-				peers[i].Country = geo.Country
-				peers[i].City = geo.City
-				peers[i].Lat = geo.Lat
-				peers[i].Lon = geo.Lon
-			}
-		}
-	}
 
 	var selfPeer *PeerInfo
 	selfID := e.cfg.Backend.LocalPeerID(ctx)
 	if selfID != "" {
 		selfPeer = &PeerInfo{
-			PeerID:    selfID,
-			Addrs:     e.cfg.Backend.LocalAddrs(ctx),
-			IsAnchor:  e.cfg.Backend.AnchorMode(ctx),
-			Connected: true,
-		}
-		if selfLoc := ResolveSelfIP(ctx); selfLoc != nil {
-			selfPeer.Country = selfLoc.Country
-			selfPeer.City = selfLoc.City
-			selfPeer.Lat = selfLoc.Lat
-			selfPeer.Lon = selfLoc.Lon
-			// If geolocator is active but coordinates are not yet resolved by the API, fall back to MMDB lookup
-			if selfPeer.Lat == 0 && selfPeer.Lon == 0 && e.geo != nil {
-				geo := e.geo.Lookup(selfLoc.IP)
-				selfPeer.Country = geo.Country
-				selfPeer.City = geo.City
-				selfPeer.Lat = geo.Lat
-				selfPeer.Lon = geo.Lon
-			}
+			PeerID:       selfID,
+			Addrs:        e.cfg.Backend.LocalAddrs(ctx),
+			IsAnchor:     e.cfg.Backend.AnchorMode(ctx),
+			Connected:    true,
+			AgentVersion: "membuss/v" + version.Version,
 		}
 	}
 

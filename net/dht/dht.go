@@ -428,6 +428,9 @@ func (m *MemDHT) BootstrapWithBackoff(ctx context.Context, peers []peer.AddrInfo
 	if cfg.Factor < 1 {
 		cfg.Factor = 2.0
 	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 5
+	}
 	peers = dedupeAddrInfo(peers)
 	// Background the DHT's own bootstrap so our retry loop
 	// is the only thing the caller waits on.

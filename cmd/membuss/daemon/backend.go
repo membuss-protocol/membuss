@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -66,6 +67,11 @@ type daemonBackend struct {
 
 	// logger is the structured-logging handle. nil = no-op.
 	logger *slog.Logger
+
+	// anchorsCache caches known anchor peer IDs to prevent blocking network searches on every request.
+	anchorsMu        sync.RWMutex
+	anchorsCache     map[string]struct{}
+	anchorsCacheTime time.Time
 }
 
 // slogAnchorLogger adapts *slog.Logger to anchor.Logger.
@@ -553,6 +559,13 @@ func (b *daemonBackend) Stat(ctx context.Context, midStr string) (serverpkg.Stat
 }
 
 func (b *daemonBackend) getKnownAnchors(ctx context.Context) map[string]struct{} {
+	b.anchorsMu.RLock()
+	if b.anchorsCache != nil && time.Since(b.anchorsCacheTime) < 30*time.Second {
+		defer b.anchorsMu.RUnlock()
+		return b.anchorsCache
+	}
+	b.anchorsMu.RUnlock()
+
 	anchors := make(map[string]struct{})
 	if b.anchor != nil {
 		for _, a := range b.anchor.AnchorPeers() {
@@ -560,7 +573,7 @@ func (b *daemonBackend) getKnownAnchors(ctx context.Context) map[string]struct{}
 		}
 	}
 	if b.dht != nil {
-		sCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		sCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
 		ch, err := b.dht.SearchValue(sCtx, anchor.AnchorRegistryKey)
 		if err == nil {
@@ -572,6 +585,12 @@ func (b *daemonBackend) getKnownAnchors(ctx context.Context) map[string]struct{}
 			}
 		}
 	}
+
+	b.anchorsMu.Lock()
+	b.anchorsCache = anchors
+	b.anchorsCacheTime = time.Now()
+	b.anchorsMu.Unlock()
+
 	return anchors
 }
 
