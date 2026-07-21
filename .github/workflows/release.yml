@@ -270,7 +270,7 @@ jobs:
           mkdir -p "$APPDIR/usr/share/applications"
           mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
-          cp desktop/build/bin/membuss "$APPDIR/usr/bin/membuss"
+          cp desktop/build/bin/membuss-app "$APPDIR/usr/bin/membuss-app"
           cp desktop/icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/membuss.png"
           cp desktop/icon.png "$APPDIR/membuss.png"
 
@@ -278,7 +278,7 @@ jobs:
           [Desktop Entry]
           Type=Application
           Name=Membuss
-          Exec=membuss
+          Exec=membuss-app
           Icon=membuss
           Categories=Network;Utility;
           Terminal=false
@@ -287,7 +287,7 @@ jobs:
           cat > "$APPDIR/AppRun" << 'APPRUN'
           #!/bin/sh
           HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/usr/bin/membuss" "$@"
+          exec "$HERE/usr/bin/membuss-app" "$@"
           APPRUN
           chmod +x "$APPDIR/AppRun"
 
