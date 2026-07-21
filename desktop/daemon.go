@@ -109,38 +109,177 @@ func NewDaemonManager(cfg *DesktopConfig) *DaemonManager {
 	}
 }
 
-// IsRunning checks if the daemon command is active locally.
+// IsRunning reports whether a usable daemon is currently running.
+//
+// The HTTP API is the source of truth: if it answers, the daemon is
+// genuinely up. Process scans (pid file, pgrep/tasklist) only serve as a
+// secondary signal for the tracked-child and keep-alive cases where the
+// API port in the desktop config may be stale.
+//
+// This deliberately does NOT treat a bare process-name match as "running"
+// on its own — that was the source of the historical false-positive
+// "daemon is already running": a stale daemon.pid pointing at a recycled
+// PID (now some unrelated process) or a zombie/defunct daemon from a
+// crashed previous session would block Start() forever. isMembussPidAlive
+// verifies the image name so PID reuse can never trip the check, and
+// cleanupStaleState (called by Start) reaps half-dead daemons before the
+// already-running gate is evaluated.
 func (dm *DaemonManager) IsRunning() bool {
+	// 1. Tracked child from THIS GUI session, still in flight.
+	//    Counts as running even before the API is ready, so a rapid
+	//    second Start() won't spawn a duplicate that fails to bind ports.
 	dm.mu.Lock()
 	cmd := dm.cmd
 	dm.mu.Unlock()
 	if cmd != nil && cmd.Process != nil && cmd.ProcessState == nil {
 		return true
 	}
-	if dm.config != nil && dm.config.DataDir != "" {
-		pidPath := filepath.Join(dm.config.DataDir, "daemon.pid")
-		data, err := os.ReadFile(pidPath)
-		if err == nil {
-			var pid int
-			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
-				if isPidActive(pid) {
-					return true
-				}
-			}
+
+	// 2. Authoritative API probe — covers keep-alive after a GUI restart,
+	//    an orphan from a previous session, or any untracked healthy daemon.
+	if dm.apiHealthy() {
+		return true
+	}
+
+	// 3. Pid file verified against the process image name. Catches the
+	//    keep-alive case where the daemon is up on config.yaml's port but
+	//    the desktop config still holds a stale port. A stale/foreign pid
+	//    file (PID reused by a non-membuss process) is cleaned up rather
+	//    than trusted.
+	if pid, ok := dm.readPidFile(); ok {
+		if isMembussPidAlive(pid) {
+			return true
+		}
+		dm.removePidFile()
+	}
+
+	return false
+}
+
+// apiHealthy reports whether the daemon HTTP API responds with a healthy
+// status. This is the authoritative liveness signal: a process that
+// exists but does not answer its API is not usable and should not block
+// a restart.
+//
+// A short timeout is used because this is called on the hot Start() path;
+// CheckStatus (used by the UI for full node info) keeps its longer timeout.
+func (dm *DaemonManager) apiHealthy() bool {
+	if dm.config == nil || dm.config.APIAddr == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get(fmt.Sprintf("http://%s/api/v1/node/info", dm.config.APIAddr))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	// Drain so the connection can be reused by the keep-alive transport.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
+}
+
+// cleanupStaleState removes any leftover daemon state that could block a
+// clean Start():
+//   - a stale daemon.pid whose PID is dead or belongs to a non-membuss
+//     process (PID reuse),
+//   - a half-dead membuss process whose HTTP API is not responding
+//     (so a crashed/looping daemon doesn't refuse restart forever).
+//
+// It is deliberately tolerant: any error is swallowed because the caller
+// (Start) should proceed to attempt launching regardless — failing to
+// clean up is never a reason to wedge the user out of their node.
+func (dm *DaemonManager) cleanupStaleState(dataDir string) {
+	// If the API is genuinely up, there is nothing to clean.
+	if dm.apiHealthy() {
+		return
+	}
+
+	// Stale / foreign pid file, or a wedged membuss process behind it.
+	if pid, ok := dm.readPidFile(); ok {
+		if !isMembussPidAlive(pid) {
+			// PID is dead or belongs to something else — drop the file.
+			dm.removePidFile()
+		} else {
+			// PID is a membuss process but the API is down — it's wedged.
+			// Kill it so we can restart cleanly, then wait for the OS to
+			// reap it so the ports are released before we bind again.
+			_ = killPid(pid)
+			dm.waitPidGone(pid, 4*time.Second)
+			dm.removePidFile()
 		}
 	}
-	return isProcessRunning("membuss")
+
+	// Any other lingering membuss processes whose API is down. Safe here
+	// because we already confirmed the API is not responding, so this
+	// only hits dead/stuck instances — never a healthy daemon.
+	_ = killProcess("membuss")
+	_ = killProcess("membuss-cli")
+}
+
+// readPidFile reads and parses daemon.pid from the configured data dir.
+// Returns (pid, ok); ok is false if the file is missing, unreadable, or
+// does not contain a positive integer.
+func (dm *DaemonManager) readPidFile() (int, bool) {
+	if dm.config == nil || dm.config.DataDir == "" {
+		return 0, false
+	}
+	pidPath := filepath.Join(dm.config.DataDir, "daemon.pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0, false
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
+		return 0, false
+	}
+	if pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// removePidFile deletes daemon.pid if it exists. Errors are ignored — a
+// missing or unremovable file is not fatal for the restart flow.
+func (dm *DaemonManager) removePidFile() {
+	if dm.config == nil || dm.config.DataDir == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(dm.config.DataDir, "daemon.pid"))
+}
+
+// waitPidGone polls until the given PID is no longer a membuss process or
+// the timeout elapses. Used after killing a wedged daemon to give the OS
+// time to release the listening sockets before a fresh daemon binds them.
+func (dm *DaemonManager) waitPidGone(pid int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !isMembussPidAlive(pid) && !isPidActive(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Start spawns the daemon in the background.
 func (dm *DaemonManager) Start(dataDir string) error {
-	// 1. Resolve any blocked ports dynamically
-	if err := dm.resolveBlockedPorts(dataDir); err != nil {
-		// Log error but continue trying to start
-	}
+	// 1. Self-heal first: clear stale pid files and reap half-dead
+	//    daemons so a crashed previous session never blocks this Start().
+	//    This runs before the already-running check so the user is never
+	//    wedged by a stale daemon.pid or a zombie membuss process.
+	dm.cleanupStaleState(dataDir)
 
+	// 2. Refuse only if a genuinely usable daemon is already up. Because
+	//    cleanupStaleState already reaped anything whose API was down,
+	//    reaching this branch means the API answered — a real running node.
 	if dm.IsRunning() {
 		return errors.New("daemon is already running")
+	}
+
+	// 3. Resolve any blocked ports dynamically. Done after the
+	//    already-running check so we never shift a live daemon's ports
+	//    out from under it.
+	if err := dm.resolveBlockedPorts(dataDir); err != nil {
+		// Log error but continue trying to start
 	}
 
 	dm.mu.Lock()
