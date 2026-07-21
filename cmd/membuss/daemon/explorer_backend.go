@@ -322,7 +322,7 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 // the file compiles even if the type is removed.
 var _ memgate.ContentInfo
 
-// Peers returns the local PEX peer table.
+// Peers returns the local PEX peer table enriched with live host network metrics.
 func (a *explorerAdapter) Peers(ctx context.Context, limit int) ([]explorer.PeerInfo, error) {
 	infos, _, err := a.b.Peers(uint32(limit))
 	if err != nil {
@@ -330,12 +330,47 @@ func (a *explorerAdapter) Peers(ctx context.Context, limit int) ([]explorer.Peer
 	}
 	out := make([]explorer.PeerInfo, 0, len(infos))
 	for _, p := range infos {
-		out = append(out, explorer.PeerInfo{
+		info := explorer.PeerInfo{
 			PeerID:    p.PeerID,
 			Addrs:     p.Addrs,
 			IsAnchor:  p.IsAnchor,
-			Connected: false, // explorer does not have a direct "connected" view
-		})
+			Connected: false,
+		}
+
+		if pid, serr := peer.Decode(p.PeerID); serr == nil && a.b.host != nil {
+			// 1. Live ping latency from libp2p peerstore
+			lat := a.b.host.Peerstore().LatencyEWMA(pid)
+			if lat > 0 {
+				info.LatencyMs = lat.Milliseconds()
+			}
+
+			// 2. Real agent version negotiated during identify
+			if av, gerr := a.b.host.Peerstore().Get(pid, "AgentVersion"); gerr == nil {
+				if s, ok := av.(string); ok && s != "" {
+					info.AgentVersion = s
+				}
+			}
+
+			// 3. Open streams & active connection check
+			conns := a.b.host.Network().ConnsToPeer(pid)
+			if len(conns) > 0 {
+				info.Connected = true
+				seenStreams := make(map[string]bool)
+				var streamList []string
+				for _, c := range conns {
+					for _, s := range c.GetStreams() {
+						protoStr := string(s.Protocol())
+						if protoStr != "" && !seenStreams[protoStr] {
+							seenStreams[protoStr] = true
+							streamList = append(streamList, protoStr)
+						}
+					}
+				}
+				info.Streams = streamList
+			}
+		}
+
+		out = append(out, info)
 	}
 	return out, nil
 }

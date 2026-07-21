@@ -32,6 +32,7 @@ import (
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/descriptor"
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
@@ -107,15 +108,18 @@ var ErrNotFound = errors.New("explorer: not found locally and no provider reacha
 // explorer renders. Defined here so the explorer package
 // does not have to import the api or pex packages.
 type PeerInfo struct {
-	PeerID    string
-	Addrs     []string
-	IsAnchor  bool
-	Connected bool
+	PeerID    string   `json:"PeerID"`
+	Addrs     []string `json:"Addrs"`
+	IsAnchor  bool     `json:"IsAnchor"`
+	Connected bool     `json:"Connected"`
 	// Geolocation fields — populated when EnableGeolocation is true.
-	Country string
-	City    string
-	Lat     float64
-	Lon     float64
+	Country      string   `json:"Country,omitempty"`
+	City         string   `json:"City,omitempty"`
+	Lat          float64  `json:"Lat,omitempty"`
+	Lon          float64  `json:"Lon,omitempty"`
+	LatencyMs    int64    `json:"LatencyMs"`
+	AgentVersion string   `json:"AgentVersion,omitempty"`
+	Streams      []string `json:"Streams,omitempty"`
 }
 
 // AnchorRow is one registered anchor peer.
@@ -1077,10 +1081,11 @@ func (e *Explorer) handlePeers(w http.ResponseWriter, r *http.Request) {
 	selfID := e.cfg.Backend.LocalPeerID(ctx)
 	if selfID != "" {
 		selfPeer = &PeerInfo{
-			PeerID:    selfID,
-			Addrs:     e.cfg.Backend.LocalAddrs(ctx),
-			IsAnchor:  e.cfg.Backend.AnchorMode(ctx),
-			Connected: true,
+			PeerID:       selfID,
+			Addrs:        e.cfg.Backend.LocalAddrs(ctx),
+			IsAnchor:     e.cfg.Backend.AnchorMode(ctx),
+			Connected:    true,
+			AgentVersion: "membuss/v" + version.Version,
 		}
 		if selfLoc := ResolveSelfIP(ctx); selfLoc != nil {
 			selfPeer.Country = selfLoc.Country

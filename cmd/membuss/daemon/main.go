@@ -55,6 +55,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/store"
+	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
 	"github.com/nnlgsakib/membuss/net/host"
@@ -248,7 +249,19 @@ func Run(args []string) error {
 		ListenAddrs:     cfg.ListenAddrs,
 		AnnounceAddrs:   cfg.AnnounceAddrs,
 		DataDir:         cfg.DataDir,
-		UserAgent:       "membuss/" + *build,
+		UserAgent: func() string {
+			ua := "membuss/v" + version.Version
+			commit := version.GitCommit
+			if len(commit) > 7 {
+				commit = commit[:7]
+			}
+			if commit != "" && commit != "unknown" {
+				ua += "/" + commit
+			} else if *build != "" && *build != "dev" {
+				ua += "/" + *build
+			}
+			return ua
+		}(),
 		RelayPeerSource: relaySource.PeerSource(),
 		MDNS:            cfg.EnableMDNS || os.Getenv("MEMBUSS_MDNS") == "true",
 		OnPeerFound:     addToBootstrap,
