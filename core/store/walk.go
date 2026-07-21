@@ -54,6 +54,10 @@ type BlockGetter interface {
 }
 
 func Walk(bs BlockGetter, root mid.MID, visit func(m mid.MID, leaf bool) error) error {
+	return WalkOptions(bs, root, false, visit)
+}
+
+func WalkOptions(bs BlockGetter, root mid.MID, ignoreMissing bool, visit func(m mid.MID, leaf bool) error) error {
 	if bs == nil {
 		return errors.New("store: nil blockstore")
 	}
@@ -78,6 +82,9 @@ func Walk(bs BlockGetter, root mid.MID, visit func(m mid.MID, leaf bool) error) 
 			var err error
 			size, err = checker.GetSize(m)
 			if err != nil {
+				if ignoreMissing && (errors.Is(err, ErrNotFound) || (err != nil && (err.Error() == "store: block not found" || errors.Is(errors.Unwrap(err), ErrNotFound)))) {
+					return nil
+				}
 				return fmt.Errorf("store: walk size %s: %w", m.String(), err)
 			}
 		}
@@ -89,6 +96,9 @@ func Walk(bs BlockGetter, root mid.MID, visit func(m mid.MID, leaf bool) error) 
 
 		data, err := bs.Get(m)
 		if err != nil {
+			if ignoreMissing && (errors.Is(err, ErrNotFound) || (err != nil && (err.Error() == "store: block not found" || errors.Is(errors.Unwrap(err), ErrNotFound)))) {
+				return nil
+			}
 			return fmt.Errorf("store: walk get %s: %w", m.String(), err)
 		}
 

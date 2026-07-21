@@ -253,7 +253,7 @@ func Default() *Config {
 			Initial:     500 * time.Millisecond,
 			Max:         60 * time.Second,
 			Factor:      2.0,
-			MaxAttempts: 0,
+			MaxAttempts: 5,
 		},
 		MetricsEnabled: true,
 		RelayService:         false,
