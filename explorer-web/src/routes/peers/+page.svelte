@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
+	import { initGeoLiteDB, lookupGeoLiteOffline, extractPublicIP, getFlagEmoji as getGeoFlagEmoji } from '$lib/geolite';
 	import Icon from '@iconify/svelte';
 	import SwarmMap from '$lib/components/SwarmMap.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
@@ -181,18 +182,30 @@
 					selfHasGeo = true;
 				}
 
-				const peersList: DisplayPeer[] = data.Peers.map((p, idx) => {
+				const peersListPromises = data.Peers.map(async (p, idx) => {
 					let transport = 'QUIC (UDP)';
 					if (p.Addrs && p.Addrs.length > 0) {
 						if (p.Addrs[0].includes('/tcp/')) transport = 'TCP';
 						else if (p.Addrs[0].includes('/ws/')) transport = 'WebSockets';
 					}
 
-					let location = [p.City, p.Country].filter(Boolean).join(', ') || 'Unknown';
+					let location = [p.City, p.Country].filter(Boolean).join(', ');
+					let flag = getGeoFlagEmoji(undefined, location);
 					let lat = p.Lat;
 					let lon = p.Lon;
 
-					const isLocalIP = p.Addrs.some(
+					const publicIP = extractPublicIP(p.Addrs);
+					if (publicIP) {
+						const geo = lookupGeoLiteOffline(publicIP);
+						if (geo && !geo.isLocal && geo.country !== 'Unknown') {
+							location = [geo.city, geo.country].filter(Boolean).join(', ');
+							flag = geo.flag;
+							lat = geo.lat;
+							lon = geo.lon;
+						}
+					}
+
+					const isLocalIP = !publicIP || p.Addrs.some(
 						(addr) =>
 							addr.includes('/ip4/192.168.') ||
 							addr.includes('/ip4/10.') ||
@@ -205,9 +218,10 @@
 							addr.includes('/ip4/127.0.0.1')
 					);
 
-					if ((lat === 0 && lon === 0) || isLocalIP) {
+					if ((lat === 0 && lon === 0) || isLocalIP || !location) {
 						location = 'Local Network (mDNS)';
 						transport = 'mDNS (Local)';
+						flag = '🏠';
 
 						const angle = (idx * 2 * Math.PI) / 8;
 						const radius = 0.015 + (idx % 3) * 0.008;
@@ -218,7 +232,6 @@
 					let hash = 0;
 					for (let i = 0; i < p.PeerID.length; i++) hash = (hash << 5) - hash + p.PeerID.charCodeAt(i);
 					const latencyMs = p.LatencyMs && p.LatencyMs > 0 ? p.LatencyMs : isLocalIP ? 1 : 45 + (Math.abs(hash) % 40);
-					const flag = getFlagEmoji(location);
 					const connection = getConnectionType(p.Addrs);
 					const agent = p.AgentVersion ? p.AgentVersion : getFallbackAgentVersion(p.PeerID);
 					const streams = p.Streams && p.Streams.length > 0 ? p.Streams.join(', ') : getFallbackOpenStreams(p.PeerID);
@@ -243,6 +256,8 @@
 						transport
 					};
 				});
+
+				const peersList = await Promise.all(peersListPromises);
 
 				if (data.Self) {
 					const p = data.Self;
@@ -427,7 +442,17 @@
 		}
 	}
 
+	let geoStatus = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
+	let geoProgress = $state(0);
+
 	onMount(() => {
+		initGeoLiteDB((status, prog) => {
+			geoStatus = status;
+			geoProgress = prog;
+			if (status === 'ready') {
+				loadPeers();
+			}
+		});
 		loadPeers();
 		const interval = setInterval(loadPeers, 10000);
 		return () => {
@@ -437,6 +462,16 @@
 </script>
 
 <div class="flex flex-col gap-6 animate-fade-in-up" style="animation-delay: 0ms">
+	{#if geoStatus === 'loading'}
+		<div class="bg-cyan-950/40 border border-cyan-500/30 text-cyan-300 text-xs font-mono px-4 py-2.5 rounded-xl flex items-center justify-between shadow-lg">
+			<span class="flex items-center gap-2.5">
+				<Icon icon="ph:database-fill" class="w-4 h-4 text-cyan-400 animate-spin" />
+				Initializing Offline GeoLite Database into IndexedDB...
+			</span>
+			<span class="font-bold text-cyan-400">{geoProgress}%</span>
+		</div>
+	{/if}
+
 	<!-- Page Header -->
 	<div class="border-b border-white/[0.04] pb-5 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
 		<div>
