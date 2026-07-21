@@ -549,25 +549,199 @@ func (m *MemGate) renderDirectoryList(w http.ResponseWriter, r *http.Request, ti
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `<!doctype html><html><head><title>%s</title>`+
-		`<style>body{font-family:system-ui;max-width:60rem;margin:2rem auto;padding:0 1rem}`+
-		`table{border-collapse:collapse;width:100%%}td,th{padding:.5rem;text-align:left;border-bottom:1px solid #eee}`+
-		`a{color:#06c;text-decoration:none}a:hover{text-decoration:underline}`+
-		`.muted{color:#888;font-size:.9em}</style></head><body>`+
-		`<h1>%s</h1>`+
-		`<table><tr><th>Name</th><th>Type</th><th>Size</th><th>MID</th></tr>`,
+	fmt.Fprintf(w, `<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s | Membuss Gateway</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0c1416;
+            --panel-bg: #111d20;
+            --text-primary: #e9e2d2;
+            --text-secondary: #8c887a;
+            --accent-ochre: #e8a33d;
+            --accent-verdigris: #57b79e;
+            --border-color: rgba(233, 226, 210, 0.08);
+            --row-hover: rgba(233, 226, 210, 0.03);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Archivo', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 2rem 1rem;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%%;
+            max-width: 68rem;
+        }
+        .card {
+            background-color: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 2rem;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+        }
+        .header {
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            letter-spacing: -0.02em;
+        }
+        .brand {
+            font-family: 'Archivo', sans-serif;
+            font-weight: 800;
+            font-size: 0.9rem;
+            letter-spacing: 0.1em;
+            color: var(--accent-ochre);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .brand-icon {
+            background: var(--accent-ochre);
+            color: var(--bg-color);
+            width: 1.5rem;
+            height: 1.5rem;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            font-size: 0.8rem;
+        }
+        table {
+            width: 100%%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        th {
+            font-family: 'Archivo', sans-serif;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            font-weight: 600;
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 2px solid var(--border-color);
+        }
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+        tr:hover td {
+            background-color: var(--row-hover);
+        }
+        a {
+            color: var(--accent-ochre);
+            text-decoration: none;
+            transition: color 0.15s ease;
+        }
+        a:hover {
+            color: #f4cd8a;
+            text-decoration: underline;
+        }
+        .type-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .type-dir {
+            background: rgba(87, 183, 158, 0.1);
+            color: var(--accent-verdigris);
+            border: 1px solid rgba(87, 183, 158, 0.2);
+        }
+        .type-file {
+            background: rgba(232, 163, 61, 0.08);
+            color: var(--accent-ochre);
+            border: 1px solid rgba(232, 163, 61, 0.15);
+        }
+        .mono {
+            font-family: 'IBM Plex Mono', ui-monospace, monospace;
+        }
+        .muted-link {
+            color: var(--text-secondary);
+        }
+        .muted-link:hover {
+            color: var(--text-primary);
+        }
+        .footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="header">
+                <div class="title">%s</div>
+                <div class="brand">
+                    <div class="brand-icon">M</div>
+                    <span>MEMBUSS GATEWAY</span>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Size</th>
+                        <th>MID</th>
+                    </tr>
+                </thead>
+                <tbody>`,
 		html.EscapeString(title), html.EscapeString(title))
 	for _, e := range entries {
 		href := url.PathEscape(e.Name)
+		typeClass := "type-file"
 		if e.Type == "dir" {
 			href += "/"
+			typeClass = "type-dir"
 		}
 		fmt.Fprintf(w, `<tr><td><a href="%s">%s</a></td>`+
-			`<td>%s</td><td>%d</td>`+
-			`<td class="muted"><a href="/mem/%s">%s…</a></td></tr>`,
-			href, html.EscapeString(e.Name), html.EscapeString(e.Type), e.Size, url.PathEscape(e.MID), html.EscapeString(shortMID(e.MID)))
+			`<td><span class="type-badge %s">%s</span></td>`+
+			`<td class="mono">%d B</td>`+
+			`<td class="mono"><a href="/mem/%s" class="muted-link">%s…</a></td></tr>`,
+			href, html.EscapeString(e.Name), typeClass, html.EscapeString(e.Type), e.Size, url.PathEscape(e.MID), html.EscapeString(shortMID(e.MID)))
 	}
-	fmt.Fprintf(w, `</table></body></html>`)
+	fmt.Fprintf(w, `</tbody>
+            </table>
+            <div class="footer">
+                <span>Mem-Gate • Content-Addressable CDN</span>
+                <span>v1.9.1</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`)
 }
 
 // shortMID returns the first 16 characters of a public MID,
@@ -1684,18 +1858,18 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
     <title>Resolving Content | Membuss</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0b0c10;
-            --card-bg: rgba(22, 26, 35, 0.65);
-            --accent-color: #4f46e5;
-            --accent-glow: rgba(79, 70, 229, 0.4);
-            --text-primary: #f3f4f6;
-            --text-secondary: #9ca3af;
-            --success-color: #10b981;
-            --error-color: #ef4444;
-            --border-color: rgba(255, 255, 255, 0.08);
+            --bg-color: #0c1416;
+            --card-bg: #111d20;
+            --accent-color: #e8a33d;
+            --accent-glow: rgba(232, 163, 61, 0.12);
+            --text-primary: #e9e2d2;
+            --text-secondary: #8c887a;
+            --success-color: #57b79e;
+            --error-color: #e0654c;
+            --border-color: rgba(233, 226, 210, 0.08);
         }
 
         * {
@@ -1705,7 +1879,7 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
         }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-family: 'Archivo', -apple-system, BlinkMacSystemFont, sans-serif;
             background-color: var(--bg-color);
             color: var(--text-primary);
             min-height: 100vh;
@@ -1736,7 +1910,7 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
             width: 450px;
             height: 450px;
             border-radius: 50%%;
-            background: radial-gradient(circle, rgba(16, 185, 129, 0.15) 0%%, transparent 70%%);
+            background: radial-gradient(circle, rgba(87, 183, 158, 0.1) 0%%, transparent 70%%);
             bottom: 10%%;
             right: 15%%;
             z-index: 0;
@@ -1759,11 +1933,11 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
         .card {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
-            border-radius: 24px;
+            border-radius: 12px;
             padding: 3rem 2.5rem;
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
             text-align: center;
             transition: border-color 0.5s ease;
         }
@@ -1778,23 +1952,22 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
         .logo-icon {
             width: 36px;
             height: 36px;
-            background: linear-gradient(135deg, var(--accent-color), #818cf8);
-            border-radius: 10px;
+            background: var(--accent-color);
+            border-radius: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 0 20px var(--accent-glow);
-            font-weight: 700;
+            box-shadow: 0 0 12px var(--accent-glow);
+            font-weight: 900;
             font-size: 1.25rem;
+            color: var(--bg-color);
         }
 
         .logo-text {
-            font-weight: 700;
+            font-weight: 800;
             font-size: 1.5rem;
-            letter-spacing: -0.025em;
-            background: linear-gradient(to right, #ffffff, #d1d5db);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            letter-spacing: 0.05em;
+            color: var(--text-primary);
         }
 
         h1 {
@@ -1805,12 +1978,12 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
         }
 
         .mid-box {
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'IBM Plex Mono', monospace;
             font-size: 0.85rem;
-            background: rgba(0, 0, 0, 0.3);
+            background: rgba(0, 0, 0, 0.15);
             padding: 0.65rem 1rem;
-            border-radius: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
             color: var(--text-secondary);
             margin-bottom: 2.5rem;
             word-break: break-all;
@@ -1825,13 +1998,13 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
             align-items: center;
             gap: 0.5rem;
             padding: 0.5rem 1.25rem;
-            border-radius: 9999px;
+            border-radius: 4px;
             font-size: 0.875rem;
             font-weight: 500;
-            background: rgba(255, 255, 255, 0.05);
+            background: rgba(233, 226, 210, 0.03);
             color: var(--text-secondary);
             margin-bottom: 2rem;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
         }
 
         .status-dot {
@@ -1841,16 +2014,16 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
             background-color: var(--text-secondary);
         }
 
-        .status-discovering { color: #f59e0b; border-color: rgba(245, 158, 11, 0.2); background: rgba(245, 158, 11, 0.05); }
-        .status-discovering .status-dot { background-color: #f59e0b; animation: pulse 1.5s infinite; }
+        .status-discovering { color: var(--accent-color); border-color: rgba(232, 163, 61, 0.2); background: rgba(232, 163, 61, 0.05); }
+        .status-discovering .status-dot { background-color: var(--accent-color); animation: pulse 1.5s infinite; }
         
-        .status-fetching { color: var(--accent-color); border-color: rgba(79, 70, 229, 0.2); background: rgba(79, 70, 229, 0.05); }
+        .status-fetching { color: var(--accent-color); border-color: rgba(232, 163, 61, 0.2); background: rgba(232, 163, 61, 0.05); }
         .status-fetching .status-dot { background-color: var(--accent-color); animation: pulse 1.5s infinite; }
         
-        .status-completed { color: var(--success-color); border-color: rgba(16, 185, 129, 0.2); background: rgba(16, 185, 129, 0.05); }
+        .status-completed { color: var(--success-color); border-color: rgba(87, 183, 158, 0.2); background: rgba(87, 183, 158, 0.05); }
         .status-completed .status-dot { background-color: var(--success-color); }
         
-        .status-failed { color: var(--error-color); border-color: rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); }
+        .status-failed { color: var(--error-color); border-color: rgba(224, 101, 76, 0.2); background: rgba(224, 101, 76, 0.05); }
         .status-failed .status-dot { background-color: var(--error-color); }
 
         @keyframes pulse {
@@ -1866,19 +2039,18 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
 
         .progress-track {
             height: 12px;
-            background-color: rgba(0, 0, 0, 0.4);
-            border-radius: 9999px;
+            background-color: rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
             overflow: hidden;
-            border: 1px solid rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
             margin-bottom: 0.75rem;
         }
 
         .progress-bar {
             height: 100%%;
             width: 0%%;
-            background: linear-gradient(90deg, var(--accent-color), #818cf8);
-            border-radius: 9999px;
-            box-shadow: 0 0 10px rgba(79, 70, 229, 0.5);
+            background: linear-gradient(90deg, var(--accent-color), var(--success-color));
+            border-radius: 6px;
             transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
@@ -1902,9 +2074,9 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
         }
 
         .stat-card {
-            background: rgba(0, 0, 0, 0.2);
-            border: 1px solid rgba(255, 255, 255, 0.03);
-            border-radius: 16px;
+            background: rgba(0, 0, 0, 0.15);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
             padding: 1.25rem;
             text-align: left;
         }
@@ -1920,16 +2092,16 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
         .stat-value {
             font-size: 1.125rem;
             font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'IBM Plex Mono', monospace;
         }
 
         .notice-box {
             font-size: 0.875rem;
-            background: rgba(245, 158, 11, 0.05);
-            border: 1px solid rgba(245, 158, 11, 0.15);
-            color: #fbbf24;
+            background: rgba(232, 163, 61, 0.05);
+            border: 1px solid rgba(232, 163, 61, 0.2);
+            color: var(--accent-color);
             padding: 1rem;
-            border-radius: 12px;
+            border-radius: 8px;
             display: none;
             margin-bottom: 2rem;
             text-align: left;
@@ -1938,11 +2110,11 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
 
         .error-message {
             font-size: 0.875rem;
-            background: rgba(239, 68, 68, 0.05);
-            border: 1px solid rgba(239, 68, 68, 0.15);
-            color: #fca5a5;
+            background: rgba(224, 101, 76, 0.05);
+            border: 1px solid rgba(224, 101, 76, 0.2);
+            color: var(--error-color);
             padding: 1.25rem;
-            border-radius: 12px;
+            border-radius: 8px;
             display: none;
             margin-bottom: 2rem;
             text-align: left;

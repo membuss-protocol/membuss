@@ -117,7 +117,11 @@ func (dm *DownloadManager) GetOrCreateJob(m mid.MID, backend Backend) (*Download
 
 		progressFn := func(u ProgressUpdate) {
 			job.mu.Lock()
-			job.State = "fetching"
+			if u.BlocksResolved > 0 {
+				job.State = "fetching"
+			} else {
+				job.State = "discovering"
+			}
 			job.BlocksResolved = u.BlocksResolved
 			job.BlocksTotal = u.BlocksTotal
 			job.BytesDelivered = u.BytesDelivered

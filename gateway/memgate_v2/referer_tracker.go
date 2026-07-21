@@ -191,9 +191,12 @@ func (rt *RefererTracker) Resolve(r *http.Request, backend Backend, nsResolver M
 			continue // Already checked
 		}
 		if root, err := mid.Parse(activeMID); err == nil {
-			if _, err := backend.MemFSPathInfo(r.Context(), root, trimmedInnerPath); err == nil {
-				rt.RecordMapping(clientIP, reqPath, activeMID)
-				return activeMID, trimmedInnerPath, true
+			// Purely local check first: do not trigger network lookups for missing active MIDs
+			if _, statErr := backend.Stat(r.Context(), root); statErr == nil {
+				if _, err := backend.MemFSPathInfo(r.Context(), root, trimmedInnerPath); err == nil {
+					rt.RecordMapping(clientIP, reqPath, activeMID)
+					return activeMID, trimmedInnerPath, true
+				}
 			}
 		}
 	}

@@ -4,6 +4,10 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-006: Gateway/node API hang on non-existent or remote MIDs
+  Fixed: 2026-07-21 (5886686) — Add local Stat check to RefererTracker fallback;
+  Use pebble.NoSync and close committed batches in PebbleDatastore.
+
 [FIXED] BUG-005: Desktop must not auto-start daemon; Start/Stop button only
   Fixed: 2026-07-11 — removed Go autoStartDaemon + frontend ensureAutoStart;
   AutoStart forced false on load.
