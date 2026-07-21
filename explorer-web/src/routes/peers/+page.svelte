@@ -144,11 +144,10 @@
 		for (let i = 0; i < peerId.length; i++) hash += peerId.charCodeAt(i);
 		const versions = [
 			'membuss/v1.9.1/linux-amd64',
-			'kubo/0.26.0/096f510/docker',
-			'go-ipfs/0.4.23/',
-			'kubo/0.31.0/docker',
-			'kubo/0.23.0-dev/4606586/docker',
-			'kubo/0.27.0/59bcea8/docker'
+			'membuss-node/v1.9.0/docker',
+			'membuss/v1.8.4/macos-arm64',
+			'membuss-node/v1.9.1-dev/docker',
+			'membuss/v1.9.0/windows-amd64'
 		];
 		return versions[Math.abs(hash) % versions.length];
 	}
@@ -157,11 +156,11 @@
 		let hash = 0;
 		for (let i = 0; i < peerId.length; i++) hash += peerId.charCodeAt(i);
 		const streams = [
-			'/ipfs/kad/1.0.0',
-			'/ipfs/bitswap/1.2.0, /ipfs/kad/1.0.0',
+			'/membuss/dht/1.0.0',
 			'/membuss/memex/2.0.0, /membuss/dht/1.0.0',
-			'/ipfs/kad/1.0.0, /membuss/p2p/1.0.0',
-			'/ipfs/bitswap/1.2.0'
+			'/membuss/memex/2.0.0, /membuss/dht/1.0.0, /membuss/pex/1.0.0',
+			'/membuss/dht/1.0.0, /membuss/pex/1.0.0',
+			'/membuss/memex/2.0.0'
 		];
 		return streams[Math.abs(hash) % streams.length];
 	}
