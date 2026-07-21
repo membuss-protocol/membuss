@@ -431,7 +431,7 @@ async function renderWizardConfigStep() {
         </div>
 
         <div style="display: flex; justify-content: flex-end;">
-          <button class="btn" id="btn-save-config">Finish & Start Node</button>
+          <button class="btn" id="btn-save-config">Finish Setup</button>
         </div>
       </div>
     </div>
@@ -475,10 +475,10 @@ async function renderWizardConfigStep() {
 
       appState.config = currentCfg;
 
-      // User clicked "Finish & Start Node" — start once now, not on future launches.
-      logMessage("Starting node daemon process...");
-      await StartNode();
-      
+      // Setup complete — load the dashboard. The node is NOT auto-started;
+      // the user starts it explicitly via the dashboard Start Node button.
+      logMessage("Setup complete. Start the node from the dashboard when ready.");
+
       // Load workspace dashboard
       renderDashboardLayout();
       startStatusPolling();
