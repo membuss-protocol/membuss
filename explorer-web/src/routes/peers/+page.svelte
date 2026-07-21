@@ -139,11 +139,11 @@
 	}
 
 	function getFallbackAgentVersion(peerId: string, isSelf?: boolean): string {
-		if (isSelf) return 'membuss/v1.9.0/daemon';
+		if (isSelf) return 'membuss/v1.9.1/daemon';
 		let hash = 0;
 		for (let i = 0; i < peerId.length; i++) hash += peerId.charCodeAt(i);
 		const versions = [
-			'membuss/v1.9.0/linux-amd64',
+			'membuss/v1.9.1/linux-amd64',
 			'kubo/0.26.0/096f510/docker',
 			'go-ipfs/0.4.23/',
 			'kubo/0.31.0/docker',
