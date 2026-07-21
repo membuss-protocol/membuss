@@ -104,7 +104,7 @@ func (pd *PebbleDatastore) Put(ctx context.Context, key ds.Key, val []byte) erro
 	if pd.closed {
 		return ErrClosed
 	}
-	return pd.db.Set(key.Bytes(), val, pebble.Sync)
+	return pd.db.Set(key.Bytes(), val, pebble.NoSync)
 }
 
 // Delete removes the key and its value.
@@ -114,7 +114,7 @@ func (pd *PebbleDatastore) Delete(ctx context.Context, key ds.Key) error {
 	if pd.closed {
 		return ErrClosed
 	}
-	err := pd.db.Delete(key.Bytes(), pebble.Sync)
+	err := pd.db.Delete(key.Bytes(), pebble.NoSync)
 	if err != nil && errors.Is(err, pebble.ErrNotFound) {
 		return nil
 	}
@@ -203,11 +203,11 @@ type pebbleBatch struct {
 }
 
 func (pb *pebbleBatch) Put(ctx context.Context, key ds.Key, val []byte) error {
-	return pb.b.Set(key.Bytes(), val, pebble.Sync)
+	return pb.b.Set(key.Bytes(), val, pebble.NoSync)
 }
 
 func (pb *pebbleBatch) Delete(ctx context.Context, key ds.Key) error {
-	return pb.b.Delete(key.Bytes(), pebble.Sync)
+	return pb.b.Delete(key.Bytes(), pebble.NoSync)
 }
 
 func (pb *pebbleBatch) Commit(ctx context.Context) error {
@@ -216,5 +216,6 @@ func (pb *pebbleBatch) Commit(ctx context.Context) error {
 	if pb.ds.closed {
 		return ErrClosed
 	}
-	return pb.b.Commit(pebble.Sync)
+	defer pb.b.Close()
+	return pb.b.Commit(pebble.NoSync)
 }
