@@ -188,8 +188,10 @@ func (s *Session) scheduleWants() {
 		s.provMu.Unlock()
 
 		if len(activeList) == 0 {
-			ws.triedProviders = make(map[peer.ID]struct{})
-			ws.attempts++
+			if len(ws.triedProviders) > 0 {
+				ws.attempts++
+				ws.triedProviders = make(map[peer.ID]struct{})
+			}
 			if ws.attempts < maxBlockAttempts {
 				s.wakeProviderManager()
 			}
