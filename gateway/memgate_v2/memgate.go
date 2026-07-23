@@ -409,6 +409,36 @@ func (m *MemGate) buildRouter() chi.Router {
 	r.Get("/memlink/{domain}", m.handleMemLinkGet)
 	r.Get("/memlink/{domain}/*", m.handleMemLinkGet)
 
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		if m.cfg.ExplorerHandler != nil {
+			http.Redirect(w, r, "/explorer/", http.StatusTemporaryRedirect)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Membuss Gateway</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { background: #161b22; padding: 2.5rem; border-radius: 12px; border: 1px solid #30363d; max-width: 500px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    h1 { color: #58a6ff; margin-top: 0; font-size: 1.8rem; }
+    p { color: #8b949e; line-height: 1.6; }
+    a.button { display: inline-block; background: #238636; color: #ffffff; padding: 0.6rem 1.2rem; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 1rem; }
+    a.button:hover { background: #2ea043; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>⚡ Membuss Gateway</h1>
+    <p>Public Content-Addressed Storage & Gateway Layer</p>
+    <a href="/explorer/" class="button">Launch Web Explorer</a>
+  </div>
+</body>
+</html>`))
+	})
+
 	if m.cfg.ExplorerHandler != nil {
 		r.Mount("/explorer", m.cfg.ExplorerHandler)
 	}
@@ -1209,7 +1239,11 @@ func (m *MemGate) customDomainMiddleware(next http.Handler) http.Handler {
 		// Resolve domain to MID
 		resolved, err := m.cfg.MemNSResolver.Resolve(r.Context(), host)
 		if err != nil {
-			http.Error(w, "Domain not found or resolve failed: "+err.Error(), http.StatusNotFound)
+			if path == "/" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, fmt.Sprintf("No DNSLink or MemLink record found for domain '%s'", host), http.StatusNotFound)
 			return
 		}
 
