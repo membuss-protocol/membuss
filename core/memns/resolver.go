@@ -257,8 +257,18 @@ func (r *Resolver) resolveDNSLink(ctx context.Context, domain string) (string, e
 	// Try _dnslink.domain first
 	txts, err := r.lookupTXT("_dnslink." + domain)
 	if err != nil || len(txts) == 0 {
-		// Fallback to domain
-		txts, err = r.lookupTXT(domain)
+		// Fallback to direct public DNS (8.8.8.8) if OS DNS resolver failed due to CNAME alias
+		rPublic := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 3 * time.Second}
+				return d.DialContext(ctx, "udp", "8.8.8.8:53")
+			},
+		}
+		txts, err = rPublic.LookupTXT(ctx, "_dnslink."+domain)
+		if err != nil || len(txts) == 0 {
+			txts, err = r.lookupTXT(domain)
+		}
 	}
 	if err != nil {
 		return "", err

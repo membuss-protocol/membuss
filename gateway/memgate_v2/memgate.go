@@ -329,35 +329,35 @@ func (m *MemGate) resolveSubdomain(r *http.Request) (string, string, bool) {
 		host = host[:idx]
 	}
 
-	// Subdomain routing only runs on .localhost (e.g. *.localhost or *.mem.localhost)
-	if !strings.HasSuffix(host, ".localhost") {
-		return "", "", false
-	}
-
 	labels := strings.Split(host, ".")
 	if len(labels) < 2 {
 		return "", "", false
 	}
 
 	firstLabel := labels[0]
+	if firstLabel == "localhost" || firstLabel == "127" || firstLabel == "www" || firstLabel == "gateway" {
+		return "", "", false
+	}
+
 	// 1. Check if first label is a valid MID
 	if _, err := mid.Parse(firstLabel); err == nil {
 		innerPath := strings.TrimPrefix(r.URL.Path, "/")
 		return firstLabel, innerPath, true
 	}
 
-	// 2. Check if first label is a MemNS name
-	if firstLabel != "localhost" && firstLabel != "127" && firstLabel != "www" {
-		if m.cfg.MemNSResolver != nil {
-			resolved, err := m.cfg.MemNSResolver.Resolve(r.Context(), firstLabel)
-			if err == nil && resolved != "" {
-				midStr := resolved
-				if strings.HasPrefix(midStr, "/mem/") {
-					midStr = midStr[5:]
-				}
-				innerPath := strings.TrimPrefix(r.URL.Path, "/")
-				return midStr, innerPath, true
+	// 2. Check if first label or full host resolves via MemNS / DNSLink
+	if m.cfg.MemNSResolver != nil {
+		resolved, err := m.cfg.MemNSResolver.Resolve(r.Context(), host)
+		if err != nil {
+			resolved, err = m.cfg.MemNSResolver.Resolve(r.Context(), firstLabel)
+		}
+		if err == nil && resolved != "" {
+			midStr := resolved
+			if strings.HasPrefix(midStr, "/mem/") {
+				midStr = midStr[5:]
 			}
+			innerPath := strings.TrimPrefix(r.URL.Path, "/")
+			return midStr, innerPath, true
 		}
 	}
 
