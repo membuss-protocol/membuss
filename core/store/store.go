@@ -25,6 +25,21 @@ import (
 // block is not present in the store.
 var ErrNotFound = errors.New("store: block not found")
 
+// Block represents a content-addressed data block payload.
+type Block struct {
+	MID  mid.MID
+	Data []byte
+}
+
+// StoreHooks defines the interceptor interface implemented by plugin.HookBus.
+type StoreHooks interface {
+	TriggerBeforeBlockPut(ctx context.Context, blk *Block) (*Block, error)
+	TriggerAfterBlockPut(ctx context.Context, m mid.MID, size int64)
+	TriggerBeforeBlockGet(ctx context.Context, targetMID mid.MID) (mid.MID, error)
+	TriggerAfterBlockGet(ctx context.Context, m mid.MID, data []byte) ([]byte, error)
+	TriggerAfterBlockDel(ctx context.Context, targetMID mid.MID)
+}
+
 // Blockstore is the interface a DAG builder / resolver reads and
 // writes blocks through. Implementations MUST be safe for
 // concurrent use.

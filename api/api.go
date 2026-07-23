@@ -33,6 +33,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/obs/metrics"
+	"github.com/nnlgsakib/membuss/pkg/plugin"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
@@ -200,6 +201,9 @@ type Config struct {
 	KeyRing       *keyring.KeyRing
 	MemNSResolver *memns.Resolver
 	LogLevel      string
+
+	// PluginRoutes contains routes mounted by plugins
+	PluginRoutes *plugin.MapHTTPRegistry
 }
 
 // NodeAPI is the local HTTP control API.
@@ -236,6 +240,9 @@ func (a *NodeAPI) Handler() http.Handler {
 
 // Router returns the bare chi router (used by tests).
 func (a *NodeAPI) Router() http.Handler { return a.router }
+
+// ChiRouter returns the raw chi router for custom plugin route mounting.
+func (a *NodeAPI) ChiRouter() chi.Router { return a.router }
 
 func (a *NodeAPI) buildRouter() chi.Router {
 	r := chi.NewRouter()
@@ -305,6 +312,22 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		r.Get("/descriptor/{mid}", a.handleDescriptorExport)
 		r.Get("/descriptor/{mid}/meta", a.handleDescriptorMeta)
 		r.Post("/descriptor/import", a.handleDescriptorImport)
+
+		// Plugin HTTP API routes
+		if a.cfg.PluginRoutes != nil {
+			for k, h := range a.cfg.PluginRoutes.Handlers {
+				parts := strings.SplitN(k, " ", 2)
+				if len(parts) == 2 {
+					pattern := parts[1]
+					if strings.HasPrefix(pattern, "/api/v1/") {
+						subPattern := strings.TrimPrefix(pattern, "/api/v1")
+						r.Method(parts[0], subPattern, h)
+					} else {
+						r.Method(parts[0], pattern, h)
+					}
+				}
+			}
+		}
 	})
 	return r
 }

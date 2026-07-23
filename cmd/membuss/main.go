@@ -47,6 +47,8 @@ import (
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/version"
+	"github.com/nnlgsakib/membuss/pkg/plugin"
+	_ "github.com/nnlgsakib/membuss/plugins"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
@@ -64,6 +66,10 @@ var (
 	// APIAddr, then 127.0.0.1:5001.
 	globalAPIAddr string
 )
+
+func init() {
+	plugin.HTTPBaseResolver = resolveAPIAddr
+}
 
 func main() {
 	// Legacy / standalone daemon dispatch. The old `membuss`
@@ -181,7 +187,37 @@ Run "membuss init" first to set up the data directory.`,
 		newDescriptorCmd(),
 		newVersionCmd(),
 	)
+
+	// Mount subcommands from registered plugins
+	for _, p := range plugin.GetRegistered() {
+		reg := plugin.NewMapCLIRegistry()
+		dummyCore := &plugin.Core{CLIRegistry: reg}
+		_ = p.Register(dummyCore)
+		for _, cmdDef := range reg.GetCommands() {
+			root.AddCommand(buildCobraCommand(cmdDef))
+		}
+	}
+
 	return root
+}
+
+func buildCobraCommand(cDef plugin.CLICommand) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   cDef.Name,
+		Short: cDef.Description,
+		Long:  cDef.Usage,
+	}
+	if len(cDef.SubCommands) > 0 {
+		for _, sub := range cDef.SubCommands {
+			cmd.AddCommand(buildCobraCommand(sub))
+		}
+	} else if cDef.Run != nil {
+		cmd.Args = cobra.NoArgs
+		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+			return cDef.Run(args)
+		}
+	}
+	return cmd
 }
 
 // --- connection helpers ---

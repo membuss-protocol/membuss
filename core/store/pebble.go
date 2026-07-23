@@ -94,6 +94,14 @@ type MemStore struct {
 	// deletes at a time, so concurrent callers run sequentially
 	// against current state instead of racing on deletion.
 	gcMu sync.Mutex
+
+	// Hooks receives store operation interceptors from the plugin framework.
+	Hooks StoreHooks
+}
+
+// SetHooks sets the store hooks interceptor interface.
+func (s *MemStore) SetHooks(hooks StoreHooks) {
+	s.Hooks = hooks
 }
 
 // Options configures a MemStore at construction time.
@@ -193,6 +201,16 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 	if m.IsZero() {
 		return errors.New("store: zero MID")
 	}
+	if s.Hooks != nil {
+		blk, err := s.Hooks.TriggerBeforeBlockPut(context.Background(), &Block{MID: m, Data: data})
+		if err != nil {
+			return err
+		}
+		if blk != nil {
+			m = blk.MID
+			data = blk.Data
+		}
+	}
 	if err := verifyContent(m, data); err != nil {
 		return err
 	}
@@ -237,6 +255,9 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 
 	if s.bloom != nil {
 		s.bloom.add(m)
+	}
+	if s.Hooks != nil {
+		s.Hooks.TriggerAfterBlockPut(context.Background(), m, int64(len(data)))
 	}
 	return nil
 }
@@ -308,10 +329,18 @@ func (s *MemStore) Get(m mid.MID) ([]byte, error) {
 	if m.IsZero() {
 		return nil, errors.New("store: zero MID")
 	}
+	if s.Hooks != nil {
+		var err error
+		m, err = s.Hooks.TriggerBeforeBlockGet(context.Background(), m)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if s.bloom != nil && !s.bloom.maybeTest(m) {
 		return nil, ErrNotFound
 	}
 
+	var data []byte
 	if s.blocksPath != "" {
 		hasBlock, err := s.db.Has(db.BlockKey(m))
 		if err != nil {
@@ -324,27 +353,32 @@ func (s *MemStore) Get(m mid.MID) ([]byte, error) {
 		if !hasBlock && !hasDag {
 			return nil, ErrNotFound
 		}
-		data, err := os.ReadFile(s.blockPath(m))
+		d, err := os.ReadFile(s.blockPath(m))
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, ErrNotFound
 			}
 			return nil, err
 		}
-		return data, nil
-	}
-
-	if b, err := s.db.Get(db.BlockKey(m)); err == nil {
-		return b, nil
+		data = d
+	} else if b, err := s.db.Get(db.BlockKey(m)); err == nil {
+		data = b
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return nil, err
+	} else {
+		val, err := s.db.Get(db.DagKey(m))
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, ErrNotFound
+		} else if err != nil {
+			return nil, err
+		}
+		data = val
 	}
 
-	val, err := s.db.Get(db.DagKey(m))
-	if errors.Is(err, db.ErrNotFound) {
-		return nil, ErrNotFound
+	if s.Hooks != nil {
+		return s.Hooks.TriggerAfterBlockGet(context.Background(), m, data)
 	}
-	return val, err
+	return data, nil
 }
 
 // GetDAG returns the bytes stored under m in the DAG namespace only.
@@ -443,6 +477,9 @@ func (s *MemStore) Delete(m mid.MID) error {
 		if rerr := s.bloom.rebuildFromDB(s.db); rerr != nil {
 			return fmt.Errorf("store: bloom rebuild after delete: %w", rerr)
 		}
+	}
+	if s.Hooks != nil {
+		s.Hooks.TriggerAfterBlockDel(context.Background(), m)
 	}
 	return nil
 }

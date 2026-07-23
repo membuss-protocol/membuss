@@ -185,6 +185,51 @@ type Config struct {
 
 	// Tunnel contains ngrok integration configuration
 	Tunnel TunnelConfig `yaml:"tunnel"`
+
+	// Plugins configures the modular plugin and extension system.
+	Plugins PluginsConfig `yaml:"plugins"`
+}
+
+// PluginsConfig holds options for the modular plugin system.
+type PluginsConfig struct {
+	Enabled bool                      `yaml:"enabled"`
+	Active  []string                  `yaml:"active"`
+	Config  map[string]map[string]any `yaml:"config"`
+}
+
+// UnmarshalYAML customizes unmarshaling for PluginsConfig to seamlessly handle
+// boolean `enabled: true/false`, array `enabled: [plugin1]`, or `active: [plugin1]`.
+func (p *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
+	var raw struct {
+		Enabled yaml.Node                 `yaml:"enabled"`
+		Active  []string                  `yaml:"active"`
+		Config  map[string]map[string]any `yaml:"config"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+
+	p.Config = raw.Config
+	p.Active = raw.Active
+
+	if raw.Enabled.Kind == yaml.ScalarNode {
+		var b bool
+		if err := raw.Enabled.Decode(&b); err == nil {
+			p.Enabled = b
+		} else {
+			p.Enabled = true
+		}
+	} else if raw.Enabled.Kind == yaml.SequenceNode {
+		var list []string
+		if err := raw.Enabled.Decode(&list); err == nil {
+			p.Enabled = true
+			p.Active = append(p.Active, list...)
+		}
+	} else {
+		p.Enabled = true
+	}
+
+	return nil
 }
 
 // TunnelConfig holds ngrok tunneling configurations.
@@ -277,6 +322,11 @@ func Default() *Config {
 		Tunnel: TunnelConfig{
 			Enabled:   false,
 			Authtoken: "",
+		},
+		Plugins: PluginsConfig{
+			Enabled: true,
+			Active:  []string{"echo-inspector"},
+			Config:  make(map[string]map[string]any),
 		},
 	}
 }
