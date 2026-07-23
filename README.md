@@ -4,7 +4,7 @@
 
 ### A decentralized content-addressed storage and delivery network.
 
-Decentralized storage and delivery built on erasure coding, streaming block exchange, and automatic content persistence.
+Decentralized storage and delivery built on erasure coding, streaming block exchange, automatic content persistence, and dynamic plugin extensions.
 
 IPFS loses content when providers leave. BitTorrent needs seeders online. Membuss encodes redundancy into the protocol itself.
 
@@ -21,12 +21,14 @@ IPFS loses content when providers leave. BitTorrent needs seeders online. Membus
 - [Why Membuss?](#why-membuss)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
-- [Feature Reference](#feature-reference)
 - [Quick Start](#quick-start)
-- [Docker](#docker)
-- [Configuration](#configuration)
+  - [Desktop GUI (Recommended)](#desktop-gui-recommended)
+  - [CLI & Daemon (Servers & Power Users)](#cli--daemon-servers--power-users)
+- [Desktop Application](#desktop-application-)
+- [Feature Reference](#feature-reference)
+- [Modular Plugin System](#modular-plugin-system-)
 - [HTTP API](#http-api)
-- [CLI](#cli)
+- [CLI Reference](#cli-reference)
 - [Content Identifiers](#content-identifiers)
 - [Operating a Node](#operating-a-node)
 - [Development](#development)
@@ -44,6 +46,7 @@ Membuss takes a different position. Every leaf block is erasure-coded at the sto
 
 | | Membuss | IPFS | BitTorrent |
 |---|---|---|---|
+| **User Experience** | Native Desktop App + CLI + Web Explorer | CLI + Third-Party Apps | Desktop Torrent Clients |
 | **Erasure coding** | Reed-Solomon `10+4` at the storage layer | None — availability depends on providers | Optional parity files, not protocol-level |
 | **Content persistence** | Anchor Nodes auto-mirror announced content | Manual pinning required | Seeders must stay online |
 | **Block streaming** | `FetchStream` returns an `io.Reader` immediately — first bytes arrive as the first block resolves | Waits for the DAG before delivering data | Piece-level streaming only |
@@ -52,8 +55,7 @@ Membuss takes a different position. Every leaf block is erasure-coded at the sto
 | **Provider selection** | Ranked by latency + bandwidth + freshness | Unranked list | Unranked list |
 | **Reprovide cost** | Entry-node-only announcing, split into incremental groups | Full re-announce every cycle | N/A (tracker-based) |
 | **Mutable naming** | MemNS with PubSub real-time updates + weighted routes | IPNS (single target, polling) | N/A |
-| **Gateway** | Range requests, ETag caching, SPA fallback, custom domains | Basic HTTP gateway | N/A |
-| **Peer exchange** | Signed records + reachability filtering | Unsigned, no filtering | N/A |
+| **Plugin Extensions** | Zero-core-modification hooks + custom REST/gRPC/CLI APIs | Limited IPFS plugins | N/A |
 
 ---
 
@@ -85,8 +87,8 @@ Membuss takes a different position. Every leaf block is erasure-coded at the sto
 ```
                           ┌─────────────────────────────────────────────┐
                           │                  Interfaces                  │
-                          │   CLI   ·   gRPC   ·   Node API   ·  Mem-Gate │
-                          │                    Desktop (Wails)           │
+                          │   Desktop GUI (Wails)  ·   CLI   ·   gRPC    │
+                          │        Node API   ·   Mem-Gate Explorer      │
                           └───────────────┬─────────────────────────────┘
                                           │
         ┌─────────────────┬───────────────┼───────────────┬──────────────────┐
@@ -104,23 +106,102 @@ Membuss takes a different position. Every leaf block is erasure-coded at the sto
                      │  bloom · verify · seal/GC │        │  Memex v2 · Mem-DHT   │
                      │  /b/ /d/ /s/ /m/          │◄──────►│  Mem-PEX · libp2p     │
                      └──────────────────────────┘        └──────────────────────┘
+                                   ▲
+                                   │
+                     ┌──────────────────────────┐
+                     │  Universal Plugin System │
+                     │  Hooks · REST · CLI APIs │
+                     └──────────────────────────┘
 ```
 
-| Layer | Package | Responsibility |
-|-------|---------|----------------|
-| Content ID | `core/mid` | CIDv1-based `mem…` identifiers (raw / dag-pb / memfs codecs) |
-| Chunking | `core/chunk` | Fixed, Rabin, and FastCDC chunkers |
-| DAG | `core/dag` | Merkle DAG build + streaming resolve |
-| Filesystem | `core/memfs` | UnixFS-equivalent file / directory tree |
-| Erasure | `core/erasure`, `core/shard` | Reed-Solomon 10+4, consistent-hash shard ring |
-| Storage | `core/store`, `core/db` | Pebble blockstore, bloom index, seal/GC |
-| Naming | `core/memns`, `core/memlink` | Mutable names, DNS-link custom domains |
-| Exchange | `net/memex_v2` | Streaming block exchange over libp2p |
-| Discovery | `net/dht` | Enhanced Kademlia with ranked providers |
-| Gossip | `net/pex` | Signed peer exchange |
-| Reprovide | `net/herald` | Background re-announcer |
-| Gateway | `gateway/memgate_v2`, `gateway/explorer` | HTTP CDN + web explorer |
-| Persistence | `anchor` | Auto-mirroring Anchor Node engine |
+---
+
+## Quick Start
+
+Not everyone wants to use terminal commands to run a decentralized node. Membuss offers a rich **Desktop GUI** for casual users and content creators, alongside a single-binary **CLI/Daemon** for developers and server operators.
+
+### Desktop GUI (Recommended)
+
+The easiest way to run Membuss on Windows, macOS, or Linux.
+
+#### Download Pre-Built Executables
+
+1. Download the latest installer or executable for your OS from [GitHub Releases](https://github.com/nnlgsakib/membuss/releases).
+2. Run the application to launch the graphical node manager.
+
+#### Build Desktop App from Source
+
+**Requirements:** Go 1.25+, Node.js 18+, and Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`).
+
+```bash
+git clone https://github.com/nnlgsakib/membuss
+cd membuss/desktop
+wails build
+# -> build/bin/membuss-desktop (executable)
+```
+
+---
+
+### CLI & Daemon (Servers & Power Users)
+
+For head-less server deployments, Docker containers, or terminal power users.
+
+#### Build CLI Binary
+
+**Requirements:** Go 1.25+ and Node.js 18+ (the web explorer is bundled into the daemon at build time).
+
+```bash
+git clone https://github.com/nnlgsakib/membuss
+cd membuss
+make build
+# -> bin/membuss (single binary: daemon + CLI)
+```
+
+#### Run Node Daemon
+
+```bash
+# Initialize data directory & default configuration
+./bin/membuss init
+
+# Run the node in the foreground
+./bin/membuss daemon start
+
+# Mem-Gate gateway : http://127.0.0.1:8080
+# Node API         : http://127.0.0.1:5001
+# gRPC             : 127.0.0.1:50051
+```
+
+#### Basic CLI Commands
+
+```bash
+# Upload a file and get its MID
+./bin/membuss add ./video.mp4
+# -> membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm
+
+# Upload a folder as a browsable MemFS tree
+./bin/membuss add ./my-site
+
+# Retrieve content
+./bin/membuss get membafzbeidr5pk2… -o output.mp4
+
+# Inspect live node & plugin hook metrics
+./bin/membuss inspector stats
+```
+
+---
+
+## Desktop Application 🖥️
+
+The Membuss Desktop Application (`desktop/`) provides a full graphical user interface powered by Wails and Svelte.
+
+### Key Desktop Features
+
+1. **One-Click Node Control**: Start, stop, and inspect the local Membuss node daemon effortlessly without typing terminal commands.
+2. **Visual File & Folder Uploads**: Drag and drop files or directories into the window to slice, hash, erasure-code, seal, and generate MIDs (`mem1...`).
+3. **Interactive 3D Globe & Geolocation Map**: Real-time visualization of connected swarm peers, displaying geographic locations, latency, and PEX routing metadata on an interactive 3D globe.
+4. **Embedded MemFS & Web Explorer**: Browse pinned content, view Merkle DAG structures, inspect raw leaves, and stream audio/video files directly inside the app.
+5. **System Tray Background Mode**: Minimizes to the desktop system tray, keeping your node seeding, auto-mirroring, and servicing network block requests in the background.
+6. **Automatic Updates**: Native background version check with zero-downtime updates directly from GitHub releases.
 
 ---
 
@@ -139,7 +220,7 @@ Optional full-mirror nodes that discover announced content via the DHT, pull it 
 A bidirectional block-exchange protocol over libp2p streams:
 
 - **Streaming assembly** — `FetchStream()` returns an `io.Reader` immediately while blocks resolve in the background; first bytes are available as soon as the first block arrives.
-- **DAG-aware walking** — once a provider of the root is found, the whole tree (MemFS dirs, file envelopes, raw leaves) is pulled over the same session instead of re-querying the DHT per block.
+- **DAG-aware walking** — once a provider of the root is found, the whole tree (MemFS dirs, file envelopes, raw leaves) is pulled over the same connection instead of re-querying the DHT per block.
 - **Persistent stream pool** — connections are reused across sessions.
 - **AIMD congestion control** — an adaptive per-peer sliding window that backs off on write errors.
 - **Parallel verification** — a worker pool verifies SHA-256 hashes off the hot path.
@@ -149,10 +230,6 @@ A bidirectional block-exchange protocol over libp2p streams:
 
 Provider discovery ranked by a composite score of latency, bandwidth, and freshness, backed by a CID cache and custom record validators for the `membuss` and `memns` namespaces. Runs on a Pebble-backed datastore.
 
-### Mem-PEX — Peer Exchange
-
-A gossip protocol that periodically exchanges peer tables with random connected peers. Records are cryptographically signed (unsigned records are rejected), reachability-filtered, and persisted to disk across restarts.
-
 ### Mem-Gate — HTTP Gateway + CDN
 
 A full HTTP gateway at `/mem/{MID}`:
@@ -161,93 +238,44 @@ A full HTTP gateway at `/mem/{MID}`:
 - **ETag + immutable caching** — content-addressed responses are cached aggressively.
 - **Directories & websites** — directory listings (HTML or `?format=json`) with automatic `index.html` serving and SPA fallback.
 - **Custom domains** — resolve `example.com` → MID via DNS-link records.
-- **Subdomain routing** — serve content at `mid.gateway.example` or via the path.
 
 ### MemFS — Files & Directories
 
-A UnixFS-equivalent layer: files chunk into raw leaves under a `FILE` envelope, directories are ordered `DIR` nodes, and every node is content-addressed so dedup, walk, seal, and GC apply uniformly. Each file inside a directory remains independently addressable by its own MID.
-
-### MemNS — Mutable Naming
-
-Decentralized naming with DHT-stored, PubSub-updated records (no polling), weighted routes for traffic splitting, DNS-link fallback for IPFS migration, and delegated publishing. A bounded resolution depth prevents infinite chains.
-
-### Mem-Herald — Reprovider
-
-A background re-announcer with three strategies:
-
-- **`roots`** *(default)* — announces content entry points (sealed roots plus reachable MemFS directory and file nodes), so everything stays discoverable without flooding the DHT with a record per leaf block.
-- **`all`** — every block; used by Anchor Nodes that back up the whole network.
-- **`shards`** — only the erasure shards this node owns, via a consistent-hash ring.
-
-The reprovide cycle is split into incremental groups so each run announces only a fraction of the keyspace.
-
-### Storage
-
-- **Pebble blockstore** — an LSM key-value store with namespaced keys: blocks (`/b/`), DAG/MemFS nodes (`/d/`), seals (`/s/`), metadata (`/m/`).
-- **Bloom filter** — `Has()` consults an in-memory bloom filter first; a "definitely absent" answer skips disk entirely.
-- **Write verification** — `Put()` re-hashes bytes and rejects any block whose content does not match its MID.
-- **Seal & GC** — sealed roots are pinned; unsealed content past a minimum age is collected on a schedule.
-
-### Desktop App
-
-A Wails-based GUI (`desktop/`) that starts and stops the daemon, embeds the web explorer with a globe and geolocation map, auto-updates from GitHub releases, and can keep the daemon alive after the window closes.
+A UnixFS-equivalent layer: files chunk into raw leaves under a `FILE` envelope, directories are ordered `DIR` nodes, and every node is content-addressed so dedup, walk, seal, and GC apply uniformly.
 
 ---
 
-## Quick Start
+## Modular Plugin System 🧩
 
-### Build
+Membuss features a dynamic plugin architecture (`pkg/plugin`) that enables custom logic, store interceptors, REST routes, gRPC services, and CLI subcommands to be added **without modifying core code**.
 
-Membuss builds with **CGO disabled**, producing static binaries.
+### Core Architecture
 
-**Requirements:** Go 1.25+, and Node.js 18+ (the explorer frontend is bundled into the daemon at build time).
+- **Single Entrypoint (`*plugin.Core`)**: Grants full read/write access to `Store`, `Host`, `DHT`, `Memex`, `PEX`, `Herald`, `Anchor`, `MemNS`, `Keyring`, and `Metrics`.
+- **Universal Subsystem Hooks (`HookBus`)**:
+  - `BeforeBlockPut` / `AfterBlockPut`: Intercept or transform blocks before persistence.
+  - `BeforeBlockGet` / `AfterBlockGet`: Intercept or transform retrieved block bytes.
+  - `AfterBlockDel`: Intercept block deletion.
+  - `OnAnchorHold` / `OnAnchorSeal`: Intercept Anchor Node pinning events.
+  - `OnPeerConnected` / `OnPeerDisconnected`: Track swarm peer connections.
+- **Extension Registries**: Mount custom REST endpoints onto Gateway and Node API, define custom libp2p stream protocols, and register hierarchical Cobra CLI subcommands.
 
-```bash
-git clone https://github.com/nnlgsakib/membuss
-cd membuss
-make build
-# -> bin/membuss     (single binary: node + CLI)
-```
+### Showcase Reference Plugin (`echo-inspector`)
 
-`make build` compiles the SvelteKit explorer first, then the Go binary. `membuss` is one unified executable — it runs the node *and* acts as the operator CLI. To skip the frontend and build the binary alone:
-
-```bash
-CGO_ENABLED=0 go build -o bin/membuss ./cmd/membuss
-```
-
-### Run
+Test live plugin hook execution and telemetry using the built-in inspector:
 
 ```bash
-# Initialize the data directory (identity + config), then run the node:
-./bin/membuss init
-./bin/membuss daemon start
-# Mem-Gate gateway : http://127.0.0.1:8080
-# Node API         : http://127.0.0.1:5001
-# gRPC             : 127.0.0.1:50051
-# libp2p           : tcp/4001, quic/4001, ws/4002
+# Check plugin health
+./bin/membuss inspector status
 
-# The legacy standalone form is still supported:
-./bin/membuss -config membuss.yaml
-```
+# View live daemon hook metrics (Block Puts, Gets, Bytes Processed)
+./bin/membuss inspector stats
 
-### Use
+# Display real-time log of intercepted core events
+./bin/membuss inspector events
 
-```bash
-# Upload a file
-./bin/membuss add ./video.mp4
-# -> membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm
-
-# Upload a directory (served as a browsable MemFS tree)
-./bin/membuss add ./my-site
-
-# Fetch content back
-./bin/membuss get membafzbeidr5pk2… -o copy.mp4
-
-# Browse in the explorer
-# open http://127.0.0.1:8080/explorer/
-
-# Stream directly from the gateway
-# open http://127.0.0.1:8080/mem/membafzbeidr5pk2…
+# Execute a live storage hook mutation & retrieval verification test
+./bin/membuss inspector test-hook
 ```
 
 ---
@@ -271,7 +299,7 @@ The image is distroless and runs as a non-root user. Exposed ports: `4001` (libp
 
 ## Configuration
 
-Configuration is a single YAML file; every field falls back to a sensible default. The most common fields:
+Configuration is a single YAML file (`membuss.yaml`); every field falls back to a sensible default:
 
 ```yaml
 listen_addrs:
@@ -284,23 +312,22 @@ gateway_addr: 127.0.0.1:8080
 api_addr: 127.0.0.1:5001
 grpc_addr: 127.0.0.1:50051
 
-# Content persistence
+# Persistence
 anchor_mode: false            # true = mirror all announced content
 
-# Reprovide (Mem-Herald)
-reprovide_interval: 12h
-reprovide_groups: 6           # split each cycle into N incremental runs
-reprovide_strategy: roots     # roots | all | shards
-
-# Security
-api_key: ""                   # when set, Node API requires X-Membuss-Key
+# Modular Plugins
+plugins:
+  enabled: true
+  active:
+    - echo-inspector
+  config:
+    echo-inspector:
+      log_level: info
 
 # Observability
 metrics_enabled: true         # Prometheus at /metrics
 log_level: info
 ```
-
-The full schema — TLS, rate limiting, relay service, NAT, bloom sizing, DHT tuning, geolocation, and tunneling — lives in [`config/config.go`](config/config.go). A starter file is [`membuss.yaml`](membuss.yaml).
 
 ---
 
@@ -316,9 +343,7 @@ The full schema — TLS, rate limiting, relay service, NAT, bloom sizing, DHT tu
 | `GET`  | `/mem/{mid}/` | Directory listing (`?format=json` for JSON) |
 | `GET`  | `/mem/{mid}/{path}` | File within a MemFS directory |
 | `GET`  | `/memns/{name}` | Resolve a MemNS name |
-| `GET`  | `/memlink/{domain}` | Resolve a custom-domain link |
 | `GET`  | `/explorer/` | Web explorer |
-| `GET`  | `/healthz` | Liveness probe |
 
 ### Node API — Local Control
 
@@ -333,20 +358,16 @@ The full schema — TLS, rate limiting, relay service, NAT, bloom sizing, DHT tu
 | `GET`    | `/api/v1/stat/{mid}` | Size, block count, seal status |
 | `GET`    | `/api/v1/peers` | Connected peers |
 | `GET`    | `/api/v1/node/info` | Peer ID, addresses, version |
-| `POST`   | `/api/v1/gc` | Run garbage collection |
-| `DELETE` | `/api/v1/delete/{mid}` | Delete a block |
-| `*`      | `/api/v1/memns/*`, `/keyring/*`, `/descriptor/*` | Naming, keys, portable descriptors |
+| `*`      | `/api/v1/inspector/*` | Plugin inspector endpoints |
 | `GET`    | `/metrics` | Prometheus metrics |
-
-Responses use a JSON envelope: `{"ok": true, "data": {…}}` or `{"ok": false, "error": "…"}`. When `api_key` is configured, requests must carry `X-Membuss-Key: <api_key>`.
 
 ---
 
-## CLI
+## CLI Reference
 
-`membuss` is a single binary that is both the node and the operator client. The same executable runs the daemon (`membuss daemon start`) and drives a running node over gRPC / HTTP.
+`membuss` is a single binary that is both the node daemon and the operator client.
 
-```
+```bash
 membuss <command> [flags]
 ```
 
@@ -357,17 +378,14 @@ membuss <command> [flags]
 | `ls <MID>` | List a MemFS directory |
 | `seal <MID>` | Pin (protect from GC) |
 | `unseal <MID>` | Remove a pin |
-| `delete <MID>` | Delete a block |
 | `stat <MID>` | Size, block count, seal status |
 | `peers` | Show the PEX peer table |
 | `dht peek <MID>` | Query the DHT for providers |
 | `gc` | Run garbage collection |
 | `anchor status` | Anchor engine statistics |
-| `ping [message]` | Connectivity probe |
+| `inspector stats/status/events/test-hook` | Plugin system telemetry & live test |
 | `daemon start` / `status` | Manage the local daemon |
-| `keyring gen/list/export/import/rm` | Manage signing keys |
 | `memns publish/resolve/log/delegate` | Mutable naming |
-| `descriptor export/import/meta` | Portable `.mbuss` content descriptors |
 | `version` | Version and build info |
 
 ---
@@ -382,16 +400,6 @@ mem + b + base32lower( <version> <codec> <multihash> )
 
 Example: `membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm`
 
-Codecs distinguish node types while sharing identical content-hash semantics:
-
-| Codec | Value | Node type |
-|-------|-------|-----------|
-| raw | `0x55` | raw leaf block |
-| dag-pb | `0x70` | Merkle-DAG internal node |
-| memfs | `0x72` | MemFS `FILE` / `DIR` / `SYMLINK` / `METADATA` node |
-
-Because the MID is the SHA-256 of the serialized node, identical content produces identical MIDs network-wide, and dedup, walk, seal, and GC all apply without special cases.
-
 ---
 
 ## Operating a Node
@@ -400,24 +408,16 @@ Because the MID is the SHA-256 of the serialized node, identical content produce
 
 **Expose a public gateway.** Bind `gateway_addr` to a public interface, front it with a reverse proxy for TLS, and set `gateway_rate_limit_per_min`. Content-addressed responses are immutable and cache-friendly at the edge.
 
-**Secure the control plane.** The Node API and gRPC endpoints are administrative. Keep them bound to `127.0.0.1`, or set `api_key` and place them behind your own authentication if they must be remote.
-
-**Observe.** Scrape `/metrics` with Prometheus (`metrics_enabled: true`) for provide/fetch counts, DHT activity, and store size. The daemon shuts down gracefully on `SIGINT`/`SIGTERM`.
-
 ---
 
 ## Development
 
 ```bash
 make build          # single membuss binary: node + CLI (CGO disabled)
-make test           # go test ./... -race -count=1
+make test           # go test ./... -count=1
 make lint           # golangci-lint
-make proto          # regenerate protobuf bindings
-make run-daemon     # run with ./membuss.yaml
-make frontend-dev   # Vite dev server for the explorer
+make run-daemon     # run daemon with ./membuss.yaml
 ```
-
-Requirements: Go 1.25+. The repository is a single Go module; subsystems live under `core/`, `net/`, `gateway/`, `anchor/`, and the binaries under `cmd/`.
 
 ---
 
