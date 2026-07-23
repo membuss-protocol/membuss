@@ -222,6 +222,9 @@ func New(cfg Config) (*MemGate, error) {
 // the gateway via httptest.
 func (m *MemGate) Router() http.Handler { return m.router }
 
+// ChiRouter returns the underlying chi.Router for custom route mounting.
+func (m *MemGate) ChiRouter() chi.Router { return m.router }
+
 func (m *MemGate) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path

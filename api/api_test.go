@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/pkg/plugin"
 )
 
 // memBackend is an in-memory Backend. It stores (mid, bytes)
@@ -465,5 +466,33 @@ func TestEnvelope_FailPath(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&env)
 	if env.OK || env.Error == "" {
 		t.Errorf("expected fail envelope; got %+v", env)
+	}
+}
+
+func TestPluginRoutes_MountedSuccessfully(t *testing.T) {
+	b := newMemBackend()
+	reg := plugin.NewMapHTTPRegistry()
+	reg.HandleFunc("GET", "/api/v1/inspector/config", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"config":{"test":true}}`))
+	})
+
+	apiInstance, err := New(Config{
+		Backend:      b,
+		PluginRoutes: reg,
+	})
+	if err != nil {
+		t.Fatalf("api.New failed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/inspector/config", nil)
+	w := httptest.NewRecorder()
+	apiInstance.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"test":true`) {
+		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 }

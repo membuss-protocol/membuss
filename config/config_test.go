@@ -42,6 +42,33 @@ func TestDefault(t *testing.T) {
 	}
 }
 
+func TestPluginsConfig_UnmarshalFormats(t *testing.T) {
+	yamlSeq := `
+plugins:
+  enabled:
+    - basic
+  config:
+    basic:
+      log_level: debug
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlSeq), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed for sequence enabled: %v", err)
+	}
+	if !cfg.Plugins.Enabled {
+		t.Errorf("expected Plugins.Enabled to be true")
+	}
+	if len(cfg.Plugins.Active) == 0 || cfg.Plugins.Active[0] != "basic" {
+		t.Errorf("expected Plugins.Active to contain 'basic', got %v", cfg.Plugins.Active)
+	}
+}
+
 func TestValidateRejectsZeroGroups(t *testing.T) {
 	cfg := Default()
 	cfg.ReprovideGroups = 0

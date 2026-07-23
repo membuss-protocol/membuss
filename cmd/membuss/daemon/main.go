@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -64,6 +65,8 @@ import (
 	"github.com/nnlgsakib/membuss/net/tunnel"
 	"github.com/nnlgsakib/membuss/obs/logging"
 	"github.com/nnlgsakib/membuss/obs/metrics"
+	"github.com/nnlgsakib/membuss/pkg/plugin"
+	_ "github.com/nnlgsakib/membuss/plugins"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -520,7 +523,43 @@ func Run(args []string) error {
 	}
 	defer tunMgr.Stop()
 
-	gateSrv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr)
+	// 8b) Plugin Engine Boot & Lifecycle.
+	hookBus := plugin.NewHookBus()
+	if ms, ok := bs.(*store.MemStore); ok {
+		ms.SetHooks(hookBus)
+	}
+	gateHTTPReg := plugin.NewMapHTTPRegistry()
+	nodeHTTPReg := plugin.NewMapHTTPRegistry()
+	cliReg := plugin.NewMapCLIRegistry()
+
+	pluginCore := &plugin.Core{
+		Config:      cfg,
+		Store:       bs,
+		Host:        h,
+		DHT:         mdht,
+		Memex:       mx,
+		PEX:         px,
+		Herald:      hd,
+		Anchor:      anchorEng,
+		MemNS:       memnsRes,
+		Keyring:     kr,
+		Metrics:     mtrx,
+		Hooks:       hookBus,
+		GatewayHTTP: gateHTTPReg,
+		NodeHTTP:    nodeHTTPReg,
+		CLIRegistry: cliReg,
+		Logger:      logger,
+	}
+
+	if err := plugin.BootPlugins(pluginCore); err != nil {
+		logger.Error("plugin boot failed", "err", err.Error())
+	}
+	if err := plugin.StartPlugins(ctx); err != nil {
+		logger.Error("plugin start failed", "err", err.Error())
+	}
+	defer plugin.StopPlugins(ctx)
+
+	gateSrv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg)
 	if err != nil {
 		logger.Error("gateway", "err", err.Error())
 		os.Exit(1)
@@ -528,7 +567,7 @@ func Run(args []string) error {
 	fmt.Fprintf(os.Stdout, "  gateway_addr:   %s\n", gateSrv.Addr())
 
 	// 10) Node API: local control plane over HTTP/JSON.
-	apiSrv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel)
+	apiSrv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg)
 	if err != nil {
 		logger.Error("api", "err", err.Error())
 		os.Exit(1)
@@ -893,7 +932,7 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
@@ -905,13 +944,22 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 	if err != nil {
 		return nil, fmt.Errorf("memgate: %w", err)
 	}
+	if pluginReg != nil {
+		r := mg.ChiRouter()
+		for k, h := range pluginReg.Handlers {
+			parts := strings.SplitN(k, " ", 2)
+			if len(parts) == 2 {
+				r.Method(parts[0], parts[1], h)
+			}
+		}
+	}
 	return startHTTP(addr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
 }
 
 // startNodeAPI brings up the local Node control API. mtrx
 // exposes Prometheus at /metrics; apiKey enables X-Membuss-Key
 // auth on every /api/v1 endpoint; tls enables HTTPS.
-func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string) (*httpServer, error) {
+func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, pluginReg *plugin.MapHTTPRegistry) (*httpServer, error) {
 	nodeAPI, err := api.New(api.Config{
 		Backend:        b,
 		MaxUploadBytes: 1 << 30, // 1 GiB
@@ -920,6 +968,7 @@ func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey stri
 		KeyRing:        keyring,
 		MemNSResolver:  memnsRes,
 		LogLevel:       logLevel,
+		PluginRoutes:   pluginReg,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("nodeapi: %w", err)
