@@ -26,7 +26,7 @@
 
 	async function fetchStatus() {
 		try {
-			const data = await apiFetch<TunnelStatus>('/node/tunnel');
+			const data = await apiFetch('/node/tunnel');
 			status = data;
 			error = null;
 		} catch (err) {

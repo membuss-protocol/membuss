@@ -101,7 +101,8 @@
 				target={page.params.name ?? ''}
 				kind="memns"
 				compact={false}
-				shareOnly={true}
+				shareOnly={false}
+				inspectHref={data.IsMID ? `${base}/mid/${data.CleanValue}` : undefined}
 			/>
 		{/if}
 	</div>

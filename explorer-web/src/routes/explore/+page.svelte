@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { base } from '$app/paths';
 	import DagViewer from '$lib/components/DagViewer.svelte';
 	import Icon from '@iconify/svelte';
@@ -13,6 +15,17 @@
 
 		visualizedMID = q;
 	}
+
+	onMount(() => {
+		const paramMID = page.url.searchParams.get('mid');
+		if (paramMID) {
+			const clean = paramMID.trim().replace('/mem/', '').replace(/\s+/g, '');
+			if (clean) {
+				inputMID = clean;
+				visualizedMID = clean;
+			}
+		}
+	});
 </script>
 
 <div class="flex flex-col gap-6 max-w-4xl w-full mx-auto">

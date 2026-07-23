@@ -384,14 +384,26 @@
 						</div>
 
 						{#if successPublish}
-							<div class="bg-emerald-950/20 border border-emerald-900/40 text-emerald-400 p-2.5 rounded-lg text-[11px]">
-								{successPublish}
+							<div class="bg-emerald-950/30 border border-emerald-800/40 text-emerald-400 p-3 rounded-xl text-xs font-mono break-all overflow-hidden flex flex-col gap-1 shadow-lg">
+								<div class="flex items-center gap-1.5 font-sans font-bold text-emerald-300">
+									<Icon icon="ph:check-circle-bold" class="text-sm shrink-0" />
+									<span>Record Published to MemNS</span>
+								</div>
+								<div class="text-[11px] text-slate-300 break-all select-all font-mono whitespace-pre-wrap leading-relaxed mt-1 bg-slate-950/60 p-2.5 rounded-lg border border-emerald-900/30">
+									{successPublish}
+								</div>
 							</div>
 						{/if}
 						
 						{#if errorPublish}
-							<div class="bg-red-950/20 border border-red-900/40 text-red-400 p-2.5 rounded-lg text-[11px]">
-								{errorPublish}
+							<div class="bg-red-950/30 border border-red-800/40 text-red-400 p-3 rounded-xl text-xs font-mono break-all overflow-hidden flex flex-col gap-1 shadow-lg">
+								<div class="flex items-center gap-1.5 font-sans font-bold text-red-300">
+									<Icon icon="ph:warning-circle-bold" class="text-sm shrink-0" />
+									<span>Publish Failed</span>
+								</div>
+								<div class="text-[11px] text-red-300 break-all select-all font-mono whitespace-pre-wrap leading-relaxed mt-1 bg-slate-950/60 p-2.5 rounded-lg border border-red-900/30">
+									{errorPublish}
+								</div>
 							</div>
 						{/if}
 
