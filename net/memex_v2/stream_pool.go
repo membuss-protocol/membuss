@@ -90,6 +90,25 @@ func (p *PeerStreamPool) CloseAll() {
 	}
 }
 
+// Broadcast sends a MemexMessage frame to all active stream connections in the pool.
+func (p *PeerStreamPool) Broadcast(msg *membusspb.MemexMessage) {
+	if msg == nil {
+		return
+	}
+	p.mu.Lock()
+	streams := make([]*pooledStream, 0, len(p.streams))
+	for _, ps := range p.streams {
+		if !ps.isClosed() {
+			streams = append(streams, ps)
+		}
+	}
+	p.mu.Unlock()
+
+	for _, ps := range streams {
+		_ = ps.writeFrameLocked(msg)
+	}
+}
+
 type pooledStream struct {
 	mu     sync.Mutex
 	pid    peer.ID
@@ -156,6 +175,9 @@ func (ps *pooledStream) Close() {
 	_ = ps.stream.Reset()
 	ps.queue.Close()
 	ps.engine.streamPool.RemoveStream(ps.pid, ps)
+	if ps.engine.peerWantlist != nil {
+		ps.engine.peerWantlist.RemovePeer(ps.pid)
+	}
 	ps.engine.NotifyPeerFailed(ps.pid)
 }
 
@@ -219,21 +241,28 @@ func (ps *pooledStream) readLoop() {
 			}
 		}
 
-		// Deliver negative ACKs (DONT_HAVE)
-		for _, dontHaveMidStr := range msg.HaveMids {
-			// Find mid
+		// Process positive HAVE responses (from WANT_HAVE queries)
+		for _, haveMidStr := range msg.HaveMids {
+			id, err := mid.Parse(haveMidStr)
+			if err != nil {
+				continue
+			}
+			ps.engine.NotifyPeerHasBlock(id, ps.pid)
+		}
+
+		// Process negative ACKs / DONT_HAVE
+		for _, dontHaveMidStr := range msg.DontHaves {
 			id, err := mid.Parse(dontHaveMidStr)
 			if err != nil {
 				continue
 			}
-			// Deliver immediately to sessions so the session scheduler can re-route it
 			ps.engine.NotifyBlockFailed(id, ps.pid)
 		}
 
-		// Handle requests if the remote peer sent wants (acting as a server)
-		if len(msg.Wants) > 0 {
-			resp := ps.engine.serveWants(msg.Wants)
-			if len(resp.Wants)+len(resp.Blocks)+len(resp.HaveMids)+len(resp.Cancel) > 0 {
+		// Handle wants & cancels sent by the remote peer
+		if len(msg.Wants) > 0 || len(msg.Cancel) > 0 {
+			resp := ps.engine.HandleRemoteWants(ps.pid, msg.Wants, msg.Cancel)
+			if len(resp.Wants)+len(resp.Blocks)+len(resp.HaveMids)+len(resp.DontHaves)+len(resp.Cancel) > 0 {
 				_ = ps.stream.SetWriteDeadline(time.Now().Add(DefaultPeerTimeout))
 				if err := ps.writeFrameLocked(resp); err != nil {
 					return

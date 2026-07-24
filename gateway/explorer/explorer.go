@@ -36,7 +36,7 @@ import (
 	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
-//go:embed web/templates/*.html web/static/*.css web/static/*.js all:web/dist
+//go:embed all:web/dist
 var assetFS embed.FS
 
 // ResolveStatus is the outcome of the explorer's "fetch
@@ -185,8 +185,6 @@ type Backend interface {
 	Add(ctx context.Context, name string, r io.Reader) (ContentInfo, error)
 	// AddDirectory ingests a directory as MemFS from a set of files with relative paths.
 	AddDirectory(ctx context.Context, name string, files []DirectoryFile) (ContentInfo, error)
-	// Rename updates the name metadata of a MID.
-	Rename(ctx context.Context, m mid.MID, name string) error
 	// TrackRootWithMetadata writes root ObjectInfo metadata and registers it.
 	TrackRootWithMetadata(m mid.MID, name string, mime string, size uint64) error
 	// Peers returns the local PEX peer table.
@@ -376,13 +374,11 @@ func New(cfg Config) (*Explorer, error) {
 		"hasPrefix":  strings.HasPrefix,
 		"trimPrefix": strings.TrimPrefix,
 	}
-	tpl, err := template.New("explorer").Funcs(funcs).ParseFS(assetFS, "web/templates/*.html")
-	if err != nil {
-		return nil, fmt.Errorf("explorer: parse templates: %w", err)
-	}
-	pages, err := buildPages(tpl)
-	if err != nil {
-		return nil, fmt.Errorf("explorer: build pages: %w", err)
+	var tpl *template.Template
+	var pages map[string]*template.Template
+	if t, err := template.New("explorer").Funcs(funcs).ParseFS(assetFS, "web/templates/*.html"); err == nil {
+		tpl = t
+		pages, _ = buildPages(tpl)
 	}
 	return &Explorer{
 		cfg:    cfg,
@@ -544,7 +540,9 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Post("/mid/{mid}/seal", e.handleSeal)
 	r.Post("/mid/{mid}/unseal", e.handleUnseal)
 	r.Post("/mid/{mid}/delete", e.handleDelete)
-	r.Post("/mid/{mid}/rename", e.handleRename)
+	r.Post("/mid/{mid}/rename", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "renaming content is disabled: content metadata is immutable", http.StatusBadRequest)
+	})
 	r.Post("/search", e.handleSearch)
 	r.Post("/upload", e.handleUpload)
 	r.Post("/peers/connect", e.handleConnectPeer)
@@ -567,10 +565,6 @@ func (e *Explorer) buildRouter() http.Handler {
 	serveSpaOrPage := func(handler http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
-				handler(w, r)
-				return
-			}
-			if strings.HasPrefix(r.Header.Get("User-Agent"), "Go-http-client") {
 				handler(w, r)
 				return
 			}
@@ -1284,29 +1278,6 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/explorer/mid/"+res.MID, http.StatusSeeOther)
-}
-
-func (e *Explorer) handleRename(w http.ResponseWriter, r *http.Request) {
-	midStr := chi.URLParam(r, "mid")
-	root, err := mid.Parse(midStr)
-	if err != nil {
-		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	newName := strings.TrimSpace(r.FormValue("name"))
-	if newName == "" {
-		http.Error(w, "empty name", http.StatusBadRequest)
-		return
-	}
-	if err := e.cfg.Backend.Rename(r.Context(), root, newName); err != nil {
-		http.Error(w, "rename: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/explorer/mid/"+midStr, http.StatusSeeOther)
 }
 
 func (e *Explorer) handleMemNSPage(w http.ResponseWriter, r *http.Request) {

@@ -69,11 +69,12 @@ func EstimateTimeout(contentBytes uint64) time.Duration {
 
 // Engine is the long-lived Memex v2 node on a libp2p host.
 type Engine struct {
-	host       host.Host
-	bs         Blockstore
-	wm         *wantManager
-	bloom      *BloomManager
-	streamPool *PeerStreamPool
+	host         host.Host
+	bs           Blockstore
+	wm           *wantManager
+	bloom        *BloomManager
+	streamPool   *PeerStreamPool
+	peerWantlist *PeerWantlistManager
 
 	// Verifier Worker Pool & DB Queue
 	verifierCh chan verifierJob
@@ -122,16 +123,17 @@ func New(cfg Config) (*Engine, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		host:        cfg.Host,
-		bs:          cfg.Blockstore,
-		wm:          newWantManager(),
-		bloom:       cfg.Bloom,
-		peerMetrics: make(map[peer.ID]*peerMetrics),
-		verifierCh:  make(chan verifierJob, 2048),
-		dbWriteCh:   make(chan dbWriteJob, 2048),
-		ctx:         ctx,
-		cancel:      cancel,
-		sessions:    make(map[*Session]struct{}),
+		host:         cfg.Host,
+		bs:           cfg.Blockstore,
+		wm:           newWantManager(),
+		bloom:        cfg.Bloom,
+		peerWantlist: newPeerWantlistManager(),
+		peerMetrics:  make(map[peer.ID]*peerMetrics),
+		verifierCh:   make(chan verifierJob, 2048),
+		dbWriteCh:    make(chan dbWriteJob, 2048),
+		ctx:          ctx,
+		cancel:       cancel,
+		sessions:     make(map[*Session]struct{}),
 	}
 	e.streamPool = newPeerStreamPool(e)
 	return e, nil
@@ -184,6 +186,7 @@ func (e *Engine) StopWait(ctx context.Context) error {
 func (e *Engine) Blockstore() Blockstore { return e.bs }
 func (e *Engine) WantManager() *wantManager { return e.wm }
 func (e *Engine) BloomManager() *BloomManager { return e.bloom }
+func (e *Engine) PeerWantlist() *PeerWantlistManager { return e.peerWantlist }
 
 func (e *Engine) RegisterSession(s *Session) {
 	e.sessionsMu.Lock()
@@ -212,6 +215,14 @@ func (e *Engine) NotifyBlockResolved(id mid.MID) {
 	defer e.sessionsMu.Unlock()
 	for s := range e.sessions {
 		s.markResolved(id)
+	}
+}
+
+func (e *Engine) NotifyPeerHasBlock(id mid.MID, pid peer.ID) {
+	e.sessionsMu.Lock()
+	defer e.sessionsMu.Unlock()
+	for s := range e.sessions {
+		s.markPeerHasBlock(id, pid)
 	}
 }
 
@@ -318,6 +329,8 @@ func (e *Engine) dbBatchWriter() {
 			}
 			e.wm.deliver(item.id)
 			e.NotifyBlockResolved(item.id)
+			e.OpportunisticPushBlock(item.id, item.data)
+			e.BroadcastCancel(item.id)
 		}
 		batch = batch[:0]
 	}

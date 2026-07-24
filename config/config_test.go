@@ -161,3 +161,35 @@ func TestValidateRejectsEmptyListenAddrs(t *testing.T) {
 		t.Fatal("nil ListenAddrs must fail validation")
 	}
 }
+
+func TestServersConfig_Toggles(t *testing.T) {
+	yamlData := `
+data_dir: /tmp/membuss-test
+servers:
+  gateway: false
+  node_api:
+    enabled: true
+  grpc:
+    enabled: false
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "servers.yaml")
+	if err := os.WriteFile(path, []byte(yamlData), 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Servers.Gateway.Enabled {
+		t.Errorf("expected Gateway to be disabled")
+	}
+	if !cfg.Servers.NodeAPI.Enabled {
+		t.Errorf("expected NodeAPI to be enabled")
+	}
+	if cfg.Servers.GRPC.Enabled {
+		t.Errorf("expected GRPC to be disabled")
+	}
+}

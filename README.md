@@ -217,14 +217,16 @@ Optional full-mirror nodes that discover announced content via the DHT, pull it 
 
 ### Memex v2 — Block Exchange
 
-A bidirectional block-exchange protocol over libp2p streams:
+A high-performance bidirectional block-exchange protocol over persistent libp2p streams:
 
-- **Streaming assembly** — `FetchStream()` returns an `io.Reader` immediately while blocks resolve in the background; first bytes are available as soon as the first block arrives.
-- **DAG-aware walking** — once a provider of the root is found, the whole tree (MemFS dirs, file envelopes, raw leaves) is pulled over the same connection instead of re-querying the DHT per block.
-- **Persistent stream pool** — connections are reused across sessions.
-- **AIMD congestion control** — an adaptive per-peer sliding window that backs off on write errors.
-- **Parallel verification** — a worker pool verifies SHA-256 hashes off the hot path.
-- **Bloom-filter gossip** — nodes broadcast sealed-MID bloom filters so peers skip providers that don't have a wanted block.
+- **Wantlist Exchange & Opportunistic Delivery** — connected peers exchange active wantlists over persistent streams. When a node stores or receives a block, it immediately pushes the block to interested peers without waiting for round-trip pull requests.
+- **Two-Phase Negotiation (`WANT_HAVE` / `HAVE`)** — requesting nodes query `WANT_HAVE` first; holding peers reply with lightweight `HAVE` frames so the requester targets only the fastest peer, preventing duplicate block downloads.
+- **Immediate Cancel Broadcasting** — as soon as a block resolves locally, the engine broadcasts `Cancel` frames to active streams, clearing remote peer queues instantly.
+- **Streaming Assembly** — `FetchStream()` returns an `io.Reader` immediately while blocks resolve in the background; first bytes are available as soon as the first block arrives.
+- **DAG-Aware Walking** — once a provider of the root is found, the tree (MemFS dirs, file envelopes, raw leaves) is pulled over the same connection instead of re-querying the DHT per block.
+- **Persistent Stream Pool & AIMD Congestion Control** — stream connections are multiplexed and reused with adaptive per-peer sliding windows.
+- **Parallel Verification & DB Batching** — a dedicated worker pool verifies SHA-256 hashes off the hot path before batch-writing to storage.
+- **Content Metadata Immutability** — content-addressed files and directories are strictly immutable, guaranteeing cryptographically verifiable data integrity.
 
 ### Mem-DHT — Enhanced Kademlia
 
@@ -311,6 +313,16 @@ data_dir: ./data
 gateway_addr: 127.0.0.1:8080
 api_addr: 127.0.0.1:5001
 grpc_addr: 127.0.0.1:50051
+
+# Server Enable/Disable Toggles
+# Disable individual servers (e.g. gateway-only CDN node, headless daemon, or pure relay node)
+servers:
+  gateway:
+    enabled: true              # Mem-Gate HTTP gateway & Web Explorer
+  node_api:
+    enabled: true              # Local Node Control API (/api/v1)
+  grpc:
+    enabled: true              # CLI <-> Daemon gRPC service
 
 # Persistence
 anchor_mode: false            # true = mirror all announced content

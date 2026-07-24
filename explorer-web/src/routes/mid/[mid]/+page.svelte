@@ -60,8 +60,6 @@
 		return `${gateBase}/mem/${mid}${isDir ? '/' : ''}`;
 	}
 
-	let renameValue = $state('');
-	let isRenaming = $state(false);
 	let activeTab = $state<'info' | 'dag'>('info');
 	let copiedDescriptor = $state(false);
 
@@ -215,11 +213,8 @@
 		try {
 			const res = await apiFetch(`/mid/${mid}`);
 			data = res;
-			if (data) {
-				renameValue = data.Name || '';
-				if (data.NotFound && !silent) {
-					startResolutionStream(mid);
-				}
+			if (data && data.NotFound && !silent) {
+				startResolutionStream(mid);
 			}
 			if (!silent) {
 				loading = false;
@@ -268,28 +263,6 @@
 		}
 	}
 
-	async function renameContent(e: Event) {
-		e.preventDefault();
-		const name = renameValue.trim();
-		if (!name) return;
-
-		isRenaming = true;
-		try {
-			const formData = new FormData();
-			formData.append('name', name);
-			const res = await fetch(`${base}/mid/${midVal}/rename`, {
-				method: 'POST',
-				body: formData
-			});
-			if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
-			fetchMIDData(midVal);
-		} catch (err) {
-			toast.error(`Rename failed: ${err instanceof Error ? err.message : err}`);
-		} finally {
-			isRenaming = false;
-		}
-	}
-
 	$effect(() => {
 		const mid = midVal;
 		if (mid) {
@@ -329,25 +302,6 @@
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2">
-			{#if data && !data.NotFound}
-				<form onsubmit={renameContent} class="flex items-center gap-2">
-					<input
-						type="text"
-						bind:value={renameValue}
-						required
-						disabled={isRenaming}
-						placeholder="Rename content alias"
-						class="bg-slate-950/60 border border-slate-800 text-slate-200 text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/20 max-w-[140px] sm:max-w-xs"
-					/>
-					<button
-						type="submit"
-						disabled={isRenaming || (data && renameValue.trim() === data.Name)}
-						class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-xs font-bold text-slate-200 border border-slate-750 transition-colors active:scale-[0.98]"
-					>
-						{isRenaming ? 'Saving...' : 'Rename'}
-					</button>
-				</form>
-			{/if}
 
 			<ActionMenu
 				target={midVal ?? ''}

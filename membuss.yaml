@@ -54,3 +54,15 @@ reprovide_interval: 10m
 # is split into N runs. In each run, only 1/N of the total keys are announced,
 # reducing DHT load.
 reprovide_groups: 6
+
+# Server toggles (Gateway HTTP, Node API HTTP, gRPC CLI service).
+# Individual servers can be disabled (set enabled: false) if a node only needs
+# to run specific services (e.g. gateway-only, headless daemon, or pure relay node).
+servers:
+  gateway:
+    enabled: true
+  node_api:
+    enabled: true
+  grpc:
+    enabled: true
+

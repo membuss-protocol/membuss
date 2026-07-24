@@ -507,12 +507,20 @@ func Run(args []string) error {
 		retryBackoff: cfg.MemexRetryBackoff,
 		logger:       logger,
 	}
-	grpcSrv, err := startGRPC(cfg.GRPCAddr, backend)
-	if err != nil {
-		logger.Error("grpc", "err", err.Error())
-		os.Exit(1)
+	var grpcSrv *serverGRPC
+	if cfg.Servers.GRPC.Enabled {
+		srv, err := startGRPC(cfg.GRPCAddr, backend)
+		if err != nil {
+			logger.Error("grpc", "err", err.Error())
+			os.Exit(1)
+		}
+		grpcSrv = srv
+		fmt.Fprintf(os.Stdout, "  grpc_addr:      %s\n", cfg.GRPCAddr)
+	} else {
+		logger.Info("gRPC server disabled by config")
+		fmt.Fprintf(os.Stdout, "  grpc_addr:      disabled\n")
 	}
-	fmt.Fprintf(os.Stdout, "  grpc_addr:      %s\n", cfg.GRPCAddr)
+
 	// Tunnel: programmatic libp2p port forwarding.
 	tunMgr := tunnel.NewManager(*cfgPath)
 	if cfg.Tunnel.Enabled {
@@ -559,20 +567,34 @@ func Run(args []string) error {
 	}
 	defer plugin.StopPlugins(ctx)
 
-	gateSrv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg)
-	if err != nil {
-		logger.Error("gateway", "err", err.Error())
-		os.Exit(1)
+	var gateSrv *httpServer
+	if cfg.Servers.Gateway.Enabled {
+		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg)
+		if err != nil {
+			logger.Error("gateway", "err", err.Error())
+			os.Exit(1)
+		}
+		gateSrv = srv
+		fmt.Fprintf(os.Stdout, "  gateway_addr:   %s\n", gateSrv.Addr())
+	} else {
+		logger.Info("gateway server disabled by config")
+		fmt.Fprintf(os.Stdout, "  gateway_addr:   disabled\n")
 	}
-	fmt.Fprintf(os.Stdout, "  gateway_addr:   %s\n", gateSrv.Addr())
 
 	// 10) Node API: local control plane over HTTP/JSON.
-	apiSrv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg)
-	if err != nil {
-		logger.Error("api", "err", err.Error())
-		os.Exit(1)
+	var apiSrv *httpServer
+	if cfg.Servers.NodeAPI.Enabled {
+		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg)
+		if err != nil {
+			logger.Error("api", "err", err.Error())
+			os.Exit(1)
+		}
+		apiSrv = srv
+		fmt.Fprintf(os.Stdout, "  api_addr:       %s\n", apiSrv.Addr())
+	} else {
+		logger.Info("node API server disabled by config")
+		fmt.Fprintf(os.Stdout, "  api_addr:       disabled\n")
 	}
-	fmt.Fprintf(os.Stdout, "  api_addr:       %s\n", apiSrv.Addr())
 
 	// Local discovery loop: write our own peer.info, and periodically scan siblings to auto-connect.
 	var peerInfoPath string
@@ -680,35 +702,41 @@ func Run(args []string) error {
 	shutdownCtx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer scancel()
 
-	if err := gateSrv.ShutdownCtx(shutdownCtx); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			logger.Info("gateway shutdown: active connections force-closed")
-		} else {
-			logger.Warn("gateway shutdown", "err", err.Error())
+	if gateSrv != nil {
+		if err := gateSrv.ShutdownCtx(shutdownCtx); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				logger.Info("gateway shutdown: active connections force-closed")
+			} else {
+				logger.Warn("gateway shutdown", "err", err.Error())
+			}
 		}
 	}
-	if err := apiSrv.ShutdownCtx(shutdownCtx); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			logger.Info("api shutdown: active connections force-closed")
-		} else {
-			logger.Warn("api shutdown", "err", err.Error())
+	if apiSrv != nil {
+		if err := apiSrv.ShutdownCtx(shutdownCtx); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				logger.Info("api shutdown: active connections force-closed")
+			} else {
+				logger.Warn("api shutdown", "err", err.Error())
+			}
 		}
 	}
 
-	// Stop gRPC server with timeout. GracefulStop blocks until all connections
-	// are closed, which can hang indefinitely if a client keeps a stream open.
-	grpcStopped := make(chan struct{})
-	go func() {
-		grpcSrv.GracefulStop()
-		close(grpcStopped)
-	}()
+	if grpcSrv != nil {
+		// Stop gRPC server with timeout. GracefulStop blocks until all connections
+		// are closed, which can hang indefinitely if a client keeps a stream open.
+		grpcStopped := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(grpcStopped)
+		}()
 
-	select {
-	case <-grpcStopped:
-		logger.Info("grpc shutdown complete")
-	case <-shutdownCtx.Done():
-		logger.Warn("grpc graceful shutdown timed out; force stopping")
-		grpcSrv.Stop()
+		select {
+		case <-grpcStopped:
+			logger.Info("grpc shutdown complete")
+		case <-shutdownCtx.Done():
+			logger.Warn("grpc graceful shutdown timed out; force stopping")
+			grpcSrv.Stop()
+		}
 	}
 
 	if err := mx.StopWait(shutdownCtx); err != nil {
@@ -720,6 +748,14 @@ func Run(args []string) error {
 
 // banner writes the startup banner to stdout.
 func banner(cfg *config.Config, cfgPath string, inMemory, noAnchor bool) {
+	gwStr := cfg.GatewayAddr
+	if !cfg.Servers.Gateway.Enabled {
+		gwStr = "disabled"
+	}
+	apiStr := cfg.APIAddr
+	if !cfg.Servers.NodeAPI.Enabled {
+		apiStr = "disabled"
+	}
 	fmt.Fprintf(os.Stdout,
 		"membuss daemon starting\n"+
 			"  config:           %s\n"+
@@ -733,7 +769,7 @@ func banner(cfg *config.Config, cfgPath string, inMemory, noAnchor bool) {
 		cfgPath, cfg.DataDir, inMemory, noAnchor,
 		len(cfg.BootstrapPeers),
 		len(cfg.RelayPeers),
-		cfg.GatewayAddr, cfg.APIAddr,
+		gwStr, apiStr,
 		cfg.ReprovideInterval,
 	)
 }

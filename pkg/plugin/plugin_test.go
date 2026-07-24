@@ -12,10 +12,12 @@ import (
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/pkg/plugin"
-	_ "github.com/nnlgsakib/membuss/plugins"
+	echoinsoector "github.com/nnlgsakib/membuss/plugins/echo_inspector"
 )
 
 func TestPluginFramework_RegistrationAndLifecycle(t *testing.T) {
+	plugin.Register(echoinsoector.New())
+
 	registered := plugin.GetRegistered()
 	if _, ok := registered["echo-inspector"]; !ok {
 		t.Fatalf("expected echo-inspector plugin to be registered")

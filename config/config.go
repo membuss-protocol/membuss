@@ -188,6 +188,9 @@ type Config struct {
 
 	// Plugins configures the modular plugin and extension system.
 	Plugins PluginsConfig `yaml:"plugins"`
+
+	// Servers configures individual server toggles (Gateway, Node API, gRPC).
+	Servers ServersConfig `yaml:"servers"`
 }
 
 // PluginsConfig holds options for the modular plugin system.
@@ -229,6 +232,38 @@ func (p *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
 		p.Enabled = true
 	}
 
+	return nil
+}
+
+// ServersConfig configures individual server toggles.
+type ServersConfig struct {
+	Gateway ServerToggle `yaml:"gateway"`
+	NodeAPI ServerToggle `yaml:"node_api"`
+	GRPC    ServerToggle `yaml:"grpc"`
+}
+
+// ServerToggle represents an individual server enablement flag.
+type ServerToggle struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+func (s *ServerToggle) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var b bool
+		if err := value.Decode(&b); err == nil {
+			s.Enabled = b
+			return nil
+		}
+	}
+	type rawToggle struct {
+		Enabled bool `yaml:"enabled"`
+	}
+	raw := rawToggle{Enabled: true}
+	if err := value.Decode(&raw); err == nil {
+		s.Enabled = raw.Enabled
+		return nil
+	}
+	s.Enabled = true
 	return nil
 }
 
@@ -327,6 +362,11 @@ func Default() *Config {
 			Enabled: true,
 			Active:  []string{"echo-inspector"},
 			Config:  make(map[string]map[string]any),
+		},
+		Servers: ServersConfig{
+			Gateway: ServerToggle{Enabled: true},
+			NodeAPI: ServerToggle{Enabled: true},
+			GRPC:    ServerToggle{Enabled: true},
 		},
 	}
 }
