@@ -778,19 +778,6 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 	}, nil
 }
 
-func (a *explorerAdapter) Rename(ctx context.Context, m mid.MID, name string) error {
-	b := a.b
-	if b == nil || b.store == nil {
-		return errors.New("explorer: no backend")
-	}
-	info, err := store.GetObjectInfo(b.store, m)
-	if err != nil {
-		return err
-	}
-	info.Name = name
-	return store.SetObjectInfo(b.store, m, info)
-}
-
 // TrackRootWithMetadata writes root ObjectInfo metadata and registers it in allRoots.
 func (a *explorerAdapter) TrackRootWithMetadata(m mid.MID, name string, mime string, size uint64) error {
 	b := a.b

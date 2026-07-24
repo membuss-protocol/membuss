@@ -283,11 +283,18 @@ message PEXMessage {
   repeated PeerInfo peers = 1;
 }
 
+enum WantType {
+  WANT_BLOCK = 0;
+  WANT_HAVE = 1;
+}
+
 // WantEntry is one entry in a Memex want list.
 message WantEntry {
   string mid = 1;
   int32 priority = 2;
   bool send_dont_have = 3;
+  WantType want_type = 4;
+  bool cancel = 5;
 }
 
 message MemexMessage {
@@ -301,6 +308,7 @@ message MemexMessage {
   map<string, ObjectInfo> object_infos = 5;
   uint64 sequence_number = 6;
   bytes bloom_filter = 7;
+  repeated string dont_haves = 8;
 }
 
 // ObjectInfo carries the user-facing metadata that

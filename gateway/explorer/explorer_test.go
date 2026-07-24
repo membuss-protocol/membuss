@@ -272,10 +272,6 @@ func (b *memBackend) AddDirectory(ctx context.Context, name string, files []Dire
 	}, nil
 }
 
-func (b *memBackend) Rename(ctx context.Context, m mid.MID, name string) error {
-	return nil
-}
-
 func (b *memBackend) Delete(ctx context.Context, m mid.MID) (uint64, uint64, error) {
 	return 1, 1024, nil
 }

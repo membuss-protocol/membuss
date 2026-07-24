@@ -536,6 +536,19 @@ func (s *Session) markResolved(id mid.MID) {
 	}
 }
 
+func (s *Session) markPeerHasBlock(id mid.MID, peerID peer.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	midStr := id.String()
+	ws, ok := s.wantStates[midStr]
+	if ok && ws.currentProvider == "" {
+		ws.currentProvider = peerID
+		ws.lastSent = time.Now()
+		s.wakeScheduler()
+	}
+}
+
 func (s *Session) markFailed(id mid.MID, peerID peer.ID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -185,8 +185,6 @@ type Backend interface {
 	Add(ctx context.Context, name string, r io.Reader) (ContentInfo, error)
 	// AddDirectory ingests a directory as MemFS from a set of files with relative paths.
 	AddDirectory(ctx context.Context, name string, files []DirectoryFile) (ContentInfo, error)
-	// Rename updates the name metadata of a MID.
-	Rename(ctx context.Context, m mid.MID, name string) error
 	// TrackRootWithMetadata writes root ObjectInfo metadata and registers it.
 	TrackRootWithMetadata(m mid.MID, name string, mime string, size uint64) error
 	// Peers returns the local PEX peer table.
@@ -544,7 +542,9 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Post("/mid/{mid}/seal", e.handleSeal)
 	r.Post("/mid/{mid}/unseal", e.handleUnseal)
 	r.Post("/mid/{mid}/delete", e.handleDelete)
-	r.Post("/mid/{mid}/rename", e.handleRename)
+	r.Post("/mid/{mid}/rename", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "renaming content is disabled: content metadata is immutable", http.StatusBadRequest)
+	})
 	r.Post("/search", e.handleSearch)
 	r.Post("/upload", e.handleUpload)
 	r.Post("/peers/connect", e.handleConnectPeer)
@@ -1284,29 +1284,6 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/explorer/mid/"+res.MID, http.StatusSeeOther)
-}
-
-func (e *Explorer) handleRename(w http.ResponseWriter, r *http.Request) {
-	midStr := chi.URLParam(r, "mid")
-	root, err := mid.Parse(midStr)
-	if err != nil {
-		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	newName := strings.TrimSpace(r.FormValue("name"))
-	if newName == "" {
-		http.Error(w, "empty name", http.StatusBadRequest)
-		return
-	}
-	if err := e.cfg.Backend.Rename(r.Context(), root, newName); err != nil {
-		http.Error(w, "rename: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/explorer/mid/"+midStr, http.StatusSeeOther)
 }
 
 func (e *Explorer) handleMemNSPage(w http.ResponseWriter, r *http.Request) {
