@@ -43,7 +43,7 @@
 		ResolveMessage: string;
 	}
 
-	let midVal = $derived(page.params.mid);
+	let midVal = $derived(page.params.mid || '');
 	let data = $state<MIDData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -300,10 +300,20 @@
 	onDestroy(() => {
 		closeResolver();
 	});
+	function isInvalidMID(errStr: string): boolean {
+		const m = errStr.toLowerCase();
+		return (
+			m.includes('bad mid') ||
+			m.includes('cid parse') ||
+			m.includes('invalid cid') ||
+			m.includes('trailing bytes') ||
+			m.includes('invalid character')
+		);
+	}
 </script>
 
 <div class="flex flex-col gap-5">
-	<div class="border-b border-slate-800 pb-5 flex flex-wrap items-end justify-between gap-4">
+	<div class="border-b border-slate-800 pb-5 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
 		<div>
 			<div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] text-slate-400 font-mono tracking-wider uppercase">
 				Content Address
@@ -313,13 +323,13 @@
 					<span class="text-slate-100">{data.Name}</span>
 					<span class="text-slate-500 font-normal font-mono text-sm">({midVal.slice(0,8)}...)</span>
 				{:else}
-					<span>{midVal}</span>
+					<span class="break-all">{midVal}</span>
 				{/if}
 			</h1>
 		</div>
 
-		{#if data && !data.NotFound}
-			<div class="flex items-center gap-2">
+		<div class="flex flex-wrap items-center gap-2">
+			{#if data && !data.NotFound}
 				<form onsubmit={renameContent} class="flex items-center gap-2">
 					<input
 						type="text"
@@ -327,7 +337,7 @@
 						required
 						disabled={isRenaming}
 						placeholder="Rename content alias"
-						class="bg-slate-950/60 border border-slate-800 text-slate-200 text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/20"
+						class="bg-slate-950/60 border border-slate-800 text-slate-200 text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500/80 focus:ring-1 focus:ring-cyan-500/20 max-w-[140px] sm:max-w-xs"
 					/>
 					<button
 						type="submit"
@@ -337,23 +347,25 @@
 						{isRenaming ? 'Saving...' : 'Rename'}
 					</button>
 				</form>
-				<ActionMenu
-					target={midVal ?? ''}
-					isDir={data.MemFSType === 'dir'}
-					sealed={data.Sealed}
-					onToggleSeal={() => runAction(data?.Sealed ? 'unseal' : 'seal')}
-					onDelete={() => (showDeleteMIDModal = true)}
-					compact={false}
-				/>
-			</div>
-		{/if}
+			{/if}
+
+			<ActionMenu
+				target={midVal ?? ''}
+				isDir={data?.MemFSType === 'dir'}
+				sealed={data?.Sealed}
+				inspectHref={`${base}/explore?mid=${midVal}`}
+				onToggleSeal={() => runAction(data?.Sealed ? 'unseal' : 'seal')}
+				onDelete={() => (showDeleteMIDModal = true)}
+				compact={false}
+			/>
+		</div>
 	</div>
 
-	<div class="bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-		<code class="font-mono text-xs text-slate-300 break-all select-all">{midVal}</code>
+	<div class="bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 overflow-hidden">
+		<code class="font-mono text-xs text-slate-300 break-all select-all overflow-x-auto">{midVal}</code>
 		<button
 			onclick={copyToClipboard}
-			class="shrink-0 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 border border-slate-750 transition-colors active:scale-[0.98]"
+			class="shrink-0 self-start sm:self-auto px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 border border-slate-750 transition-colors active:scale-[0.98]"
 		>
 			{copiedMID ? 'Copied!' : 'Copy MID'}
 		</button>
@@ -411,9 +423,62 @@
 			</div>
 		</div>
 	{:else if error}
-		<div class="bg-red-950/20 border border-red-800/40 text-red-400 p-4 rounded-xl text-xs font-mono">
-			{error}
-		</div>
+		{#if isInvalidMID(error)}
+			<div class="bg-slate-900 border border-slate-800 rounded-xl p-8 flex flex-col items-center text-center gap-4 shadow-xl">
+				<div class="flex h-14 w-14 items-center justify-center rounded-full bg-amber-950/40 border border-amber-800/40">
+					<Icon icon="ph:warning-octagon" class="text-3xl text-amber-400" />
+				</div>
+				<div class="flex flex-col gap-1.5 max-w-lg">
+					<span class="px-2.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/40 text-[10px] text-amber-400 font-mono tracking-wider uppercase mx-auto">
+						Invalid Multihash Address
+					</span>
+					<h2 class="text-slate-100 font-bold text-lg">Invalid Content Identifier (MID)</h2>
+					<p class="text-slate-400 text-xs leading-relaxed">
+						The address provided cannot be parsed as a valid Membuss Content Identifier. Check for concatenated strings, typos, or extra trailing data.
+					</p>
+				</div>
+				<div class="w-full max-w-lg bg-slate-950 border border-slate-850 rounded-lg p-3 text-left">
+					<span class="block text-[9px] font-mono text-slate-500 uppercase tracking-wide">Attempted Address</span>
+					<code class="font-mono text-xs text-amber-400/90 break-all select-all block mt-1 leading-relaxed">
+						{midVal}
+					</code>
+				</div>
+				<div class="flex flex-wrap items-center justify-center gap-3 mt-2">
+					<a
+						href={`${base}/files`}
+						class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-750 text-xs font-bold transition-all active:scale-[0.98]"
+					>
+						View Pinned Files
+					</a>
+					<a
+						href={`${base}/explore`}
+						class="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold text-xs transition-all active:scale-[0.98]"
+					>
+						Go to DAG Visualizer
+					</a>
+					<a
+						href={`${base}/`}
+						class="px-4 py-2 rounded-xl bg-slate-850 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs font-bold transition-all active:scale-[0.98]"
+					>
+						Back to Overview
+					</a>
+				</div>
+			</div>
+		{:else}
+			<div class="bg-red-950/20 border border-red-800/40 rounded-xl p-6 flex flex-col items-center text-center gap-3">
+				<Icon icon="ph:warning-circle" class="text-3xl text-red-400" />
+				<div class="flex flex-col gap-1 max-w-md">
+					<h3 class="text-red-300 font-bold text-sm">Failed to load Content ID</h3>
+					<p class="text-red-400/80 text-xs font-mono break-all">{error}</p>
+				</div>
+				<button
+					onclick={() => fetchMIDData(midVal)}
+					class="px-4 py-2 rounded-xl bg-red-950/40 hover:bg-red-950/60 text-red-300 border border-red-900/40 text-xs font-bold transition-colors active:scale-[0.98] mt-1"
+				>
+					Retry Query
+				</button>
+			</div>
+		{/if}
 	{:else if data}
 		{#if resolverActive}
 			<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col gap-6 shadow-xl relative overflow-hidden">

@@ -34,20 +34,63 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
-	// Search & Filters
+	// Search, Filters & Sorting
+	type SortKey = 'name' | 'size' | 'type' | 'status' | 'mid';
+	type SortOrder = 'asc' | 'desc';
+	type FilterType = 'all' | 'folders' | 'files';
+
 	let filterStatus = $state<'all' | 'sealed' | 'unsealed'>('all');
+	let filterType = $state<FilterType>('all');
 	let searchQuery = $state('');
+	let sortBy = $state<SortKey>('name');
+	let sortOrder = $state<SortOrder>('asc');
+	let foldersFirst = $state(true);
+
+	function toggleSort(key: SortKey) {
+		if (sortBy === key) {
+			sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortBy = key;
+			sortOrder = 'asc';
+		}
+	}
+
 	let filteredFiles = $derived.by(() => {
-		return fileList.filter(f => {
+		const filtered = fileList.filter(f => {
 			const matchesStatus = 
 				filterStatus === 'all' || 
 				(filterStatus === 'sealed' && f.sealed) || 
 				(filterStatus === 'unsealed' && !f.sealed);
+			const matchesType =
+				filterType === 'all' ||
+				(filterType === 'folders' && f.type === 'dir') ||
+				(filterType === 'files' && f.type === 'file');
 			const matchesSearch = 
 				!searchQuery || 
 				f.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
 				f.mid.toLowerCase().includes(searchQuery.toLowerCase());
-			return matchesStatus && matchesSearch;
+			return matchesStatus && matchesType && matchesSearch;
+		});
+
+		return filtered.sort((a, b) => {
+			if (foldersFirst && a.type !== b.type) {
+				return a.type === 'dir' ? -1 : 1;
+			}
+
+			let cmp = 0;
+			if (sortBy === 'name') {
+				cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+			} else if (sortBy === 'size') {
+				cmp = a.size - b.size;
+			} else if (sortBy === 'type') {
+				cmp = a.type.localeCompare(b.type);
+			} else if (sortBy === 'status') {
+				cmp = (a.sealed === b.sealed) ? 0 : a.sealed ? -1 : 1;
+			} else if (sortBy === 'mid') {
+				cmp = a.mid.localeCompare(b.mid);
+			}
+
+			return sortOrder === 'asc' ? cmp : -cmp;
 		});
 	});
 
@@ -629,30 +672,61 @@
 		</section>
 	{/if}
 
-	<!-- File List Toolbar (Search + Filters) -->
+	<!-- File List Toolbar (Search + Filters + Sorting) -->
 	<section class="bg-slate-900 border border-slate-800/80 rounded-xl p-5 flex flex-col gap-5">
-		<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 border-b border-slate-700/50 pb-4">
-			<!-- Tab filters -->
-			<div class="flex items-center gap-1.5 p-1 bg-slate-950/80 border border-slate-700/50 rounded-lg">
+		<div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 border-b border-slate-700/50 pb-4">
+			<!-- View Type Filters (All / Folders Only / Files Only) -->
+			<div class="flex flex-wrap items-center gap-1.5 p-1 bg-slate-950/80 border border-slate-700/50 rounded-lg">
+				<button 
+					onclick={() => filterType = 'all'} 
+					class={`px-3 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors flex items-center gap-1 ${
+						filterType === 'all' ? 'bg-slate-800/60 text-cyan-400 border border-slate-800/80' : 'text-slate-500 hover:text-slate-300'
+					}`}
+				>
+					<Icon icon="ph:squares-four-bold" class="text-xs" />
+					All Items
+				</button>
+				<button 
+					onclick={() => filterType = 'folders'} 
+					class={`px-3 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors flex items-center gap-1 ${
+						filterType === 'folders' ? 'bg-slate-800/60 text-cyan-400 border border-slate-800/80' : 'text-slate-500 hover:text-slate-300'
+					}`}
+				>
+					<Icon icon="ph:folder-bold" class="text-xs" />
+					Folders Only ({fileList.filter(f => f.type === 'dir').length})
+				</button>
+				<button 
+					onclick={() => filterType = 'files'} 
+					class={`px-3 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors flex items-center gap-1 ${
+						filterType === 'files' ? 'bg-slate-800/60 text-cyan-400 border border-slate-800/80' : 'text-slate-500 hover:text-slate-300'
+					}`}
+				>
+					<Icon icon="ph:file-text-bold" class="text-xs" />
+					Files Only ({fileList.filter(f => f.type === 'file').length})
+				</button>
+			</div>
+
+			<!-- Pin Status filters -->
+			<div class="flex flex-wrap items-center gap-1.5 p-1 bg-slate-950/80 border border-slate-700/50 rounded-lg">
 				<button 
 					onclick={() => filterStatus = 'all'} 
-					class={`px-3 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors ${
+					class={`px-2.5 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors ${
 						filterStatus === 'all' ? 'bg-slate-800/60 text-cyan-400 border border-slate-800/80' : 'text-slate-500 hover:text-slate-300'
 					}`}
 				>
-					All Files
+					All Status
 				</button>
 				<button 
 					onclick={() => filterStatus = 'sealed'} 
-					class={`px-3 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors ${
+					class={`px-2.5 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors ${
 						filterStatus === 'sealed' ? 'bg-slate-800/60 text-cyan-400 border border-slate-800/80' : 'text-slate-500 hover:text-slate-300'
 					}`}
 				>
-					Pinned / Sealed
+					Pinned
 				</button>
 				<button 
 					onclick={() => filterStatus = 'unsealed'} 
-					class={`px-3 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors ${
+					class={`px-2.5 py-1.5 rounded-md text-[10px] font-bold font-mono tracking-wider uppercase transition-colors ${
 						filterStatus === 'unsealed' ? 'bg-slate-800/60 text-cyan-400 border border-slate-800/80' : 'text-slate-500 hover:text-slate-300'
 					}`}
 				>
@@ -660,17 +734,52 @@
 				</button>
 			</div>
 
-			<!-- Search filter input -->
-			<div class="relative w-full sm:w-72">
-				<input
-					type="text"
-					bind:value={searchQuery}
-					placeholder="Filter by name or MID..."
-					class="w-full bg-slate-950/60 border border-slate-700/50 text-xs px-3.5 py-2 rounded-lg focus:outline-none focus:border-cyan-500"
-				/>
-				{#if searchQuery}
-					<button onclick={() => searchQuery = ''} class="absolute right-3 top-2 text-slate-500 hover:text-slate-300 text-xs font-bold">✕</button>
-				{/if}
+			<!-- Sort controls & Search bar -->
+			<div class="flex flex-wrap items-center gap-3">
+				<!-- Sort select dropdown -->
+				<div class="flex items-center gap-1.5 bg-slate-950/80 border border-slate-700/50 rounded-lg px-2 py-1">
+					<span class="text-[9px] font-mono text-slate-500 uppercase">Sort:</span>
+					<select
+						bind:value={sortBy}
+						class="bg-transparent text-slate-200 text-xs font-mono focus:outline-none cursor-pointer"
+					>
+						<option value="name" class="bg-slate-900 text-slate-200">Name</option>
+						<option value="size" class="bg-slate-900 text-slate-200">Size</option>
+						<option value="type" class="bg-slate-900 text-slate-200">Type</option>
+						<option value="status" class="bg-slate-900 text-slate-200">Status</option>
+						<option value="mid" class="bg-slate-900 text-slate-200">MID</option>
+					</select>
+					<button
+						onclick={() => sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'}
+						class="p-1 text-slate-400 hover:text-cyan-400 transition-colors"
+						title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+					>
+						<Icon icon={sortOrder === 'asc' ? 'ph:sort-ascending-bold' : 'ph:sort-descending-bold'} class="text-sm" />
+					</button>
+				</div>
+
+				<!-- Folders First Toggle -->
+				<button
+					onclick={() => foldersFirst = !foldersFirst}
+					class={`px-2.5 py-1.5 rounded-lg border text-[10px] font-bold font-mono transition-colors flex items-center gap-1 ${foldersFirst ? 'bg-cyan-950/40 border-cyan-800/40 text-cyan-400' : 'bg-slate-950/80 border-slate-700/50 text-slate-500'}`}
+					title="Keep folders at the top of the file list"
+				>
+					<Icon icon="ph:folder-user-bold" class="text-xs" />
+					Folders First
+				</button>
+
+				<!-- Search filter input -->
+				<div class="relative w-full sm:w-60">
+					<input
+						type="text"
+						bind:value={searchQuery}
+						placeholder="Filter by name or MID..."
+						class="w-full bg-slate-950/60 border border-slate-700/50 text-xs px-3.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500"
+					/>
+					{#if searchQuery}
+						<button onclick={() => searchQuery = ''} class="absolute right-3 top-1.5 text-slate-500 hover:text-slate-300 text-xs font-bold">✕</button>
+					{/if}
+				</div>
 			</div>
 		</div>
 
@@ -705,10 +814,30 @@
 				<table class="w-full text-left border-collapse text-xs">
 					<thead>
 						<tr class="border-b border-slate-800/80 text-slate-500 font-mono text-[10px] uppercase bg-slate-950/20">
-							<th class="py-2.5 px-4 font-semibold">Name</th>
-							<th class="py-2.5 px-4 font-semibold w-1/3">Content Address (MID)</th>
-							<th class="py-2.5 px-4 font-semibold w-24">Size</th>
-							<th class="py-2.5 px-4 font-semibold w-24 text-center">Status</th>
+							<th class="py-2.5 px-4 font-semibold">
+								<button onclick={() => toggleSort('name')} class="flex items-center gap-1 hover:text-slate-200 transition-colors group">
+									<span>Name</span>
+									<Icon icon={sortBy === 'name' ? (sortOrder === 'asc' ? 'ph:caret-up-bold' : 'ph:caret-down-bold') : 'ph:arrows-down-up-bold'} class={`text-xs ${sortBy === 'name' ? 'text-cyan-400' : 'text-slate-600 opacity-0 group-hover:opacity-100'}`} />
+								</button>
+							</th>
+							<th class="py-2.5 px-4 font-semibold w-1/3">
+								<button onclick={() => toggleSort('mid')} class="flex items-center gap-1 hover:text-slate-200 transition-colors group">
+									<span>Content Address (MID)</span>
+									<Icon icon={sortBy === 'mid' ? (sortOrder === 'asc' ? 'ph:caret-up-bold' : 'ph:caret-down-bold') : 'ph:arrows-down-up-bold'} class={`text-xs ${sortBy === 'mid' ? 'text-cyan-400' : 'text-slate-600 opacity-0 group-hover:opacity-100'}`} />
+								</button>
+							</th>
+							<th class="py-2.5 px-4 font-semibold w-24">
+								<button onclick={() => toggleSort('size')} class="flex items-center gap-1 hover:text-slate-200 transition-colors group">
+									<span>Size</span>
+									<Icon icon={sortBy === 'size' ? (sortOrder === 'asc' ? 'ph:caret-up-bold' : 'ph:caret-down-bold') : 'ph:arrows-down-up-bold'} class={`text-xs ${sortBy === 'size' ? 'text-cyan-400' : 'text-slate-600 opacity-0 group-hover:opacity-100'}`} />
+								</button>
+							</th>
+							<th class="py-2.5 px-4 font-semibold w-24 text-center">
+								<button onclick={() => toggleSort('status')} class="flex items-center gap-1 mx-auto hover:text-slate-200 transition-colors group">
+									<span>Status</span>
+									<Icon icon={sortBy === 'status' ? (sortOrder === 'asc' ? 'ph:caret-up-bold' : 'ph:caret-down-bold') : 'ph:arrows-down-up-bold'} class={`text-xs ${sortBy === 'status' ? 'text-cyan-400' : 'text-slate-600 opacity-0 group-hover:opacity-100'}`} />
+								</button>
+							</th>
 							<th class="py-2.5 px-4 font-semibold text-right">Actions</th>
 						</tr>
 					</thead>

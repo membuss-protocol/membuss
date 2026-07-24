@@ -53,7 +53,6 @@
 		try {
 			await apiFetch('/node/flash', { method: 'POST' });
 			flashSuccess = true;
-			// Reload node details after a short timeout
 			setTimeout(() => {
 				flashSuccess = false;
 				loadNode();
@@ -97,13 +96,73 @@
 	onMount(() => {
 		loadNode();
 	});
+
+	type AddrCategory = 'all' | 'public' | 'lan' | 'local' | 'link-local';
+
+	let activeAddrCategory = $state<AddrCategory>('all');
+	let addrSearchQuery = $state('');
+	let showAllAddrs = $state(false);
+
+	function getAddrScope(addr: string): 'public' | 'lan' | 'local' | 'link-local' {
+		if (addr.includes('127.0.0.1') || addr.includes('::1')) return 'local';
+		if (addr.includes('169.254.')) return 'link-local';
+		if (
+			addr.includes('192.168.') ||
+			addr.includes('10.') ||
+			addr.includes('172.16.') ||
+			addr.includes('172.17.') ||
+			addr.includes('172.18.') ||
+			addr.includes('172.19.') ||
+			addr.includes('172.20.') ||
+			addr.includes('172.31.')
+		) return 'lan';
+		return 'public';
+	}
+
+	function getTransportBadge(addr: string): { label: string; color: string } {
+		if (addr.includes('p2p-circuit')) return { label: 'Circuit Relay', color: 'bg-purple-950/60 border-purple-800/40 text-purple-400' };
+		if (addr.includes('quic')) return { label: 'QUIC', color: 'bg-cyan-950/60 border-cyan-800/40 text-cyan-400' };
+		if (addr.includes('ws')) return { label: 'WebSocket', color: 'bg-amber-950/60 border-amber-800/40 text-amber-400' };
+		if (addr.includes('tcp')) return { label: 'TCP', color: 'bg-emerald-950/60 border-emerald-800/40 text-emerald-400' };
+		return { label: 'Custom', color: 'bg-slate-900 border-slate-800 text-slate-400' };
+	}
+
+	let filteredAddrs = $derived.by(() => {
+		const addrs = data?.NodeInfo?.Addrs || [];
+		return addrs.filter(addr => {
+			const scope = getAddrScope(addr);
+			const matchesCategory = 
+				activeAddrCategory === 'all' || 
+				(activeAddrCategory === 'public' && scope === 'public') ||
+				(activeAddrCategory === 'lan' && scope === 'lan') ||
+				(activeAddrCategory === 'local' && scope === 'local') ||
+				(activeAddrCategory === 'link-local' && scope === 'link-local');
+			const matchesSearch = !addrSearchQuery || addr.toLowerCase().includes(addrSearchQuery.toLowerCase());
+			return matchesCategory && matchesSearch;
+		});
+	});
+
+	let displayAddrs = $derived.by(() => {
+		if (showAllAddrs || addrSearchQuery || activeAddrCategory !== 'all') {
+			return filteredAddrs;
+		}
+		return filteredAddrs.slice(0, 8);
+	});
 </script>
 
 <div class="flex flex-col gap-6">
 	<!-- Page Header -->
-	<div class="border-b border-slate-800 pb-4">
-		<h1 class="font-display text-2xl text-slate-50">Local Daemon Node Parameters</h1>
-		<p class="text-xs text-slate-500 mt-1">Host node keys, listener network bindings, and publisher keyring records</p>
+	<div class="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+		<div>
+			<h1 class="font-display text-2xl text-slate-50">Local Daemon Node Parameters</h1>
+			<p class="text-xs text-slate-500 mt-1">Host node keys, listener network bindings, and publisher keyring records</p>
+		</div>
+		{#if data}
+			<div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300">
+				<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+				Daemon v{data.NodeInfo.Version}
+			</div>
+		{/if}
 	</div>
 
 	{#if loading && !data}
@@ -137,19 +196,20 @@
 	{:else if data}
 		<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 			<!-- Identity Card -->
-			<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4">
-				<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2">
-					Identity & Credentials
+			<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4 shadow-lg">
+				<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2 flex items-center justify-between">
+					<span>Identity & Credentials</span>
+					<Icon icon="ph:fingerprint-bold" class="text-slate-500 text-base" />
 				</h3>
 				<dl class="grid grid-cols-3 gap-y-3 text-xs leading-relaxed">
 					<dt class="text-slate-500 font-mono">Peer ID</dt>
-					<dd class="col-span-2 font-mono text-slate-300 break-all select-all flex items-center gap-1">
-						{data.NodeInfo.PeerID}
+					<dd class="col-span-2 font-mono text-slate-300 break-all select-all flex items-center gap-1.5">
+						<span>{data.NodeInfo.PeerID}</span>
 						<button 
 							onclick={() => copyToClipboard(data!.NodeInfo.PeerID, 'peerid')}
-							class="text-[10px] text-cyan-500 hover:text-cyan-300 hover:underline"
+							class="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold hover:underline shrink-0 ml-auto"
 						>
-							{copiedId === 'peerid' ? '[Copied]' : '[Copy]'}
+							{copiedId === 'peerid' ? 'Copied ✓' : 'Copy'}
 						</button>
 					</dd>
 
@@ -161,18 +221,19 @@
 
 					<dt class="text-slate-500 font-mono">Anchor Engine</dt>
 					<dd class="col-span-2">
-						<span class={`font-bold ${data.NodeInfo.AnchorMode ? 'text-emerald-400' : 'text-slate-500'}`}>
-							{data.NodeInfo.AnchorMode ? 'ACTIVE' : 'INACTIVE'}
+						<span class={`font-bold px-2 py-0.5 rounded text-[10px] ${data.NodeInfo.AnchorMode ? 'bg-emerald-950/60 border border-emerald-800/40 text-emerald-400' : 'bg-slate-950 border border-slate-850 text-slate-500'}`}>
+							{data.NodeInfo.AnchorMode ? 'ACTIVE (SYNC ALL)' : 'INACTIVE (STANDARD)'}
 						</span>
 					</dd>
 				</dl>
 			</div>
 
 			<!-- Storage Metrics -->
-			<div class="bg-slate-800/50 rounded-2xl p-6 flex flex-col gap-4 justify-between">
+			<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4 justify-between shadow-lg">
 				<div>
-					<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2">
-						Storage Footprint
+					<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2 flex items-center justify-between">
+						<span>Storage Footprint</span>
+						<Icon icon="ph:database-bold" class="text-slate-500 text-base" />
 					</h3>
 					<dl class="grid grid-cols-3 gap-y-3 text-xs leading-relaxed mt-4">
 						<dt class="text-slate-500 font-mono">Database size</dt>
@@ -189,7 +250,7 @@
 					<button
 						onclick={triggerFlashNode}
 						disabled={flashing || flashSuccess}
-						class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg border transition-all duration-300
+						class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-xl border transition-all duration-300
 							{flashSuccess 
 								? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' 
 								: flashing 
@@ -202,27 +263,98 @@
 				</div>
 			</div>
 
-			<!-- Listen Interfaces -->
-			<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 md:col-span-2 flex flex-col gap-4">
-				<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2">
-					Listen Interfaces & Multiaddresses
-				</h3>
-				{#if data.NodeInfo.Addrs && data.NodeInfo.Addrs.length > 0}
+			<!-- Listen Interfaces & Multiaddresses -->
+			<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 md:col-span-2 flex flex-col gap-5 shadow-xl">
+				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+					<div class="flex items-center gap-2">
+						<Icon icon="ph:broadcast-bold" class="text-cyan-400 text-base" />
+						<h3 class="font-bold text-sm text-slate-300">
+							Listen Interfaces & Multiaddresses
+						</h3>
+						<span class="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-400">
+							{data.NodeInfo.Addrs ? data.NodeInfo.Addrs.length : 0} bindings
+						</span>
+					</div>
+
+					<div class="relative">
+						<input
+							type="text"
+							bind:value={addrSearchQuery}
+							placeholder="Filter address..."
+							class="bg-slate-950/80 border border-slate-800 text-slate-200 text-xs px-3 py-1 rounded-lg focus:outline-none focus:border-cyan-500/80 font-mono w-full sm:w-48"
+						/>
+					</div>
+				</div>
+
+				<!-- Category Filter Tabs -->
+				<div class="flex flex-wrap items-center gap-1.5 border-b border-slate-850 pb-3 text-xs">
+					<button
+						onclick={() => activeAddrCategory = 'all'}
+						class={`px-3 py-1 rounded-lg font-semibold transition-colors ${activeAddrCategory === 'all' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-800'}`}
+					>
+						All ({data.NodeInfo.Addrs ? data.NodeInfo.Addrs.length : 0})
+					</button>
+					<button
+						onclick={() => activeAddrCategory = 'public'}
+						class={`px-3 py-1 rounded-lg font-semibold transition-colors ${activeAddrCategory === 'public' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-800'}`}
+					>
+						Public / Relay
+					</button>
+					<button
+						onclick={() => activeAddrCategory = 'lan'}
+						class={`px-3 py-1 rounded-lg font-semibold transition-colors ${activeAddrCategory === 'lan' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-800'}`}
+					>
+						LAN
+					</button>
+					<button
+						onclick={() => activeAddrCategory = 'local'}
+						class={`px-3 py-1 rounded-lg font-semibold transition-colors ${activeAddrCategory === 'local' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-800'}`}
+					>
+						Localhost
+					</button>
+					<button
+						onclick={() => activeAddrCategory = 'link-local'}
+						class={`px-3 py-1 rounded-lg font-semibold transition-colors ${activeAddrCategory === 'link-local' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-800'}`}
+					>
+						Link-Local (Auto-IP)
+					</button>
+				</div>
+
+				{#if displayAddrs && displayAddrs.length > 0}
 					<ul class="flex flex-col gap-2">
-						{#each data.NodeInfo.Addrs as addr}
-							<li class="bg-slate-950/60 border border-slate-800 px-4 py-2.5 rounded-lg font-mono text-xs text-slate-300 flex items-center justify-between group hover:border-slate-700 transition-colors">
-								<span class="select-all break-all">{addr}</span>
+						{#each displayAddrs as addr}
+							{@const badge = getTransportBadge(addr)}
+							{@const scope = getAddrScope(addr)}
+							<li class="bg-slate-950/60 border border-slate-800 px-4 py-2.5 rounded-lg font-mono text-xs text-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2 group hover:border-slate-700 transition-colors">
+								<div class="flex items-center gap-2 min-w-0">
+									<span class={`px-2 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 border ${badge.color}`}>
+										{badge.label}
+									</span>
+									<span class="select-all break-all text-slate-200">{addr}</span>
+								</div>
 								<button 
 									onclick={() => copyToClipboard(addr, addr)}
-									class="text-[10px] text-cyan-500 hover:text-cyan-300 hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
+									class="shrink-0 self-end sm:self-auto text-[10px] px-2.5 py-1 rounded bg-slate-850 hover:bg-slate-800 text-cyan-400 border border-slate-750 font-bold transition-all active:scale-[0.98]"
 								>
 									{copiedId === addr ? 'Copied ✓' : 'Copy'}
 								</button>
 							</li>
 						{/each}
 					</ul>
+
+					{#if filteredAddrs.length > 8 && !addrSearchQuery && activeAddrCategory === 'all'}
+						<button
+							onclick={() => showAllAddrs = !showAllAddrs}
+							class="w-full py-2.5 text-center text-xs font-bold font-mono text-cyan-400 hover:text-cyan-300 bg-slate-950/40 hover:bg-slate-950 border border-slate-800 rounded-lg transition-colors flex items-center justify-center gap-1"
+						>
+							<Icon icon={showAllAddrs ? 'ph:caret-up-bold' : 'ph:caret-down-bold'} class="text-sm" />
+							{showAllAddrs ? 'Collapse List' : `Show all ${filteredAddrs.length} listener interfaces`}
+						</button>
+					{/if}
 				{:else}
-					<div class="text-slate-500 italic text-xs py-4 text-center">No active listeners configured. Node is outbound-only.</div>
+					<div class="text-slate-500 italic text-xs py-6 text-center bg-slate-950/40 border border-slate-850 rounded-lg">
+						No active listener interfaces match the current filter.
+					</div>
 				{/if}
 			</div>
 
