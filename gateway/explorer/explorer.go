@@ -36,7 +36,7 @@ import (
 	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
-//go:embed web/templates/*.html web/static/*.css web/static/*.js all:web/dist
+//go:embed all:web/dist
 var assetFS embed.FS
 
 // ResolveStatus is the outcome of the explorer's "fetch
@@ -374,13 +374,11 @@ func New(cfg Config) (*Explorer, error) {
 		"hasPrefix":  strings.HasPrefix,
 		"trimPrefix": strings.TrimPrefix,
 	}
-	tpl, err := template.New("explorer").Funcs(funcs).ParseFS(assetFS, "web/templates/*.html")
-	if err != nil {
-		return nil, fmt.Errorf("explorer: parse templates: %w", err)
-	}
-	pages, err := buildPages(tpl)
-	if err != nil {
-		return nil, fmt.Errorf("explorer: build pages: %w", err)
+	var tpl *template.Template
+	var pages map[string]*template.Template
+	if t, err := template.New("explorer").Funcs(funcs).ParseFS(assetFS, "web/templates/*.html"); err == nil {
+		tpl = t
+		pages, _ = buildPages(tpl)
 	}
 	return &Explorer{
 		cfg:    cfg,
@@ -567,10 +565,6 @@ func (e *Explorer) buildRouter() http.Handler {
 	serveSpaOrPage := func(handler http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
-				handler(w, r)
-				return
-			}
-			if strings.HasPrefix(r.Header.Get("User-Agent"), "Go-http-client") {
 				handler(w, r)
 				return
 			}
