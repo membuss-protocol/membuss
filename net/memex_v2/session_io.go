@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -309,8 +310,9 @@ func (s *Session) manageProviders(ctx context.Context, fanout int) {
 	}
 
 	if len(s.activeProviders) < fanout && s.cfg.ProviderFinder != nil {
-		if hasPending {
+		if hasPending && atomic.CompareAndSwapUint32(&s.findingProvs, 0, 1) {
 			go func(m mid.MID) {
+				defer atomic.StoreUint32(&s.findingProvs, 0)
 				discCtx, discCancel := context.WithTimeout(ctx, 5*time.Second)
 				defer discCancel()
 				newProvs, err := s.cfg.ProviderFinder(discCtx, m)
