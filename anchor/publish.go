@@ -26,6 +26,10 @@ const (
 	// maxSeedListBytes caps how much data we read from a
 	// content-exchange stream (64 MiB supports ~1M sealed MIDs).
 	maxSeedListBytes = 64 << 20
+
+	// maxConcurrentDiscoverDials caps how many direct content-exchange
+	// streams DiscoverContent will dial in parallel.
+	maxConcurrentDiscoverDials = 16
 )
 
 // SealedLister is the subset of store.Store the publisher
@@ -171,7 +175,7 @@ func (cp *ContentPublisher) handleStream(s network.Stream) {
 // announcements for MIDs the caller does not already know.
 func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}) ([]ContentAnnouncement, error) {
 	peers := h.Network().Peers()
-	if len(peers) == 0 {
+	if len(peers) == 0 || ctx.Err() != nil {
 		return nil, nil
 	}
 
@@ -181,16 +185,39 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 		err  error
 	}
 	results := make(chan result, len(peers))
+	sem := make(chan struct{}, maxConcurrentDiscoverDials)
+	var wg sync.WaitGroup
+
 	for _, p := range peers {
-		go func(pid peer.ID) {
-			mids, err := fetchPeerSealed(ctx, h, pid)
-			results <- result{peer: pid, mids: mids, err: err}
-		}(p)
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			goto Collect
+		case sem <- struct{}{}:
+			if ctx.Err() != nil {
+				<-sem
+				goto Collect
+			}
+			wg.Add(1)
+			go func(pid peer.ID) {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				mids, err := fetchPeerSealed(ctx, h, pid)
+				results <- result{peer: pid, mids: mids, err: err}
+			}(p)
+		}
 	}
 
+Collect:
+	wg.Wait()
+	close(results)
+
 	var out []ContentAnnouncement
-	for i := 0; i < len(peers); i++ {
-		r := <-results
+	for r := range results {
 		if r.err != nil {
 			continue
 		}

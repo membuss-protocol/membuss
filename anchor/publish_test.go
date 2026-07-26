@@ -252,4 +252,33 @@ func TestContentPublisher_PublishToDHT(t *testing.T) {
 	}
 }
 
+func TestDiscoverContent_Throttling(t *testing.T) {
+	ctx := context.Background()
+	h1 := newTestHost(t)
+	t.Cleanup(func() { _ = h1.Close() })
+
+	numPeers := 20
+	for i := 0; i < numPeers; i++ {
+		h2 := newTestHost(t)
+		t.Cleanup(func() { _ = h2.Close() })
+		store := newFakeStore()
+		m := mid.FromBytes([]byte{byte(i + 1)})
+		_ = store.Seal(m, true)
+		cp := NewContentPublisher(h2, store)
+		cp.Start(ctx)
+		t.Cleanup(func() { cp.Stop() })
+		_ = h1.Connect(ctx, peer.AddrInfo{ID: h2.ID(), Addrs: h2.Addrs()})
+	}
+
+	known := make(map[string]struct{})
+	announcements, err := DiscoverContent(ctx, h1, known)
+	if err != nil {
+		t.Fatalf("DiscoverContent failed: %v", err)
+	}
+	if len(announcements) != numPeers {
+		t.Fatalf("expected %d announcements, got %d", numPeers, len(announcements))
+	}
+}
+
+
 
