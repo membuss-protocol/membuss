@@ -32,10 +32,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/multiformats/go-multiaddr"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/core/units"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
+	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
 // AnchorRegistryKey is the local store meta key under which
@@ -105,8 +108,9 @@ type ProviderResolver interface {
 // of ProviderResolver. It calls the local DHT and pads the
 // result with registered anchor peers.
 type defaultProviderResolver struct {
-	dht     *dht.MemDHT
-	anchors func() []peer.AddrInfo
+	dht        *dht.MemDHT
+	anchors    func() []peer.AddrInfo
+	reputation *PeerReputationTracker
 }
 
 func (r *defaultProviderResolver) Resolve(ctx context.Context, m mid.MID) ([]peer.AddrInfo, error) {
@@ -114,7 +118,11 @@ func (r *defaultProviderResolver) Resolve(ctx context.Context, m mid.MID) ([]pee
 	if err != nil {
 		return nil, err
 	}
-	return mergeAnchors(provs, r.anchors()), nil
+	merged := mergeAnchors(provs, r.anchors())
+	if r.reputation != nil {
+		return r.reputation.SortPeers(merged), nil
+	}
+	return merged, nil
 }
 
 // Fetcher is the contract the anchor engine uses to pull
@@ -164,6 +172,17 @@ type Config struct {
 	// "sticky": they are never pruned by health checks, since they
 	// reflect explicit operator intent and are re-added on restart.
 	BootstrapAnchors []peer.AddrInfo
+	// FetchConcurrency sets the maximum number of concurrent worker
+	// goroutines used to fetch backlog items. Zero uses DefaultFetchConcurrency.
+	FetchConcurrency int
+	// ReacquireBatchSize sets the number of sealed MIDs sampled per discovery round
+	// using round-robin verification. Zero defaults to 32 items.
+	ReacquireBatchSize int
+	// MaxStorage sets the human-readable storage limit (e.g. "100GB", "500MB", "1TB", "0").
+	MaxStorage string
+	// MaxStorageBytes sets the maximum storage bytes allowed before LRU eviction.
+	// Zero means unlimited storage.
+	MaxStorageBytes uint64
 	// Logger is optional; nil means silent.
 	Logger Logger
 }
@@ -183,11 +202,15 @@ type AnchorEngine struct {
 	cfg    Config
 	logger Logger
 
-	mu      sync.Mutex
-	anchors map[peer.ID]peer.AddrInfo
-	backlog []enqueuedMID
-	started time.Time
-	synced  int64
+	mu           sync.Mutex
+	anchors      map[peer.ID]peer.AddrInfo
+	backlog      []enqueuedMID
+	started      time.Time
+	synced       int64
+	sampleOffset int
+	quotaMgr     *QuotaManager
+	telemetry    *TelemetryCollector
+	reputation   *PeerReputationTracker
 	// attempts records the last time the engine tried to acquire a
 	// MID it learned about, keyed by MID string. It is used both to
 	// suppress redundant re-enqueues/logging and to back off retries
@@ -203,6 +226,7 @@ type AnchorEngine struct {
 	// roundNum counts discovery rounds; health checks run every
 	// HealthEvery rounds.
 	roundNum int
+	dirty    bool
 
 	resolver ProviderResolver
 
@@ -238,6 +262,11 @@ func New(cfg Config) (*AnchorEngine, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = nopLogger{}
 	}
+	if cfg.MaxStorageBytes == 0 && cfg.MaxStorage != "" {
+		if bytes, err := units.ParseByteSize(cfg.MaxStorage); err == nil {
+			cfg.MaxStorageBytes = bytes
+		}
+	}
 	return &AnchorEngine{
 		cfg:         cfg,
 		logger:      cfg.Logger,
@@ -245,6 +274,9 @@ func New(cfg Config) (*AnchorEngine, error) {
 		attempts:    make(map[string]time.Time),
 		sticky:      make(map[peer.ID]struct{}),
 		healthFails: make(map[peer.ID]int),
+		quotaMgr:    NewQuotaManager(cfg.MaxStorageBytes),
+		telemetry:   NewTelemetryCollector(),
+		reputation:  NewPeerReputationTracker(),
 		resolver:    cfg.ProviderResolver,
 		stopCh:      make(chan struct{}),
 		doneCh:      make(chan struct{}),
@@ -257,9 +289,13 @@ func (e *AnchorEngine) Start(ctx context.Context) error {
 	e.started = time.Now()
 	if e.resolver == nil {
 		dht := e.cfg.DHT
-		e.resolver = &defaultProviderResolver{dht: dht, anchors: func() []peer.AddrInfo {
-			return e.AnchorPeers()
-		}}
+		e.resolver = &defaultProviderResolver{
+			dht: dht,
+			anchors: func() []peer.AddrInfo {
+				return e.AnchorPeers()
+			},
+			reputation: e.reputation,
+		}
 	}
 	e.loadRegistry()
 	if val, err := e.cfg.Store.GetMeta("anchor_synced"); err == nil && len(val) == 8 {
@@ -316,8 +352,11 @@ func (e *AnchorEngine) AddAnchor(ai peer.AddrInfo) {
 	}
 	e.mu.Lock()
 	e.anchors[ai.ID] = ai
+	e.dirty = true
 	e.mu.Unlock()
-	e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+	if e.cfg.Host != nil {
+		e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+	}
 }
 
 // RemoveAnchor removes a peer from the local anchor registry and
@@ -326,11 +365,21 @@ func (e *AnchorEngine) AddAnchor(ai peer.AddrInfo) {
 // they would linger forever after the anchor is removed.
 func (e *AnchorEngine) RemoveAnchor(id peer.ID) {
 	e.mu.Lock()
-	delete(e.anchors, id)
+	if _, ok := e.anchors[id]; ok {
+		delete(e.anchors, id)
+		e.dirty = true
+	}
 	delete(e.healthFails, id)
 	e.mu.Unlock()
 	if e.cfg.Host != nil {
 		e.cfg.Host.Peerstore().ClearAddrs(id)
+	}
+}
+
+// Pin marks a MID as explicitly pinned by an operator so it is never evicted by quota enforcement.
+func (e *AnchorEngine) Pin(m mid.MID) {
+	if e.quotaMgr != nil {
+		e.quotaMgr.Pin(m)
 	}
 }
 
@@ -400,12 +449,21 @@ func (e *AnchorEngine) checkAnchorHealth(ctx context.Context) {
 // healthy if already connected, otherwise a short-lived dial is
 // attempted.
 func (e *AnchorEngine) probeAnchor(ctx context.Context, ai peer.AddrInfo) bool {
+	start := time.Now()
 	if e.cfg.Host.Network().Connectedness(ai.ID) == network.Connected {
+		if e.reputation != nil {
+			e.reputation.RecordAttempt(ai.ID, true, 1*time.Millisecond)
+		}
 		return true
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, anchorHealthDialTimeout)
 	defer cancel()
-	return e.cfg.Host.Connect(dialCtx, ai) == nil
+	err := e.cfg.Host.Connect(dialCtx, ai)
+	success := err == nil
+	if e.reputation != nil {
+		e.reputation.RecordAttempt(ai.ID, success, time.Since(start))
+	}
+	return success
 }
 
 // AnchorPeers returns a snapshot of the current anchor
@@ -439,12 +497,13 @@ func (e *AnchorEngine) PublishSelf(ctx context.Context) error {
 // via its Status() method and the /anchor/status HTTP
 // endpoint.
 type AnchorStatus struct {
-	PeerID     string        `json:"peer_id"`
-	Uptime     time.Duration `json:"uptime"`
-	BlocksHeld int64         `json:"blocks_held"`
-	Anchors    int           `json:"anchors"`
-	Backlog    int           `json:"backlog"`
-	Synced     int64         `json:"synced"`
+	PeerID     string            `json:"peer_id"`
+	Uptime     time.Duration     `json:"uptime"`
+	BlocksHeld int64             `json:"blocks_held"`
+	Anchors    int               `json:"anchors"`
+	Backlog    int               `json:"backlog"`
+	Synced     int64             `json:"synced"`
+	Telemetry  TelemetrySnapshot `json:"telemetry"`
 }
 
 // Status returns a snapshot of the engine's stats.
@@ -454,6 +513,7 @@ func (e *AnchorEngine) Status() AnchorStatus {
 	anchors := len(e.anchors)
 	e.mu.Unlock()
 	var held int64
+	var usedBytes uint64
 	if ab, ok := e.cfg.Store.(interface {
 		AllBlocks() ([]mid.MID, error)
 	}); ok {
@@ -465,6 +525,12 @@ func (e *AnchorEngine) Status() AnchorStatus {
 	}); ok {
 		held = int64(lenGetter.Len())
 	}
+	if e.cfg.Store != nil {
+		usedBytes, _ = e.cfg.Store.Size()
+	}
+
+	snap := e.telemetry.Snapshot(usedBytes, e.cfg.MaxStorageBytes)
+
 	return AnchorStatus{
 		PeerID:     e.cfg.Host.ID().String(),
 		Uptime:     time.Since(e.started),
@@ -472,7 +538,18 @@ func (e *AnchorEngine) Status() AnchorStatus {
 		Anchors:    anchors,
 		Backlog:    backlog,
 		Synced:     atomic.LoadInt64(&e.synced),
+		Telemetry:  snap,
 	}
+}
+
+// PrometheusMetrics exports operational metrics in OpenMetrics / Prometheus format.
+func (e *AnchorEngine) PrometheusMetrics() string {
+	var usedBytes uint64
+	if e.cfg.Store != nil {
+		usedBytes, _ = e.cfg.Store.Size()
+	}
+	snap := e.telemetry.Snapshot(usedBytes, e.cfg.MaxStorageBytes)
+	return PrometheusFormat(snap)
 }
 
 func (e *AnchorEngine) loop(ctx context.Context) {
@@ -504,6 +581,8 @@ func (e *AnchorEngine) loop(ctx context.Context) {
 }
 
 func (e *AnchorEngine) tick(ctx context.Context) {
+	e.purgeStaleAttempts(time.Now())
+
 	// Run an anchor health check every HealthEvery rounds so
 	// unreachable anchors are pruned instead of accumulating forever.
 	e.mu.Lock()
@@ -525,27 +604,47 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	e.backlog = nil
 	e.mu.Unlock()
 
-	for _, item := range pending {
-		e.fetchIfMissing(ctx, item.mid, item.source)
-	}
+	processBacklogConcurrently(ctx, pending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
+		e.fetchIfMissing(c, item.mid, item.source)
+	}, e.telemetry)
 
 	sealed, err := e.cfg.Store.AllSealed()
 	if err != nil || len(sealed) == 0 {
 		return
 	}
-	maxSample := 4
-	if len(sealed) < maxSample {
-		maxSample = len(sealed)
+	batchSize := e.cfg.ReacquireBatchSize
+	if batchSize <= 0 {
+		batchSize = 32
 	}
-	for i := 0; i < maxSample; i++ {
-		m := sealed[i]
+	if len(sealed) < batchSize {
+		batchSize = len(sealed)
+	}
+
+	e.mu.Lock()
+	offset := e.sampleOffset % len(sealed)
+	e.sampleOffset = (offset + batchSize) % len(sealed)
+	e.mu.Unlock()
+
+	var samplePending []enqueuedMID
+	for i := 0; i < batchSize; i++ {
+		idx := (offset + i) % len(sealed)
+		m := sealed[idx]
 		// Only re-acquire sealed roots whose bytes are actually
 		// missing locally; already-held roots need nothing. No source
 		// peer is known here, so acquisition falls back to DHT/anchors.
 		if !e.shouldFetch(m) {
 			continue
 		}
-		e.fetchIfMissing(ctx, m, "")
+		samplePending = append(samplePending, enqueuedMID{mid: m, source: ""})
+	}
+	processBacklogConcurrently(ctx, samplePending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
+		e.fetchIfMissing(c, item.mid, item.source)
+	}, e.telemetry)
+
+	if evictStore, ok := e.cfg.Store.(EvictableStore); ok && e.quotaMgr != nil {
+		if evicted, err := e.quotaMgr.EnforceQuota(evictStore); err == nil && evicted > 0 {
+			e.logger.Infof("anchor: storage quota enforcement evicted %d unpinned items", evicted)
+		}
 	}
 }
 
@@ -609,6 +708,7 @@ func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID, source pee
 	if m.IsZero() {
 		return
 	}
+	start := time.Now()
 	e.recordAttempt(m)
 
 	has, err := e.cfg.Store.Has(m)
@@ -616,22 +716,27 @@ func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID, source pee
 		// Already have the bytes; sealing is idempotent and is what
 		// makes discovery stop reporting this MID as new.
 		e.finishAcquired(ctx, m)
+		e.telemetry.RecordFetch(true, 0, time.Since(start))
 		return
 	}
 
 	provs, err := e.resolver.Resolve(ctx, m)
 	if err != nil {
+		e.telemetry.RecordFetch(false, 0, time.Since(start))
 		return
 	}
 	provs = e.mergeSource(provs, source)
 	if len(provs) == 0 {
+		e.telemetry.RecordFetch(false, 0, time.Since(start))
 		return
 	}
 	if err := e.cfg.Fetcher.Fetch(ctx, m, provs); err != nil {
 		e.logger.Errorf("anchor: fetch %s: %v", m.String()[:12], err)
+		e.telemetry.RecordFetch(false, 0, time.Since(start))
 		return
 	}
 	e.finishAcquired(ctx, m)
+	e.telemetry.RecordFetch(true, 0, time.Since(start))
 }
 
 // finishAcquired seals a now-held MID, bumps the synced counter, and
@@ -688,14 +793,41 @@ func (e *AnchorEngine) markDone(m mid.MID) {
 	e.mu.Unlock()
 }
 
+// purgeStaleAttempts removes attempt records older than 2 * anchorAttemptBackoff
+// to prevent unbounded map growth on long-running nodes.
+func (e *AnchorEngine) purgeStaleAttempts(now time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cutoff := 2 * anchorAttemptBackoff
+	for k, ts := range e.attempts {
+		if now.Sub(ts) > cutoff {
+			delete(e.attempts, k)
+		}
+	}
+}
+
 func (e *AnchorEngine) persistRegistry() {
 	e.mu.Lock()
-	anchors := make([]peer.AddrInfo, 0, len(e.anchors))
-	for _, ai := range e.anchors {
-		anchors = append(anchors, ai)
+	if !e.dirty {
+		e.mu.Unlock()
+		return
 	}
+	anchors := make([]*membusspb.PeerAddrInfoProto, 0, len(e.anchors))
+	for _, ai := range e.anchors {
+		addrs := make([]string, 0, len(ai.Addrs))
+		for _, a := range ai.Addrs {
+			addrs = append(addrs, a.String())
+		}
+		anchors = append(anchors, &membusspb.PeerAddrInfoProto{
+			Id:    ai.ID.String(),
+			Addrs: addrs,
+		})
+	}
+	e.dirty = false
 	e.mu.Unlock()
-	payload, err := json.Marshal(anchors)
+
+	reg := &membusspb.AnchorRegistryProto{Anchors: anchors}
+	payload, err := proto.Marshal(reg)
 	if err != nil {
 		return
 	}
@@ -704,21 +836,44 @@ func (e *AnchorEngine) persistRegistry() {
 
 func (e *AnchorEngine) loadRegistry() {
 	raw, err := e.cfg.Store.GetMeta(AnchorRegistryKey)
-	if err != nil {
+	if err != nil || len(raw) == 0 {
 		return
 	}
-	var anchors []peer.AddrInfo
-	if err := json.Unmarshal(raw, &anchors); err != nil {
-		return
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, ai := range anchors {
-		if ai.ID == "" {
-			continue
+
+	var reg membusspb.AnchorRegistryProto
+	if err := proto.Unmarshal(raw, &reg); err == nil && len(reg.Anchors) > 0 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, pb := range reg.Anchors {
+			pid, err := peer.Decode(pb.Id)
+			if err != nil || pid == "" {
+				continue
+			}
+			addrs := make([]multiaddr.Multiaddr, 0, len(pb.Addrs))
+			for _, s := range pb.Addrs {
+				if a, err := multiaddr.NewMultiaddr(s); err == nil {
+					addrs = append(addrs, a)
+				}
+			}
+			ai := peer.AddrInfo{ID: pid, Addrs: addrs}
+			e.anchors[pid] = ai
+			e.cfg.Host.Peerstore().AddAddrs(pid, addrs, peerstore.PermanentAddrTTL)
 		}
-		e.anchors[ai.ID] = ai
-		e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+		return
+	}
+
+	// Legacy JSON fallback
+	var anchors []peer.AddrInfo
+	if err := json.Unmarshal(raw, &anchors); err == nil {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, ai := range anchors {
+			if ai.ID == "" {
+				continue
+			}
+			e.anchors[ai.ID] = ai
+			e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+		}
 	}
 }
 
@@ -757,21 +912,39 @@ func mergeAnchors(direct, anchors []peer.AddrInfo) []peer.AddrInfo {
 }
 
 func encodeAddrInfo(ai peer.AddrInfo) ([]byte, error) {
-	type wire struct {
-		ID    string   `json:"id"`
-		Addrs []string `json:"addrs"`
-	}
-	w := wire{ID: ai.ID.String()}
+	addrs := make([]string, 0, len(ai.Addrs))
 	for _, a := range ai.Addrs {
-		w.Addrs = append(w.Addrs, a.String())
+		addrs = append(addrs, a.String())
 	}
-	return json.Marshal(w)
+	pb := &membusspb.PeerAddrInfoProto{
+		Id:    ai.ID.String(),
+		Addrs: addrs,
+	}
+	return proto.Marshal(pb)
 }
 
 // DecodeAnchorValue parses a value previously written by
 // encodeAddrInfo. It is exported so other packages can
 // reuse the same wire format.
 func DecodeAnchorValue(raw []byte) (peer.AddrInfo, error) {
+	var pb membusspb.PeerAddrInfoProto
+	if err := proto.Unmarshal(raw, &pb); err == nil && pb.Id != "" {
+		id, err := peer.Decode(pb.Id)
+		if err != nil {
+			return peer.AddrInfo{}, fmt.Errorf("anchor: bad peer id: %w", err)
+		}
+		addrs := make([]multiaddr.Multiaddr, 0, len(pb.Addrs))
+		for _, s := range pb.Addrs {
+			a, err := multiaddr.NewMultiaddr(s)
+			if err != nil {
+				continue
+			}
+			addrs = append(addrs, a)
+		}
+		return peer.AddrInfo{ID: id, Addrs: addrs}, nil
+	}
+
+	// Legacy JSON fallback
 	type wire struct {
 		ID    string   `json:"id"`
 		Addrs []string `json:"addrs"`

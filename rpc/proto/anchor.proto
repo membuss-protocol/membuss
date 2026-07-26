@@ -1,0 +1,31 @@
+// Protocol Buffers schema for Anchor node registry and content exchange payloads.
+syntax = "proto3";
+
+package membuss.v1;
+
+option go_package = "github.com/nnlgsakib/membuss/proto;membusspb";
+
+// ContentExchangePayload represents the list of sealed MIDs
+// exchanged over the direct content-exchange stream protocol.
+message ContentExchangePayload {
+  repeated string mids = 1;
+}
+
+// PeerAddrInfoProto represents a single peer ID and multiaddresses.
+message PeerAddrInfoProto {
+  string id = 1;
+  repeated string addrs = 2;
+}
+
+// AnchorRegistryProto represents the persisted list of anchor nodes.
+message AnchorRegistryProto {
+  repeated PeerAddrInfoProto anchors = 1;
+}
+
+// ContentExchangeRequest allows a peer to request delta sync by supplying
+// a Bloom filter summary of its currently known MIDs.
+message ContentExchangeRequest {
+  bool full_sync = 1;
+  bytes bloom_filter = 2;
+  uint32 bloom_hashes = 3;
+}

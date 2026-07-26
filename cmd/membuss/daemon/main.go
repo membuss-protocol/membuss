@@ -423,7 +423,7 @@ func Run(args []string) error {
 
 	// 6c) Content publisher — runs on all nodes and serves
 	// sealed MID lists on the content-exchange stream.
-	cp := anchor.NewContentPublisher(h, bs)
+	cp := anchor.NewContentPublisher(h, bs, mdht)
 	cp.Start(ctx)
 	defer cp.Stop()
 

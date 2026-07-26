@@ -2,6 +2,7 @@ package anchor
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"sync"
@@ -10,27 +11,38 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/mid"
+	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
 const (
 	// ContentExchangeProto is the libp2p protocol ID for the
 	// direct content-exchange stream. The anchor opens a
 	// stream to each connected peer; the peer responds with a
-	// JSON array of its sealed MID strings.
+	// protobuf payload of its sealed MID strings.
 	ContentExchangeProto = "/membuss/content-exchange/1.0.0"
 
 	// maxSeedListBytes caps how much data we read from a
-	// content-exchange stream (1 MiB is generous for a list
-	// of MID strings).
-	maxSeedListBytes = 1 << 20
+	// content-exchange stream (64 MiB supports ~1M sealed MIDs).
+	maxSeedListBytes = 64 << 20
+
+	// maxConcurrentDiscoverDials caps how many direct content-exchange
+	// streams DiscoverContent will dial in parallel.
+	maxConcurrentDiscoverDials = 16
 )
 
 // SealedLister is the subset of store.Store the publisher
 // needs to enumerate sealed MIDs.
 type SealedLister interface {
 	AllSealed() ([]mid.MID, error)
+}
+
+// DHTProvider is the subset of DHT methods needed by the publisher
+// to announce sealed MIDs to the network.
+type DHTProvider interface {
+	Provide(ctx context.Context, m mid.MID) error
 }
 
 // ContentPublisher runs on every node and serves sealed MID
@@ -40,6 +52,8 @@ type SealedLister interface {
 type ContentPublisher struct {
 	host   host.Host
 	store  SealedLister
+	dht    DHTProvider
+	cache  *SealedCache
 	mu     sync.Mutex
 	closed bool
 	doneCh chan struct{}
@@ -47,14 +61,37 @@ type ContentPublisher struct {
 
 // NewContentPublisher creates and registers the stream
 // handler. Call Start to begin background DHT publishing.
-func NewContentPublisher(h host.Host, store SealedLister) *ContentPublisher {
+func NewContentPublisher(h host.Host, store SealedLister, dht ...DHTProvider) *ContentPublisher {
 	cp := &ContentPublisher{
 		host:   h,
 		store:  store,
+		cache:  NewSealedCache(30 * time.Second),
 		doneCh: make(chan struct{}),
 	}
-	h.SetStreamHandler(ContentExchangeProto, cp.handleStream)
+	if len(dht) > 0 {
+		cp.dht = dht[0]
+	}
+	if h != nil {
+		h.SetStreamHandler(ContentExchangeProto, cp.handleStream)
+	}
 	return cp
+}
+
+// NotifySealed updates the in-memory sealed MID cache immediately.
+func (cp *ContentPublisher) NotifySealed(m mid.MID) {
+	if cp.cache != nil {
+		cp.cache.Add(m)
+	}
+}
+
+func (cp *ContentPublisher) getSealedMIDs() ([]mid.MID, error) {
+	if cp.store == nil {
+		return nil, nil
+	}
+	if cp.cache != nil {
+		return cp.cache.GetSealed(cp.store.AllSealed)
+	}
+	return cp.store.AllSealed()
 }
 
 // Start launches a background goroutine that publishes the
@@ -83,30 +120,75 @@ func (cp *ContentPublisher) loop(ctx context.Context) {
 		case <-cp.doneCh:
 			return
 		case <-t.C:
-			// DHT fallback publishing is a best-effort
-			// operation. The direct stream handler is the
-			// primary discovery mechanism.
+			cp.publishToDHT(ctx)
+		}
+	}
+}
+
+func (cp *ContentPublisher) publishToDHT(ctx context.Context) {
+	if cp.dht == nil {
+		return
+	}
+	mids, err := cp.getSealedMIDs()
+	if err != nil {
+		return
+	}
+	for _, m := range mids {
+		select {
+		case <-ctx.Done():
+			return
+		case <-cp.doneCh:
+			return
+		default:
+			_ = cp.dht.Provide(ctx, m)
 		}
 	}
 }
 
 // handleStream serves a content-exchange request. The
-// requester opens a stream, reads a single JSON frame of
-// sealed MID strings. No handshake, no request messages —
-// just the response.
+// requester opens a stream, optionally sends a ContentExchangeRequest
+// containing a Bloom filter of its inventory, and reads the (delta) payload.
 func (cp *ContentPublisher) handleStream(s network.Stream) {
-	defer s.Close()
-
-	mids, err := cp.store.AllSealed()
+	mids, err := cp.getSealedMIDs()
 	if err != nil {
+		_ = s.Reset()
 		return
 	}
+
+	// Try reading optional ContentExchangeRequest header (short deadline for delta sync)
+	_ = s.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var header [4]byte
+	if _, err := io.ReadFull(s, header[:]); err == nil {
+		reqLen := binary.BigEndian.Uint32(header[:])
+		if reqLen > 0 && reqLen < (10<<20) {
+			reqData := make([]byte, reqLen)
+			if _, err := io.ReadFull(s, reqData); err == nil {
+				var req membusspb.ContentExchangeRequest
+				if err := proto.Unmarshal(reqData, &req); err == nil {
+					if len(req.BloomFilter) > 0 {
+						mids = FilterDelta(mids, req.BloomFilter, req.BloomHashes)
+					}
+				}
+			}
+		}
+	}
+	_ = s.SetReadDeadline(time.Time{}) // reset deadline
+
 	strs := make([]string, 0, len(mids))
 	for _, m := range mids {
 		strs = append(strs, m.String())
 	}
-	enc := json.NewEncoder(s)
-	_ = enc.Encode(strs)
+	payload := &membusspb.ContentExchangePayload{Mids: strs}
+	data, err := proto.Marshal(payload)
+	if err != nil {
+		_ = s.Reset()
+		return
+	}
+	if _, err := s.Write(data); err != nil {
+		_ = s.Reset()
+		return
+	}
+	_ = s.Close()
 }
 
 // DiscoverContent opens a content-exchange stream to each
@@ -114,8 +196,15 @@ func (cp *ContentPublisher) handleStream(s network.Stream) {
 // announcements for MIDs the caller does not already know.
 func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}) ([]ContentAnnouncement, error) {
 	peers := h.Network().Peers()
-	if len(peers) == 0 {
+	if len(peers) == 0 || ctx.Err() != nil {
 		return nil, nil
+	}
+
+	var knownList []mid.MID
+	for kStr := range known {
+		if parsed, err := mid.Parse(kStr); err == nil {
+			knownList = append(knownList, parsed)
+		}
 	}
 
 	type result struct {
@@ -124,16 +213,39 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 		err  error
 	}
 	results := make(chan result, len(peers))
+	sem := make(chan struct{}, maxConcurrentDiscoverDials)
+	var wg sync.WaitGroup
+
 	for _, p := range peers {
-		go func(pid peer.ID) {
-			mids, err := fetchPeerSealed(ctx, h, pid)
-			results <- result{peer: pid, mids: mids, err: err}
-		}(p)
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			goto Collect
+		case sem <- struct{}{}:
+			if ctx.Err() != nil {
+				<-sem
+				goto Collect
+			}
+			wg.Add(1)
+			go func(pid peer.ID) {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				mids, err := fetchPeerSealed(ctx, h, pid, knownList)
+				results <- result{peer: pid, mids: mids, err: err}
+			}(p)
+		}
 	}
 
+Collect:
+	wg.Wait()
+	close(results)
+
 	var out []ContentAnnouncement
-	for i := 0; i < len(peers); i++ {
-		r := <-results
+	for r := range results {
 		if r.err != nil {
 			continue
 		}
@@ -155,29 +267,56 @@ type ContentAnnouncement struct {
 }
 
 // fetchPeerSealed opens a content-exchange stream to pid,
-// reads the JSON array of sealed MID strings, and returns
-// them.
-func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID) ([]mid.MID, error) {
+// optionally sends a Bloom filter summary of known MIDs for delta sync,
+// reads the Protobuf array of sealed MID strings, and returns them.
+func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID, knownMIDs ...[]mid.MID) ([]mid.MID, error) {
 	s, err := h.NewStream(ctx, pid, ContentExchangeProto)
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
+
+	if len(knownMIDs) > 0 && len(knownMIDs[0]) > 0 {
+		bloomBytes, hashes := BuildInventoryBloom(knownMIDs[0])
+		req := &membusspb.ContentExchangeRequest{
+			BloomFilter: bloomBytes,
+			BloomHashes: hashes,
+		}
+		reqData, err := proto.Marshal(req)
+		if err == nil {
+			var header [4]byte
+			binary.BigEndian.PutUint32(header[:], uint32(len(reqData)))
+			_, _ = s.Write(header[:])
+			_, _ = s.Write(reqData)
+		}
+	}
 
 	limitedReader := io.LimitReader(s, maxSeedListBytes)
-	var strs []string
-	dec := json.NewDecoder(limitedReader)
-	if err := dec.Decode(&strs); err != nil {
+	raw, err := io.ReadAll(limitedReader)
+	if err != nil {
+		_ = s.Reset()
 		return nil, err
 	}
 
+	var strs []string
+	var payload membusspb.ContentExchangePayload
+	if err := proto.Unmarshal(raw, &payload); err == nil && len(payload.Mids) > 0 {
+		strs = payload.Mids
+	} else {
+		// Fallback to JSON unmarshal for backward compatibility with legacy nodes
+		if jsonErr := json.Unmarshal(raw, &strs); jsonErr != nil && err != nil {
+			_ = s.Reset()
+			return nil, err
+		}
+	}
+
 	out := make([]mid.MID, 0, len(strs))
-	for _, s := range strs {
-		m, err := mid.Parse(s)
+	for _, sStr := range strs {
+		m, err := mid.Parse(sStr)
 		if err != nil {
 			continue
 		}
 		out = append(out, m)
 	}
+	_ = s.Close()
 	return out, nil
 }

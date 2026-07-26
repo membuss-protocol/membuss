@@ -74,7 +74,20 @@ func (s *fakeStore) GetMeta(k string) ([]byte, error) {
 
 func (s *fakeStore) Size() (uint64, error)                   { return 0, nil }
 func (s *fakeStore) Close() error                            { return nil }
-func (s *fakeStore) AllSealed() ([]mid.MID, error)           { return nil, nil }
+func (s *fakeStore) AllSealed() ([]mid.MID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []mid.MID
+	for k, isSealed := range s.sealed {
+		if isSealed {
+			m, err := mid.Parse(k)
+			if err == nil {
+				out = append(out, m)
+			}
+		}
+	}
+	return out, nil
+}
 func (s *fakeStore) AllBlocks() ([]mid.MID, error)           { return nil, nil }
 func (s *fakeStore) Get(mid.MID) ([]byte, error)             { return nil, nil }
 func (s *fakeStore) IterateBlocks(func(mid.MID) error) error { return nil }

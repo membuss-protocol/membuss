@@ -1,4 +1,4 @@
-﻿package anchor
+package anchor
 
 import (
 	"testing"
@@ -7,6 +7,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
+	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 )
 
@@ -67,3 +68,94 @@ func TestAnchor_RegistryIsConsistent(t *testing.T) {
 		t.Fatalf("PeerID: got %s, want %s", st.PeerID, h.ID())
 	}
 }
+
+func TestAnchor_PurgeStaleAttempts(t *testing.T) {
+	eng := &AnchorEngine{
+		attempts: make(map[string]time.Time),
+	}
+	now := time.Now()
+	freshMID := mid.FromBytes([]byte("fresh-attempt"))
+	staleMID := mid.FromBytes([]byte("stale-attempt"))
+
+	eng.attempts[freshMID.String()] = now.Add(-5 * time.Minute)
+	eng.attempts[staleMID.String()] = now.Add(-25 * time.Minute)
+
+	eng.purgeStaleAttempts(now)
+
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if _, exists := eng.attempts[freshMID.String()]; !exists {
+		t.Errorf("expected fresh attempt to remain in attempts map")
+	}
+	if _, exists := eng.attempts[staleMID.String()]; exists {
+		t.Errorf("expected stale attempt (>20m) to be purged from attempts map")
+	}
+}
+
+func TestAnchor_DirtyRegistryPersistence(t *testing.T) {
+	bs := store.NewMemstore()
+	eng := &AnchorEngine{
+		cfg: Config{
+			Store: bs,
+		},
+		anchors: make(map[peer.ID]peer.AddrInfo),
+	}
+
+	eng.persistRegistry()
+	val, err := bs.GetMeta(AnchorRegistryKey)
+	if err == nil && len(val) > 0 {
+		t.Fatalf("expected no DB write when registry is clean")
+	}
+
+	pid, _ := peer.Decode("12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X")
+	eng.AddAnchor(peer.AddrInfo{ID: pid})
+
+	if !eng.dirty {
+		t.Fatalf("expected dirty == true after AddAnchor")
+	}
+
+	eng.persistRegistry()
+
+	if eng.dirty {
+		t.Fatalf("expected dirty == false after persistRegistry")
+	}
+
+	val, err = bs.GetMeta(AnchorRegistryKey)
+	if err != nil || len(val) == 0 {
+		t.Fatalf("expected DB write after AddAnchor")
+	}
+}
+
+func TestAnchor_RoundRobinReacquisition(t *testing.T) {
+	eng := &AnchorEngine{
+		cfg: Config{
+			ReacquireBatchSize: 3,
+		},
+		sampleOffset: 0,
+	}
+
+	sealed := make([]mid.MID, 10)
+	for i := 0; i < 10; i++ {
+		sealed[i] = mid.FromBytes([]byte{byte(i + 1)})
+	}
+
+	eng.mu.Lock()
+	offset1 := eng.sampleOffset % len(sealed)
+	eng.sampleOffset = (offset1 + 3) % len(sealed)
+	eng.mu.Unlock()
+
+	if offset1 != 0 || eng.sampleOffset != 3 {
+		t.Fatalf("tick 1 offset: got %d next %d, want 0 next 3", offset1, eng.sampleOffset)
+	}
+
+	eng.mu.Lock()
+	offset2 := eng.sampleOffset % len(sealed)
+	eng.sampleOffset = (offset2 + 3) % len(sealed)
+	eng.mu.Unlock()
+
+	if offset2 != 3 || eng.sampleOffset != 6 {
+		t.Fatalf("tick 2 offset: got %d next %d, want 3 next 6", offset2, eng.sampleOffset)
+	}
+}
+
+
