@@ -107,8 +107,9 @@ type ProviderResolver interface {
 // of ProviderResolver. It calls the local DHT and pads the
 // result with registered anchor peers.
 type defaultProviderResolver struct {
-	dht     *dht.MemDHT
-	anchors func() []peer.AddrInfo
+	dht        *dht.MemDHT
+	anchors    func() []peer.AddrInfo
+	reputation *PeerReputationTracker
 }
 
 func (r *defaultProviderResolver) Resolve(ctx context.Context, m mid.MID) ([]peer.AddrInfo, error) {
@@ -116,7 +117,11 @@ func (r *defaultProviderResolver) Resolve(ctx context.Context, m mid.MID) ([]pee
 	if err != nil {
 		return nil, err
 	}
-	return mergeAnchors(provs, r.anchors()), nil
+	merged := mergeAnchors(provs, r.anchors())
+	if r.reputation != nil {
+		return r.reputation.SortPeers(merged), nil
+	}
+	return merged, nil
 }
 
 // Fetcher is the contract the anchor engine uses to pull
@@ -202,6 +207,7 @@ type AnchorEngine struct {
 	sampleOffset int
 	quotaMgr     *QuotaManager
 	telemetry    *TelemetryCollector
+	reputation   *PeerReputationTracker
 	// attempts records the last time the engine tried to acquire a
 	// MID it learned about, keyed by MID string. It is used both to
 	// suppress redundant re-enqueues/logging and to back off retries
@@ -262,6 +268,7 @@ func New(cfg Config) (*AnchorEngine, error) {
 		healthFails: make(map[peer.ID]int),
 		quotaMgr:    NewQuotaManager(cfg.MaxStorageBytes),
 		telemetry:   NewTelemetryCollector(),
+		reputation:  NewPeerReputationTracker(),
 		resolver:    cfg.ProviderResolver,
 		stopCh:      make(chan struct{}),
 		doneCh:      make(chan struct{}),
@@ -274,9 +281,13 @@ func (e *AnchorEngine) Start(ctx context.Context) error {
 	e.started = time.Now()
 	if e.resolver == nil {
 		dht := e.cfg.DHT
-		e.resolver = &defaultProviderResolver{dht: dht, anchors: func() []peer.AddrInfo {
-			return e.AnchorPeers()
-		}}
+		e.resolver = &defaultProviderResolver{
+			dht: dht,
+			anchors: func() []peer.AddrInfo {
+				return e.AnchorPeers()
+			},
+			reputation: e.reputation,
+		}
 	}
 	e.loadRegistry()
 	if val, err := e.cfg.Store.GetMeta("anchor_synced"); err == nil && len(val) == 8 {
@@ -430,12 +441,21 @@ func (e *AnchorEngine) checkAnchorHealth(ctx context.Context) {
 // healthy if already connected, otherwise a short-lived dial is
 // attempted.
 func (e *AnchorEngine) probeAnchor(ctx context.Context, ai peer.AddrInfo) bool {
+	start := time.Now()
 	if e.cfg.Host.Network().Connectedness(ai.ID) == network.Connected {
+		if e.reputation != nil {
+			e.reputation.RecordAttempt(ai.ID, true, 1*time.Millisecond)
+		}
 		return true
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, anchorHealthDialTimeout)
 	defer cancel()
-	return e.cfg.Host.Connect(dialCtx, ai) == nil
+	err := e.cfg.Host.Connect(dialCtx, ai)
+	success := err == nil
+	if e.reputation != nil {
+		e.reputation.RecordAttempt(ai.ID, success, time.Since(start))
+	}
+	return success
 }
 
 // AnchorPeers returns a snapshot of the current anchor
