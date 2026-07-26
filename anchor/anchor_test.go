@@ -90,4 +90,39 @@ func TestAnchor_PurgeStaleAttempts(t *testing.T) {
 	if _, exists := eng.attempts[staleMID.String()]; exists {
 		t.Errorf("expected stale attempt (>20m) to be purged from attempts map")
 	}
-}
+}
+
+func TestAnchor_DirtyRegistryPersistence(t *testing.T) {
+	bs := store.NewMemstore()
+	eng := &AnchorEngine{
+		cfg: Config{
+			Store: bs,
+		},
+		anchors: make(map[peer.ID]peer.AddrInfo),
+	}
+
+	eng.persistRegistry()
+	val, err := bs.GetMeta(AnchorRegistryKey)
+	if err == nil && len(val) > 0 {
+		t.Fatalf("expected no DB write when registry is clean")
+	}
+
+	pid, _ := peer.Decode("12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X")
+	eng.AddAnchor(peer.AddrInfo{ID: pid})
+
+	if !eng.dirty {
+		t.Fatalf("expected dirty == true after AddAnchor")
+	}
+
+	eng.persistRegistry()
+
+	if eng.dirty {
+		t.Fatalf("expected dirty == false after persistRegistry")
+	}
+
+	val, err = bs.GetMeta(AnchorRegistryKey)
+	if err != nil || len(val) == 0 {
+		t.Fatalf("expected DB write after AddAnchor")
+	}
+}
+

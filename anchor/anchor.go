@@ -208,6 +208,7 @@ type AnchorEngine struct {
 	// roundNum counts discovery rounds; health checks run every
 	// HealthEvery rounds.
 	roundNum int
+	dirty    bool
 
 	resolver ProviderResolver
 
@@ -321,8 +322,11 @@ func (e *AnchorEngine) AddAnchor(ai peer.AddrInfo) {
 	}
 	e.mu.Lock()
 	e.anchors[ai.ID] = ai
+	e.dirty = true
 	e.mu.Unlock()
-	e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+	if e.cfg.Host != nil {
+		e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+	}
 }
 
 // RemoveAnchor removes a peer from the local anchor registry and
@@ -331,7 +335,10 @@ func (e *AnchorEngine) AddAnchor(ai peer.AddrInfo) {
 // they would linger forever after the anchor is removed.
 func (e *AnchorEngine) RemoveAnchor(id peer.ID) {
 	e.mu.Lock()
-	delete(e.anchors, id)
+	if _, ok := e.anchors[id]; ok {
+		delete(e.anchors, id)
+		e.dirty = true
+	}
 	delete(e.healthFails, id)
 	e.mu.Unlock()
 	if e.cfg.Host != nil {
@@ -714,6 +721,10 @@ func (e *AnchorEngine) purgeStaleAttempts(now time.Time) {
 
 func (e *AnchorEngine) persistRegistry() {
 	e.mu.Lock()
+	if !e.dirty {
+		e.mu.Unlock()
+		return
+	}
 	anchors := make([]*membusspb.PeerAddrInfoProto, 0, len(e.anchors))
 	for _, ai := range e.anchors {
 		addrs := make([]string, 0, len(ai.Addrs))
@@ -725,6 +736,7 @@ func (e *AnchorEngine) persistRegistry() {
 			Addrs: addrs,
 		})
 	}
+	e.dirty = false
 	e.mu.Unlock()
 
 	reg := &membusspb.AnchorRegistryProto{Anchors: anchors}
