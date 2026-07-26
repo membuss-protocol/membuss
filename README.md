@@ -324,8 +324,12 @@ servers:
   grpc:
     enabled: true              # CLI <-> Daemon gRPC service
 
-# Persistence
+# Persistence & Anchor Engine
 anchor_mode: false            # true = mirror all announced content
+anchor:
+  max_storage_bytes: 107374182400  # 100 GB storage limit (0 = unlimited; auto-evicts unpinned LRU items)
+  fetch_concurrency: 8         # Parallel worker pool count for backlog discovery
+  reacquire_batch_size: 32     # Round-robin sampling batch size per discovery round
 
 # Modular Plugins
 plugins:
@@ -416,7 +420,13 @@ Example: `membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm`
 
 ## Operating a Node
 
-**Run an Anchor Node.** Set `anchor_mode: true` and `reprovide_strategy: all`. The node discovers announced content, mirrors it, and keeps it reachable after the origin leaves — the backbone of durability on a Membuss network.
+**Run an Anchor Node.** Set `anchor_mode: true`. The node discovers announced content, mirrors it, and keeps it reachable after the origin leaves — the backbone of durability on a Membuss network.
+
+Anchor Nodes feature:
+- **Bloom Filter Delta Sync**: Exchanges inventory summaries to cut discovery bandwidth by >95%.
+- **Storage Quotas & LRU Eviction**: Bounded disk storage (`max_storage_bytes`) with automated LRU eviction for auto-discovered content while protecting operator-pinned data.
+- **Adaptive Dialing & Peer Reputation**: Measures EMA response latency and success rates to dial the fastest and healthiest peers first.
+- **Prometheus Observability**: Exposes active worker saturation, fetch health, sync throughput, and storage utilization via `/anchor/status` and `/metrics`.
 
 **Expose a public gateway.** Bind `gateway_addr` to a public interface, front it with a reverse proxy for TLS, and set `gateway_rate_limit_per_min`. Content-addressed responses are immutable and cache-friendly at the edge.
 
