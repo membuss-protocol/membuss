@@ -220,3 +220,36 @@ func TestFetchPeerSealed_LargePayload(t *testing.T) {
 	}
 }
 
+type mockDHTProvider struct {
+	mu       sync.Mutex
+	provided []mid.MID
+}
+
+func (m *mockDHTProvider) Provide(ctx context.Context, id mid.MID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.provided = append(m.provided, id)
+	return nil
+}
+
+func TestContentPublisher_PublishToDHT(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	m1 := mid.FromBytes([]byte("mid-1"))
+	m2 := mid.FromBytes([]byte("mid-2"))
+	_ = store.Seal(m1, true)
+	_ = store.Seal(m2, true)
+
+	dht := &mockDHTProvider{}
+	cp := NewContentPublisher(nil, store, dht)
+
+	cp.publishToDHT(ctx)
+
+	dht.mu.Lock()
+	defer dht.mu.Unlock()
+	if len(dht.provided) != 2 {
+		t.Fatalf("expected 2 MIDs published to DHT, got %d", len(dht.provided))
+	}
+}
+
+

@@ -32,6 +32,12 @@ type SealedLister interface {
 	AllSealed() ([]mid.MID, error)
 }
 
+// DHTProvider is the subset of DHT methods needed by the publisher
+// to announce sealed MIDs to the network.
+type DHTProvider interface {
+	Provide(ctx context.Context, m mid.MID) error
+}
+
 // ContentPublisher runs on every node and serves sealed MID
 // lists on the content-exchange stream handler. It also
 // periodically publishes the sealed list to the DHT as a
@@ -39,6 +45,7 @@ type SealedLister interface {
 type ContentPublisher struct {
 	host   host.Host
 	store  SealedLister
+	dht    DHTProvider
 	mu     sync.Mutex
 	closed bool
 	doneCh chan struct{}
@@ -46,13 +53,18 @@ type ContentPublisher struct {
 
 // NewContentPublisher creates and registers the stream
 // handler. Call Start to begin background DHT publishing.
-func NewContentPublisher(h host.Host, store SealedLister) *ContentPublisher {
+func NewContentPublisher(h host.Host, store SealedLister, dht ...DHTProvider) *ContentPublisher {
 	cp := &ContentPublisher{
 		host:   h,
 		store:  store,
 		doneCh: make(chan struct{}),
 	}
-	h.SetStreamHandler(ContentExchangeProto, cp.handleStream)
+	if len(dht) > 0 {
+		cp.dht = dht[0]
+	}
+	if h != nil {
+		h.SetStreamHandler(ContentExchangeProto, cp.handleStream)
+	}
 	return cp
 }
 
@@ -82,9 +94,27 @@ func (cp *ContentPublisher) loop(ctx context.Context) {
 		case <-cp.doneCh:
 			return
 		case <-t.C:
-			// DHT fallback publishing is a best-effort
-			// operation. The direct stream handler is the
-			// primary discovery mechanism.
+			cp.publishToDHT(ctx)
+		}
+	}
+}
+
+func (cp *ContentPublisher) publishToDHT(ctx context.Context) {
+	if cp.dht == nil || cp.store == nil {
+		return
+	}
+	mids, err := cp.store.AllSealed()
+	if err != nil {
+		return
+	}
+	for _, m := range mids {
+		select {
+		case <-ctx.Done():
+			return
+		case <-cp.doneCh:
+			return
+		default:
+			_ = cp.dht.Provide(ctx, m)
 		}
 	}
 }
