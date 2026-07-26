@@ -1,4 +1,4 @@
-﻿package anchor
+package anchor
 
 import (
 	"testing"
@@ -7,6 +7,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
+	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 )
 
@@ -67,3 +68,26 @@ func TestAnchor_RegistryIsConsistent(t *testing.T) {
 		t.Fatalf("PeerID: got %s, want %s", st.PeerID, h.ID())
 	}
 }
+
+func TestAnchor_PurgeStaleAttempts(t *testing.T) {
+	eng := &AnchorEngine{
+		attempts: make(map[string]time.Time),
+	}
+	now := time.Now()
+	freshMID := mid.FromBytes([]byte("fresh-attempt"))
+	staleMID := mid.FromBytes([]byte("stale-attempt"))
+
+	eng.attempts[freshMID.String()] = now.Add(-5 * time.Minute)
+	eng.attempts[staleMID.String()] = now.Add(-25 * time.Minute)
+
+	eng.purgeStaleAttempts(now)
+
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if _, exists := eng.attempts[freshMID.String()]; !exists {
+		t.Errorf("expected fresh attempt to remain in attempts map")
+	}
+	if _, exists := eng.attempts[staleMID.String()]; exists {
+		t.Errorf("expected stale attempt (>20m) to be purged from attempts map")
+	}
+}

@@ -61,3 +61,10 @@ Format: `[STATUS] description` where status is `OPEN`, `FIXED`, or `WONTFIX`.
 
 When fixing a bug from the list, change its status to `FIXED` and append the commit hash.
 When starting work, check the file for `OPEN` items relevant to the task.
+
+## Code Quality & Modularity
+
+- Keep code clean, modular, and well-structured.
+- When introducing new features, helpers, or data structures, prefer creating dedicated files and folders instead of bundling everything into a single monolithic file.
+- Keep source files focused and well-organized for maximum readability and long-term maintainability.
+

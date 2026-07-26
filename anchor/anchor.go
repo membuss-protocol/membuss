@@ -504,6 +504,8 @@ func (e *AnchorEngine) loop(ctx context.Context) {
 }
 
 func (e *AnchorEngine) tick(ctx context.Context) {
+	e.purgeStaleAttempts(time.Now())
+
 	// Run an anchor health check every HealthEvery rounds so
 	// unreachable anchors are pruned instead of accumulating forever.
 	e.mu.Lock()
@@ -686,6 +688,19 @@ func (e *AnchorEngine) markDone(m mid.MID) {
 	e.mu.Lock()
 	delete(e.attempts, m.String())
 	e.mu.Unlock()
+}
+
+// purgeStaleAttempts removes attempt records older than 2 * anchorAttemptBackoff
+// to prevent unbounded map growth on long-running nodes.
+func (e *AnchorEngine) purgeStaleAttempts(now time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cutoff := 2 * anchorAttemptBackoff
+	for k, ts := range e.attempts {
+		if now.Sub(ts) > cutoff {
+			delete(e.attempts, k)
+		}
+	}
 }
 
 func (e *AnchorEngine) persistRegistry() {
