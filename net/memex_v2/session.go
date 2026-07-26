@@ -75,9 +75,11 @@ type wantState struct {
 }
 
 type Session struct {
-	cfg    SessionConfig
-	ctx    context.Context
-	cancel context.CancelFunc
+	cfg          SessionConfig
+	ctx          context.Context
+	cancel       context.CancelFunc
+	touchFn      func()
+	findingProvs uint32
 
 	mu              sync.Mutex
 	enqueued        map[string]struct{}
@@ -146,15 +148,20 @@ func (c *countingWriter) Progress() (uint64, time.Duration) {
 }
 
 func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
-	timeout := s.cfg.Timeout
-	if timeout <= 0 {
-		timeout = DefaultSessionTimeout
+	var (
+		actCtx context.Context
+		cancel context.CancelFunc
+		touch  func()
+	)
+	if s.cfg.Timeout > 0 {
+		actCtx, cancel = context.WithTimeout(ctx, s.cfg.Timeout)
+	} else {
+		actCtx, cancel, touch = ActivityContext(ctx, DefaultIdleTimeout)
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	s.ctx = ctx
+	s.ctx = actCtx
 	s.cancel = cancel
+	s.touchFn = touch
 	defer s.cfg.Engine.UnregisterSession(s)
 
 	fanout := s.cfg.ParallelPeers
@@ -279,10 +286,8 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 	}
 	close(progressStop)
 
-	cancel()
-	s.doneWg.Wait()
-
 	if !s.allResolved() {
+		cancel()
 		return nil, errors.New("memex session: not all blocks resolved")
 	}
 
@@ -300,20 +305,46 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 	resolver := dag.NewResolver(asBlockstore(s.cfg.Engine.bs, s))
 	rc, err := resolver.Resolve(s.cfg.Root, nil)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("memex session: resolve: %w", err)
 	}
-	return rc, nil
+	return &cancelOnCloseReader{r: rc, cancel: cancel}, nil
+}
+
+type cancelOnCloseReader struct {
+	r      io.Reader
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnCloseReader) Read(p []byte) (int, error) {
+	return c.r.Read(p)
+}
+
+func (c *cancelOnCloseReader) Close() error {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	if closer, ok := c.r.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 func (s *Session) FetchStream(ctx context.Context) (io.Reader, error) {
-	timeout := s.cfg.Timeout
-	if timeout <= 0 {
-		timeout = DefaultSessionTimeout
+	var (
+		actCtx context.Context
+		cancel context.CancelFunc
+		touch  func()
+	)
+	if s.cfg.Timeout > 0 {
+		actCtx, cancel = context.WithTimeout(ctx, s.cfg.Timeout)
+	} else {
+		actCtx, cancel, touch = ActivityContext(ctx, DefaultIdleTimeout)
 	}
-	ctx, cancel := context.WithCancel(ctx) // detached timeout so background copy can finish
 
-	s.ctx = ctx
+	s.ctx = actCtx
 	s.cancel = cancel
+	s.touchFn = touch
 
 	fanout := s.cfg.ParallelPeers
 	if fanout <= 0 {
@@ -503,6 +534,9 @@ func (s *Session) checkAndEnqueue(ctx context.Context, id mid.MID) {
 }
 
 func (s *Session) markResolved(id mid.MID) {
+	if s.touchFn != nil {
+		s.touchFn()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/nnlgsakib/membuss/anchor"
 	"github.com/nnlgsakib/membuss/config"
@@ -240,25 +241,32 @@ func (b *daemonBackend) Get(ctx context.Context, midStr string, offset, limit ui
 	}
 	if !has && b.memex != nil {
 		// Try DHT to find a provider, then Memex-fetch.
+		var provs []peer.AddrInfo
 		if b.dht != nil {
-			provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			provs, perr := b.dht.FindProviders(provCtx, root)
+			provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			provs, _ = b.dht.FindProviders(provCtx, root)
 			cancel()
-			if perr == nil && len(provs) > 0 {
-				sess, serr := memex.NewSession(memex.SessionConfig{
-					Engine:         b.memex,
-					Root:           root,
-					Providers:      provs,
-					Timeout:        memex.DefaultSessionTimeout,
-					ProviderFinder: b.dht.FindProviders,
-				})
-				if serr == nil {
-					if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
-						has = true
-						_, _ = io.Copy(io.Discard, rc)
-						if c, ok := rc.(io.Closer); ok {
-							_ = c.Close()
-						}
+		}
+		if len(provs) == 0 && b.host != nil {
+			// Fallback: query all currently connected swarm peers
+			for _, pid := range b.host.Network().Peers() {
+				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
+			}
+		}
+		if len(provs) > 0 {
+			sess, serr := memex.NewSession(memex.SessionConfig{
+				Engine:         b.memex,
+				Root:           root,
+				Providers:      provs,
+				Timeout:        0, // Activity-based idle timeout (streams continuously for multi-GB/TB data)
+				ProviderFinder: b.dht.FindProviders,
+			})
+			if serr == nil {
+				if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
+					has = true
+					_, _ = io.Copy(io.Discard, rc)
+					if c, ok := rc.(io.Closer); ok {
+						_ = c.Close()
 					}
 				}
 			}
@@ -293,26 +301,33 @@ func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offs
 	}
 	if !has && b.memex != nil {
 		// Try DHT to find a provider, then Memex-fetch.
+		var provs []peer.AddrInfo
 		if b.dht != nil {
-			provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			provs, perr := b.dht.FindProviders(provCtx, root)
+			provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			provs, _ = b.dht.FindProviders(provCtx, root)
 			cancel()
-			if perr == nil && len(provs) > 0 {
-				sess, serr := memex.NewSession(memex.SessionConfig{
-					Engine:         b.memex,
-					Root:           root,
-					Providers:      provs,
-					Timeout:        memex.DefaultSessionTimeout,
-					ProgressFn:     progressFn,
-					ProviderFinder: b.dht.FindProviders,
-				})
-				if serr == nil {
-					if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
-						has = true
-						_, _ = io.Copy(io.Discard, rc)
-						if c, ok := rc.(io.Closer); ok {
-							_ = c.Close()
-						}
+		}
+		if len(provs) == 0 && b.host != nil {
+			// Fallback: query all currently connected swarm peers
+			for _, pid := range b.host.Network().Peers() {
+				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
+			}
+		}
+		if len(provs) > 0 {
+			sess, serr := memex.NewSession(memex.SessionConfig{
+				Engine:         b.memex,
+				Root:           root,
+				Providers:      provs,
+				Timeout:        0, // Activity-based idle timeout (streams continuously for multi-GB/TB data)
+				ProgressFn:     progressFn,
+				ProviderFinder: b.dht.FindProviders,
+			})
+			if serr == nil {
+				if rc, ferr := sess.FetchWithBackoff(ctx, memex.DefaultRetryConfig()); ferr == nil && rc != nil {
+					has = true
+					_, _ = io.Copy(io.Discard, rc)
+					if c, ok := rc.(io.Closer); ok {
+						_ = c.Close()
 					}
 				}
 			}

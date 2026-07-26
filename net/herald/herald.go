@@ -215,29 +215,38 @@ func (h *MemHerald) Start(ctx context.Context) {
 	go h.loop(ctx)
 	if h.cfg.MemDHT == nil {
 		h.RunOnce(ctx)
-	} else {
-		go func() {
-			// Wait for DHT routing table to have at least one peer before running the initial reprovide.
-			// This avoids failing to announce at startup due to 0 peers.
+		return
+	}
+	go func() {
+		// Wait until at least 1 peer connects, then announce sealed roots immediately
+		t := time.NewTicker(200 * time.Millisecond)
+		defer t.Stop()
+
+		announcedOnFirstPeer := false
+		hadPeers := false
+
+		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(2 * time.Second): // initial short delay
-				// Check if we have peers, otherwise wait a bit longer, up to 30 seconds
-				for i := 0; i < 6; i++ {
-					if h.cfg.MemDHT.RoutingTableSize() > 0 {
-						break
+			case <-t.C:
+				hasPeers := h.cfg.MemDHT != nil && h.cfg.MemDHT.RoutingTableSize() > 0
+				if hasPeers {
+					if !announcedOnFirstPeer {
+						announcedOnFirstPeer = true
+						hadPeers = true
+						go h.RunOnce(ctx)
+					} else if !hadPeers {
+						hadPeers = true
+						h.Trigger()
 					}
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Second):
-					}
+				} else {
+					hadPeers = false
 				}
 			}
-			h.RunOnce(ctx)
-		}()
-	}
+		}
+	}()
+	go h.RunOnce(ctx)
 }
 
 // Stop is a no-op kept for symmetry with other long-lived
@@ -567,7 +576,7 @@ return nil // skip this MID in this cycle
 				return filterFn(m)
 			})
 			if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
-				if !errors.Is(walkErr, store.ErrNotFound) && !strings.Contains(walkErr.Error(), "not found") {
+				if !errors.Is(walkErr, store.ErrNotFound) && !strings.Contains(walkErr.Error(), "not found") && !strings.Contains(walkErr.Error(), "closed") {
 					log.Printf("herald: walk error for root %s: %v", r, walkErr)
 				}
 			}

@@ -64,7 +64,7 @@ func (a *memgateAdapter) Resolve(ctx context.Context, m mid.MID) (io.ReadCloser,
 				Engine:         b.memex,
 				Root:           m,
 				Providers:      provs,
-				Timeout:        memex.DefaultSessionTimeout,
+				Timeout:        0, // Activity-based idle timeout (streams continuously for multi-GB/TB data)
 				ProviderFinder: b.dht.FindProviders,
 			})
 			if serr == nil {
@@ -171,7 +171,7 @@ func (a *memgateAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pro
 				Engine:         b.memex,
 				Root:           m,
 				Providers:      provs,
-				Timeout:        memex.DefaultSessionTimeout,
+				Timeout:        0, // Activity-based idle timeout (streams continuously for multi-GB/TB data)
 				ProviderFinder: b.dht.FindProviders,
 				ProgressFn: func(u memex.ProgressUpdate) {
 					if progressFn != nil {

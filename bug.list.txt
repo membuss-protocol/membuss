@@ -4,6 +4,12 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-008: Swarm fallback & automatic re-announcements on node restart
+  Fixed: 2026-07-26 — MemHerald background re-announcements & fallback to connected swarm peers when DHT providers expire.
+
+[FIXED] BUG-007: Resumable activity-based timeouts for large dataset streaming
+  Fixed: 2026-07-26 — ActivityContext with 60s idle timeout & cancelOnCloseReader in Memex v2 sessions.
+
 [FIXED] BUG-006: Gateway/node API hang on non-existent or remote MIDs
   Fixed: 2026-07-21 (5886686) — Add local Stat check to RefererTracker fallback;
   Use pebble.NoSync and close committed batches in PebbleDatastore.
