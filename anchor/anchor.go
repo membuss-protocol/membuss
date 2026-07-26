@@ -35,6 +35,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/core/units"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
 	membusspb "github.com/nnlgsakib/membuss/proto"
@@ -177,6 +178,8 @@ type Config struct {
 	// ReacquireBatchSize sets the number of sealed MIDs sampled per discovery round
 	// using round-robin verification. Zero defaults to 32 items.
 	ReacquireBatchSize int
+	// MaxStorage sets the human-readable storage limit (e.g. "100GB", "500MB", "1TB", "0").
+	MaxStorage string
 	// MaxStorageBytes sets the maximum storage bytes allowed before LRU eviction.
 	// Zero means unlimited storage.
 	MaxStorageBytes uint64
@@ -258,6 +261,11 @@ func New(cfg Config) (*AnchorEngine, error) {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = nopLogger{}
+	}
+	if cfg.MaxStorageBytes == 0 && cfg.MaxStorage != "" {
+		if bytes, err := units.ParseByteSize(cfg.MaxStorage); err == nil {
+			cfg.MaxStorageBytes = bytes
+		}
 	}
 	return &AnchorEngine{
 		cfg:         cfg,

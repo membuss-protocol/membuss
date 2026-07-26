@@ -327,7 +327,7 @@ servers:
 # Persistence & Anchor Engine
 anchor_mode: false            # true = mirror all announced content
 anchor:
-  max_storage_bytes: 107374182400  # 100 GB storage limit (0 = unlimited; auto-evicts unpinned LRU items)
+  max_storage: 100GB           # Human-readable storage limit (e.g. 500MB, 100GB, 1TB, or 0 = unlimited)
   fetch_concurrency: 8         # Parallel worker pool count for backlog discovery
   reacquire_batch_size: 32     # Round-robin sampling batch size per discovery round
 
