@@ -48,6 +48,7 @@ type ContentPublisher struct {
 	host   host.Host
 	store  SealedLister
 	dht    DHTProvider
+	cache  *SealedCache
 	mu     sync.Mutex
 	closed bool
 	doneCh chan struct{}
@@ -59,6 +60,7 @@ func NewContentPublisher(h host.Host, store SealedLister, dht ...DHTProvider) *C
 	cp := &ContentPublisher{
 		host:   h,
 		store:  store,
+		cache:  NewSealedCache(30 * time.Second),
 		doneCh: make(chan struct{}),
 	}
 	if len(dht) > 0 {
@@ -68,6 +70,23 @@ func NewContentPublisher(h host.Host, store SealedLister, dht ...DHTProvider) *C
 		h.SetStreamHandler(ContentExchangeProto, cp.handleStream)
 	}
 	return cp
+}
+
+// NotifySealed updates the in-memory sealed MID cache immediately.
+func (cp *ContentPublisher) NotifySealed(m mid.MID) {
+	if cp.cache != nil {
+		cp.cache.Add(m)
+	}
+}
+
+func (cp *ContentPublisher) getSealedMIDs() ([]mid.MID, error) {
+	if cp.store == nil {
+		return nil, nil
+	}
+	if cp.cache != nil {
+		return cp.cache.GetSealed(cp.store.AllSealed)
+	}
+	return cp.store.AllSealed()
 }
 
 // Start launches a background goroutine that publishes the
@@ -102,10 +121,10 @@ func (cp *ContentPublisher) loop(ctx context.Context) {
 }
 
 func (cp *ContentPublisher) publishToDHT(ctx context.Context) {
-	if cp.dht == nil || cp.store == nil {
+	if cp.dht == nil {
 		return
 	}
-	mids, err := cp.store.AllSealed()
+	mids, err := cp.getSealedMIDs()
 	if err != nil {
 		return
 	}
@@ -125,7 +144,7 @@ func (cp *ContentPublisher) publishToDHT(ctx context.Context) {
 // requester opens a stream, reads a single Protobuf payload of
 // sealed MID strings.
 func (cp *ContentPublisher) handleStream(s network.Stream) {
-	mids, err := cp.store.AllSealed()
+	mids, err := cp.getSealedMIDs()
 	if err != nil {
 		_ = s.Reset()
 		return
