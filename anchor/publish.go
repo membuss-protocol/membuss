@@ -95,10 +95,9 @@ func (cp *ContentPublisher) loop(ctx context.Context) {
 // sealed MID strings. No handshake, no request messages —
 // just the response.
 func (cp *ContentPublisher) handleStream(s network.Stream) {
-	defer s.Close()
-
 	mids, err := cp.store.AllSealed()
 	if err != nil {
+		_ = s.Reset()
 		return
 	}
 	strs := make([]string, 0, len(mids))
@@ -106,7 +105,11 @@ func (cp *ContentPublisher) handleStream(s network.Stream) {
 		strs = append(strs, m.String())
 	}
 	enc := json.NewEncoder(s)
-	_ = enc.Encode(strs)
+	if err := enc.Encode(strs); err != nil {
+		_ = s.Reset()
+		return
+	}
+	_ = s.Close()
 }
 
 // DiscoverContent opens a content-exchange stream to each
@@ -162,22 +165,23 @@ func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID) ([]mid.MID, 
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
 
 	limitedReader := io.LimitReader(s, maxSeedListBytes)
 	var strs []string
 	dec := json.NewDecoder(limitedReader)
 	if err := dec.Decode(&strs); err != nil {
+		_ = s.Reset()
 		return nil, err
 	}
 
 	out := make([]mid.MID, 0, len(strs))
-	for _, s := range strs {
-		m, err := mid.Parse(s)
+	for _, sStr := range strs {
+		m, err := mid.Parse(sStr)
 		if err != nil {
 			continue
 		}
 		out = append(out, m)
 	}
+	_ = s.Close()
 	return out, nil
 }
