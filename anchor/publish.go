@@ -2,6 +2,7 @@ package anchor
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"sync"
@@ -145,14 +146,34 @@ func (cp *ContentPublisher) publishToDHT(ctx context.Context) {
 }
 
 // handleStream serves a content-exchange request. The
-// requester opens a stream, reads a single Protobuf payload of
-// sealed MID strings.
+// requester opens a stream, optionally sends a ContentExchangeRequest
+// containing a Bloom filter of its inventory, and reads the (delta) payload.
 func (cp *ContentPublisher) handleStream(s network.Stream) {
 	mids, err := cp.getSealedMIDs()
 	if err != nil {
 		_ = s.Reset()
 		return
 	}
+
+	// Try reading optional ContentExchangeRequest header (short deadline for delta sync)
+	_ = s.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var header [4]byte
+	if _, err := io.ReadFull(s, header[:]); err == nil {
+		reqLen := binary.BigEndian.Uint32(header[:])
+		if reqLen > 0 && reqLen < (10<<20) {
+			reqData := make([]byte, reqLen)
+			if _, err := io.ReadFull(s, reqData); err == nil {
+				var req membusspb.ContentExchangeRequest
+				if err := proto.Unmarshal(reqData, &req); err == nil {
+					if len(req.BloomFilter) > 0 {
+						mids = FilterDelta(mids, req.BloomFilter, req.BloomHashes)
+					}
+				}
+			}
+		}
+	}
+	_ = s.SetReadDeadline(time.Time{}) // reset deadline
+
 	strs := make([]string, 0, len(mids))
 	for _, m := range mids {
 		strs = append(strs, m.String())
@@ -177,6 +198,13 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 	peers := h.Network().Peers()
 	if len(peers) == 0 || ctx.Err() != nil {
 		return nil, nil
+	}
+
+	var knownList []mid.MID
+	for kStr := range known {
+		if parsed, err := mid.Parse(kStr); err == nil {
+			knownList = append(knownList, parsed)
+		}
 	}
 
 	type result struct {
@@ -206,7 +234,7 @@ func DiscoverContent(ctx context.Context, h host.Host, known map[string]struct{}
 					<-sem
 					wg.Done()
 				}()
-				mids, err := fetchPeerSealed(ctx, h, pid)
+				mids, err := fetchPeerSealed(ctx, h, pid, knownList)
 				results <- result{peer: pid, mids: mids, err: err}
 			}(p)
 		}
@@ -239,12 +267,27 @@ type ContentAnnouncement struct {
 }
 
 // fetchPeerSealed opens a content-exchange stream to pid,
-// reads the Protobuf array of sealed MID strings (with JSON
-// fallback for legacy nodes), and returns them.
-func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID) ([]mid.MID, error) {
+// optionally sends a Bloom filter summary of known MIDs for delta sync,
+// reads the Protobuf array of sealed MID strings, and returns them.
+func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID, knownMIDs ...[]mid.MID) ([]mid.MID, error) {
 	s, err := h.NewStream(ctx, pid, ContentExchangeProto)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(knownMIDs) > 0 && len(knownMIDs[0]) > 0 {
+		bloomBytes, hashes := BuildInventoryBloom(knownMIDs[0])
+		req := &membusspb.ContentExchangeRequest{
+			BloomFilter: bloomBytes,
+			BloomHashes: hashes,
+		}
+		reqData, err := proto.Marshal(req)
+		if err == nil {
+			var header [4]byte
+			binary.BigEndian.PutUint32(header[:], uint32(len(reqData)))
+			_, _ = s.Write(header[:])
+			_, _ = s.Write(reqData)
+		}
 	}
 
 	limitedReader := io.LimitReader(s, maxSeedListBytes)

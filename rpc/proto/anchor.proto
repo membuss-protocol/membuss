@@ -21,3 +21,11 @@ message PeerAddrInfoProto {
 message AnchorRegistryProto {
   repeated PeerAddrInfoProto anchors = 1;
 }
+
+// ContentExchangeRequest allows a peer to request delta sync by supplying
+// a Bloom filter summary of its currently known MIDs.
+message ContentExchangeRequest {
+  bool full_sync = 1;
+  bytes bloom_filter = 2;
+  uint32 bloom_hashes = 3;
+}

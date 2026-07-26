@@ -167,6 +167,68 @@ func (x *AnchorRegistryProto) GetAnchors() []*PeerAddrInfoProto {
 	return nil
 }
 
+// ContentExchangeRequest allows a peer to request delta sync by supplying
+// a Bloom filter summary of its currently known MIDs.
+type ContentExchangeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FullSync      bool                   `protobuf:"varint,1,opt,name=full_sync,json=fullSync,proto3" json:"full_sync,omitempty"`
+	BloomFilter   []byte                 `protobuf:"bytes,2,opt,name=bloom_filter,json=bloomFilter,proto3" json:"bloom_filter,omitempty"`
+	BloomHashes   uint32                 `protobuf:"varint,3,opt,name=bloom_hashes,json=bloomHashes,proto3" json:"bloom_hashes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContentExchangeRequest) Reset() {
+	*x = ContentExchangeRequest{}
+	mi := &file_anchor_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContentExchangeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContentExchangeRequest) ProtoMessage() {}
+
+func (x *ContentExchangeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_anchor_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContentExchangeRequest.ProtoReflect.Descriptor instead.
+func (*ContentExchangeRequest) Descriptor() ([]byte, []int) {
+	return file_anchor_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ContentExchangeRequest) GetFullSync() bool {
+	if x != nil {
+		return x.FullSync
+	}
+	return false
+}
+
+func (x *ContentExchangeRequest) GetBloomFilter() []byte {
+	if x != nil {
+		return x.BloomFilter
+	}
+	return nil
+}
+
+func (x *ContentExchangeRequest) GetBloomHashes() uint32 {
+	if x != nil {
+		return x.BloomHashes
+	}
+	return 0
+}
+
 var File_anchor_proto protoreflect.FileDescriptor
 
 const file_anchor_proto_rawDesc = "" +
@@ -179,7 +241,11 @@ const file_anchor_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"N\n" +
 	"\x13AnchorRegistryProto\x127\n" +
-	"\aanchors\x18\x01 \x03(\v2\x1d.membuss.v1.PeerAddrInfoProtoR\aanchorsB.Z,github.com/nnlgsakib/membuss/proto;membusspbb\x06proto3"
+	"\aanchors\x18\x01 \x03(\v2\x1d.membuss.v1.PeerAddrInfoProtoR\aanchors\"{\n" +
+	"\x16ContentExchangeRequest\x12\x1b\n" +
+	"\tfull_sync\x18\x01 \x01(\bR\bfullSync\x12!\n" +
+	"\fbloom_filter\x18\x02 \x01(\fR\vbloomFilter\x12!\n" +
+	"\fbloom_hashes\x18\x03 \x01(\rR\vbloomHashesB.Z,github.com/nnlgsakib/membuss/proto;membusspbb\x06proto3"
 
 var (
 	file_anchor_proto_rawDescOnce sync.Once
@@ -193,11 +259,12 @@ func file_anchor_proto_rawDescGZIP() []byte {
 	return file_anchor_proto_rawDescData
 }
 
-var file_anchor_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_anchor_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_anchor_proto_goTypes = []any{
 	(*ContentExchangePayload)(nil), // 0: membuss.v1.ContentExchangePayload
 	(*PeerAddrInfoProto)(nil),      // 1: membuss.v1.PeerAddrInfoProto
 	(*AnchorRegistryProto)(nil),    // 2: membuss.v1.AnchorRegistryProto
+	(*ContentExchangeRequest)(nil), // 3: membuss.v1.ContentExchangeRequest
 }
 var file_anchor_proto_depIdxs = []int32{
 	1, // 0: membuss.v1.AnchorRegistryProto.anchors:type_name -> membuss.v1.PeerAddrInfoProto
@@ -219,7 +286,7 @@ func file_anchor_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_anchor_proto_rawDesc), len(file_anchor_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

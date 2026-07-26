@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -38,6 +39,10 @@ func (m *mockStream) Write(p []byte) (int, error) {
 
 func (m *mockStream) Reset() error {
 	m.resetCalled = true
+	return nil
+}
+
+func (m *mockStream) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
