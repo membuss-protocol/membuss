@@ -166,6 +166,9 @@ type Config struct {
 	// "sticky": they are never pruned by health checks, since they
 	// reflect explicit operator intent and are re-added on restart.
 	BootstrapAnchors []peer.AddrInfo
+	// FetchConcurrency sets the maximum number of concurrent worker
+	// goroutines used to fetch backlog items. Zero uses DefaultFetchConcurrency.
+	FetchConcurrency int
 	// Logger is optional; nil means silent.
 	Logger Logger
 }
@@ -529,9 +532,9 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	e.backlog = nil
 	e.mu.Unlock()
 
-	for _, item := range pending {
-		e.fetchIfMissing(ctx, item.mid, item.source)
-	}
+	processBacklogConcurrently(ctx, pending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
+		e.fetchIfMissing(c, item.mid, item.source)
+	})
 
 	sealed, err := e.cfg.Store.AllSealed()
 	if err != nil || len(sealed) == 0 {
@@ -541,6 +544,7 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	if len(sealed) < maxSample {
 		maxSample = len(sealed)
 	}
+	var samplePending []enqueuedMID
 	for i := 0; i < maxSample; i++ {
 		m := sealed[i]
 		// Only re-acquire sealed roots whose bytes are actually
@@ -549,8 +553,11 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 		if !e.shouldFetch(m) {
 			continue
 		}
-		e.fetchIfMissing(ctx, m, "")
+		samplePending = append(samplePending, enqueuedMID{mid: m, source: ""})
 	}
+	processBacklogConcurrently(ctx, samplePending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
+		e.fetchIfMissing(c, item.mid, item.source)
+	})
 }
 
 // discoverFromPeers opens content-exchange streams to all
