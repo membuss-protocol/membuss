@@ -201,6 +201,7 @@ type AnchorEngine struct {
 	synced       int64
 	sampleOffset int
 	quotaMgr     *QuotaManager
+	telemetry    *TelemetryCollector
 	// attempts records the last time the engine tried to acquire a
 	// MID it learned about, keyed by MID string. It is used both to
 	// suppress redundant re-enqueues/logging and to back off retries
@@ -260,6 +261,7 @@ func New(cfg Config) (*AnchorEngine, error) {
 		sticky:      make(map[peer.ID]struct{}),
 		healthFails: make(map[peer.ID]int),
 		quotaMgr:    NewQuotaManager(cfg.MaxStorageBytes),
+		telemetry:   NewTelemetryCollector(),
 		resolver:    cfg.ProviderResolver,
 		stopCh:      make(chan struct{}),
 		doneCh:      make(chan struct{}),
@@ -467,12 +469,13 @@ func (e *AnchorEngine) PublishSelf(ctx context.Context) error {
 // via its Status() method and the /anchor/status HTTP
 // endpoint.
 type AnchorStatus struct {
-	PeerID     string        `json:"peer_id"`
-	Uptime     time.Duration `json:"uptime"`
-	BlocksHeld int64         `json:"blocks_held"`
-	Anchors    int           `json:"anchors"`
-	Backlog    int           `json:"backlog"`
-	Synced     int64         `json:"synced"`
+	PeerID     string            `json:"peer_id"`
+	Uptime     time.Duration     `json:"uptime"`
+	BlocksHeld int64             `json:"blocks_held"`
+	Anchors    int               `json:"anchors"`
+	Backlog    int               `json:"backlog"`
+	Synced     int64             `json:"synced"`
+	Telemetry  TelemetrySnapshot `json:"telemetry"`
 }
 
 // Status returns a snapshot of the engine's stats.
@@ -482,6 +485,7 @@ func (e *AnchorEngine) Status() AnchorStatus {
 	anchors := len(e.anchors)
 	e.mu.Unlock()
 	var held int64
+	var usedBytes uint64
 	if ab, ok := e.cfg.Store.(interface {
 		AllBlocks() ([]mid.MID, error)
 	}); ok {
@@ -493,6 +497,12 @@ func (e *AnchorEngine) Status() AnchorStatus {
 	}); ok {
 		held = int64(lenGetter.Len())
 	}
+	if e.cfg.Store != nil {
+		usedBytes, _ = e.cfg.Store.Size()
+	}
+
+	snap := e.telemetry.Snapshot(usedBytes, e.cfg.MaxStorageBytes)
+
 	return AnchorStatus{
 		PeerID:     e.cfg.Host.ID().String(),
 		Uptime:     time.Since(e.started),
@@ -500,7 +510,18 @@ func (e *AnchorEngine) Status() AnchorStatus {
 		Anchors:    anchors,
 		Backlog:    backlog,
 		Synced:     atomic.LoadInt64(&e.synced),
+		Telemetry:  snap,
 	}
+}
+
+// PrometheusMetrics exports operational metrics in OpenMetrics / Prometheus format.
+func (e *AnchorEngine) PrometheusMetrics() string {
+	var usedBytes uint64
+	if e.cfg.Store != nil {
+		usedBytes, _ = e.cfg.Store.Size()
+	}
+	snap := e.telemetry.Snapshot(usedBytes, e.cfg.MaxStorageBytes)
+	return PrometheusFormat(snap)
 }
 
 func (e *AnchorEngine) loop(ctx context.Context) {
@@ -557,7 +578,7 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 
 	processBacklogConcurrently(ctx, pending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
 		e.fetchIfMissing(c, item.mid, item.source)
-	})
+	}, e.telemetry)
 
 	sealed, err := e.cfg.Store.AllSealed()
 	if err != nil || len(sealed) == 0 {
@@ -590,7 +611,7 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	}
 	processBacklogConcurrently(ctx, samplePending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
 		e.fetchIfMissing(c, item.mid, item.source)
-	})
+	}, e.telemetry)
 
 	if evictStore, ok := e.cfg.Store.(EvictableStore); ok && e.quotaMgr != nil {
 		if evicted, err := e.quotaMgr.EnforceQuota(evictStore); err == nil && evicted > 0 {
@@ -659,6 +680,7 @@ func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID, source pee
 	if m.IsZero() {
 		return
 	}
+	start := time.Now()
 	e.recordAttempt(m)
 
 	has, err := e.cfg.Store.Has(m)
@@ -666,22 +688,27 @@ func (e *AnchorEngine) fetchIfMissing(ctx context.Context, m mid.MID, source pee
 		// Already have the bytes; sealing is idempotent and is what
 		// makes discovery stop reporting this MID as new.
 		e.finishAcquired(ctx, m)
+		e.telemetry.RecordFetch(true, 0, time.Since(start))
 		return
 	}
 
 	provs, err := e.resolver.Resolve(ctx, m)
 	if err != nil {
+		e.telemetry.RecordFetch(false, 0, time.Since(start))
 		return
 	}
 	provs = e.mergeSource(provs, source)
 	if len(provs) == 0 {
+		e.telemetry.RecordFetch(false, 0, time.Since(start))
 		return
 	}
 	if err := e.cfg.Fetcher.Fetch(ctx, m, provs); err != nil {
 		e.logger.Errorf("anchor: fetch %s: %v", m.String()[:12], err)
+		e.telemetry.RecordFetch(false, 0, time.Since(start))
 		return
 	}
 	e.finishAcquired(ctx, m)
+	e.telemetry.RecordFetch(true, 0, time.Since(start))
 }
 
 // finishAcquired seals a now-held MID, bumps the synced counter, and
