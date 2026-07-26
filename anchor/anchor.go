@@ -172,6 +172,9 @@ type Config struct {
 	// ReacquireBatchSize sets the number of sealed MIDs sampled per discovery round
 	// using round-robin verification. Zero defaults to 32 items.
 	ReacquireBatchSize int
+	// MaxStorageBytes sets the maximum storage bytes allowed before LRU eviction.
+	// Zero means unlimited storage.
+	MaxStorageBytes uint64
 	// Logger is optional; nil means silent.
 	Logger Logger
 }
@@ -197,6 +200,7 @@ type AnchorEngine struct {
 	started      time.Time
 	synced       int64
 	sampleOffset int
+	quotaMgr     *QuotaManager
 	// attempts records the last time the engine tried to acquire a
 	// MID it learned about, keyed by MID string. It is used both to
 	// suppress redundant re-enqueues/logging and to back off retries
@@ -255,6 +259,7 @@ func New(cfg Config) (*AnchorEngine, error) {
 		attempts:    make(map[string]time.Time),
 		sticky:      make(map[peer.ID]struct{}),
 		healthFails: make(map[peer.ID]int),
+		quotaMgr:    NewQuotaManager(cfg.MaxStorageBytes),
 		resolver:    cfg.ProviderResolver,
 		stopCh:      make(chan struct{}),
 		doneCh:      make(chan struct{}),
@@ -347,6 +352,13 @@ func (e *AnchorEngine) RemoveAnchor(id peer.ID) {
 	e.mu.Unlock()
 	if e.cfg.Host != nil {
 		e.cfg.Host.Peerstore().ClearAddrs(id)
+	}
+}
+
+// Pin marks a MID as explicitly pinned by an operator so it is never evicted by quota enforcement.
+func (e *AnchorEngine) Pin(m mid.MID) {
+	if e.quotaMgr != nil {
+		e.quotaMgr.Pin(m)
 	}
 }
 
@@ -579,6 +591,12 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	processBacklogConcurrently(ctx, samplePending, e.cfg.FetchConcurrency, func(c context.Context, item enqueuedMID) {
 		e.fetchIfMissing(c, item.mid, item.source)
 	})
+
+	if evictStore, ok := e.cfg.Store.(EvictableStore); ok && e.quotaMgr != nil {
+		if evicted, err := e.quotaMgr.EnforceQuota(evictStore); err == nil && evicted > 0 {
+			e.logger.Infof("anchor: storage quota enforcement evicted %d unpinned items", evicted)
+		}
+	}
 }
 
 // discoverFromPeers opens content-exchange streams to all
