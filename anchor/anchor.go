@@ -32,10 +32,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/multiformats/go-multiaddr"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
+	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
 // AnchorRegistryKey is the local store meta key under which
@@ -705,12 +707,21 @@ func (e *AnchorEngine) purgeStaleAttempts(now time.Time) {
 
 func (e *AnchorEngine) persistRegistry() {
 	e.mu.Lock()
-	anchors := make([]peer.AddrInfo, 0, len(e.anchors))
+	anchors := make([]*membusspb.PeerAddrInfoProto, 0, len(e.anchors))
 	for _, ai := range e.anchors {
-		anchors = append(anchors, ai)
+		addrs := make([]string, 0, len(ai.Addrs))
+		for _, a := range ai.Addrs {
+			addrs = append(addrs, a.String())
+		}
+		anchors = append(anchors, &membusspb.PeerAddrInfoProto{
+			Id:    ai.ID.String(),
+			Addrs: addrs,
+		})
 	}
 	e.mu.Unlock()
-	payload, err := json.Marshal(anchors)
+
+	reg := &membusspb.AnchorRegistryProto{Anchors: anchors}
+	payload, err := proto.Marshal(reg)
 	if err != nil {
 		return
 	}
@@ -719,21 +730,44 @@ func (e *AnchorEngine) persistRegistry() {
 
 func (e *AnchorEngine) loadRegistry() {
 	raw, err := e.cfg.Store.GetMeta(AnchorRegistryKey)
-	if err != nil {
+	if err != nil || len(raw) == 0 {
 		return
 	}
-	var anchors []peer.AddrInfo
-	if err := json.Unmarshal(raw, &anchors); err != nil {
-		return
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, ai := range anchors {
-		if ai.ID == "" {
-			continue
+
+	var reg membusspb.AnchorRegistryProto
+	if err := proto.Unmarshal(raw, &reg); err == nil && len(reg.Anchors) > 0 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, pb := range reg.Anchors {
+			pid, err := peer.Decode(pb.Id)
+			if err != nil || pid == "" {
+				continue
+			}
+			addrs := make([]multiaddr.Multiaddr, 0, len(pb.Addrs))
+			for _, s := range pb.Addrs {
+				if a, err := multiaddr.NewMultiaddr(s); err == nil {
+					addrs = append(addrs, a)
+				}
+			}
+			ai := peer.AddrInfo{ID: pid, Addrs: addrs}
+			e.anchors[pid] = ai
+			e.cfg.Host.Peerstore().AddAddrs(pid, addrs, peerstore.PermanentAddrTTL)
 		}
-		e.anchors[ai.ID] = ai
-		e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+		return
+	}
+
+	// Legacy JSON fallback
+	var anchors []peer.AddrInfo
+	if err := json.Unmarshal(raw, &anchors); err == nil {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, ai := range anchors {
+			if ai.ID == "" {
+				continue
+			}
+			e.anchors[ai.ID] = ai
+			e.cfg.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+		}
 	}
 }
 
@@ -772,21 +806,39 @@ func mergeAnchors(direct, anchors []peer.AddrInfo) []peer.AddrInfo {
 }
 
 func encodeAddrInfo(ai peer.AddrInfo) ([]byte, error) {
-	type wire struct {
-		ID    string   `json:"id"`
-		Addrs []string `json:"addrs"`
-	}
-	w := wire{ID: ai.ID.String()}
+	addrs := make([]string, 0, len(ai.Addrs))
 	for _, a := range ai.Addrs {
-		w.Addrs = append(w.Addrs, a.String())
+		addrs = append(addrs, a.String())
 	}
-	return json.Marshal(w)
+	pb := &membusspb.PeerAddrInfoProto{
+		Id:    ai.ID.String(),
+		Addrs: addrs,
+	}
+	return proto.Marshal(pb)
 }
 
 // DecodeAnchorValue parses a value previously written by
 // encodeAddrInfo. It is exported so other packages can
 // reuse the same wire format.
 func DecodeAnchorValue(raw []byte) (peer.AddrInfo, error) {
+	var pb membusspb.PeerAddrInfoProto
+	if err := proto.Unmarshal(raw, &pb); err == nil && pb.Id != "" {
+		id, err := peer.Decode(pb.Id)
+		if err != nil {
+			return peer.AddrInfo{}, fmt.Errorf("anchor: bad peer id: %w", err)
+		}
+		addrs := make([]multiaddr.Multiaddr, 0, len(pb.Addrs))
+		for _, s := range pb.Addrs {
+			a, err := multiaddr.NewMultiaddr(s)
+			if err != nil {
+				continue
+			}
+			addrs = append(addrs, a)
+		}
+		return peer.AddrInfo{ID: id, Addrs: addrs}, nil
+	}
+
+	// Legacy JSON fallback
 	type wire struct {
 		ID    string   `json:"id"`
 		Addrs []string `json:"addrs"`

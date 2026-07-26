@@ -10,15 +10,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/mid"
+	membusspb "github.com/nnlgsakib/membuss/proto"
 )
 
 const (
 	// ContentExchangeProto is the libp2p protocol ID for the
 	// direct content-exchange stream. The anchor opens a
 	// stream to each connected peer; the peer responds with a
-	// JSON array of its sealed MID strings.
+	// protobuf payload of its sealed MID strings.
 	ContentExchangeProto = "/membuss/content-exchange/1.0.0"
 
 	// maxSeedListBytes caps how much data we read from a
@@ -120,9 +122,8 @@ func (cp *ContentPublisher) publishToDHT(ctx context.Context) {
 }
 
 // handleStream serves a content-exchange request. The
-// requester opens a stream, reads a single JSON frame of
-// sealed MID strings. No handshake, no request messages —
-// just the response.
+// requester opens a stream, reads a single Protobuf payload of
+// sealed MID strings.
 func (cp *ContentPublisher) handleStream(s network.Stream) {
 	mids, err := cp.store.AllSealed()
 	if err != nil {
@@ -133,8 +134,13 @@ func (cp *ContentPublisher) handleStream(s network.Stream) {
 	for _, m := range mids {
 		strs = append(strs, m.String())
 	}
-	enc := json.NewEncoder(s)
-	if err := enc.Encode(strs); err != nil {
+	payload := &membusspb.ContentExchangePayload{Mids: strs}
+	data, err := proto.Marshal(payload)
+	if err != nil {
+		_ = s.Reset()
+		return
+	}
+	if _, err := s.Write(data); err != nil {
 		_ = s.Reset()
 		return
 	}
@@ -187,8 +193,8 @@ type ContentAnnouncement struct {
 }
 
 // fetchPeerSealed opens a content-exchange stream to pid,
-// reads the JSON array of sealed MID strings, and returns
-// them.
+// reads the Protobuf array of sealed MID strings (with JSON
+// fallback for legacy nodes), and returns them.
 func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID) ([]mid.MID, error) {
 	s, err := h.NewStream(ctx, pid, ContentExchangeProto)
 	if err != nil {
@@ -196,11 +202,22 @@ func fetchPeerSealed(ctx context.Context, h host.Host, pid peer.ID) ([]mid.MID, 
 	}
 
 	limitedReader := io.LimitReader(s, maxSeedListBytes)
-	var strs []string
-	dec := json.NewDecoder(limitedReader)
-	if err := dec.Decode(&strs); err != nil {
+	raw, err := io.ReadAll(limitedReader)
+	if err != nil {
 		_ = s.Reset()
 		return nil, err
+	}
+
+	var strs []string
+	var payload membusspb.ContentExchangePayload
+	if err := proto.Unmarshal(raw, &payload); err == nil && len(payload.Mids) > 0 {
+		strs = payload.Mids
+	} else {
+		// Fallback to JSON unmarshal for backward compatibility with legacy nodes
+		if jsonErr := json.Unmarshal(raw, &strs); jsonErr != nil && err != nil {
+			_ = s.Reset()
+			return nil, err
+		}
 	}
 
 	out := make([]mid.MID, 0, len(strs))
