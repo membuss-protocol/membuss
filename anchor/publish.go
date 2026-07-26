@@ -22,9 +22,8 @@ const (
 	ContentExchangeProto = "/membuss/content-exchange/1.0.0"
 
 	// maxSeedListBytes caps how much data we read from a
-	// content-exchange stream (1 MiB is generous for a list
-	// of MID strings).
-	maxSeedListBytes = 1 << 20
+	// content-exchange stream (64 MiB supports ~1M sealed MIDs).
+	maxSeedListBytes = 64 << 20
 )
 
 // SealedLister is the subset of store.Store the publisher

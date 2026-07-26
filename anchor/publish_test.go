@@ -184,3 +184,39 @@ func TestFetchPeerSealed_Success(t *testing.T) {
 		t.Fatalf("expected sealed MIDs from peer, got 0")
 	}
 }
+
+func TestFetchPeerSealed_LargePayload(t *testing.T) {
+	ctx := context.Background()
+	h1 := newTestHost(t)
+	h2 := newTestHost(t)
+	t.Cleanup(func() {
+		_ = h1.Close()
+		_ = h2.Close()
+	})
+
+	store := newFakeStore()
+	// Generate 20,000 unique MIDs (~1.34 MiB payload, exceeding previous 1 MiB limit)
+	numMIDs := 20000
+	for i := 0; i < numMIDs; i++ {
+		m := mid.FromBytes([]byte{
+			byte(i), byte(i >> 8), byte(i >> 16), byte(i >> 24),
+			0, 0, 0, 0,
+		})
+		_ = store.Seal(m, true)
+	}
+
+	cp := NewContentPublisher(h2, store)
+	cp.Start(ctx)
+	t.Cleanup(func() { cp.Stop() })
+
+	_ = h1.Connect(ctx, peer.AddrInfo{ID: h2.ID(), Addrs: h2.Addrs()})
+
+	mids, err := fetchPeerSealed(ctx, h1, h2.ID())
+	if err != nil {
+		t.Fatalf("fetchPeerSealed failed on large payload (%d MIDs): %v", numMIDs, err)
+	}
+	if len(mids) != numMIDs {
+		t.Fatalf("expected %d MIDs, got %d", numMIDs, len(mids))
+	}
+}
+
