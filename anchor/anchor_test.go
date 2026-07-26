@@ -125,4 +125,37 @@ func TestAnchor_DirtyRegistryPersistence(t *testing.T) {
 		t.Fatalf("expected DB write after AddAnchor")
 	}
 }
+
+func TestAnchor_RoundRobinReacquisition(t *testing.T) {
+	eng := &AnchorEngine{
+		cfg: Config{
+			ReacquireBatchSize: 3,
+		},
+		sampleOffset: 0,
+	}
+
+	sealed := make([]mid.MID, 10)
+	for i := 0; i < 10; i++ {
+		sealed[i] = mid.FromBytes([]byte{byte(i + 1)})
+	}
+
+	eng.mu.Lock()
+	offset1 := eng.sampleOffset % len(sealed)
+	eng.sampleOffset = (offset1 + 3) % len(sealed)
+	eng.mu.Unlock()
+
+	if offset1 != 0 || eng.sampleOffset != 3 {
+		t.Fatalf("tick 1 offset: got %d next %d, want 0 next 3", offset1, eng.sampleOffset)
+	}
+
+	eng.mu.Lock()
+	offset2 := eng.sampleOffset % len(sealed)
+	eng.sampleOffset = (offset2 + 3) % len(sealed)
+	eng.mu.Unlock()
+
+	if offset2 != 3 || eng.sampleOffset != 6 {
+		t.Fatalf("tick 2 offset: got %d next %d, want 3 next 6", offset2, eng.sampleOffset)
+	}
+}
+
 

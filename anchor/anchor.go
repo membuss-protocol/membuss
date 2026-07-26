@@ -169,6 +169,9 @@ type Config struct {
 	// FetchConcurrency sets the maximum number of concurrent worker
 	// goroutines used to fetch backlog items. Zero uses DefaultFetchConcurrency.
 	FetchConcurrency int
+	// ReacquireBatchSize sets the number of sealed MIDs sampled per discovery round
+	// using round-robin verification. Zero defaults to 32 items.
+	ReacquireBatchSize int
 	// Logger is optional; nil means silent.
 	Logger Logger
 }
@@ -188,11 +191,12 @@ type AnchorEngine struct {
 	cfg    Config
 	logger Logger
 
-	mu      sync.Mutex
-	anchors map[peer.ID]peer.AddrInfo
-	backlog []enqueuedMID
-	started time.Time
-	synced  int64
+	mu           sync.Mutex
+	anchors      map[peer.ID]peer.AddrInfo
+	backlog      []enqueuedMID
+	started      time.Time
+	synced       int64
+	sampleOffset int
 	// attempts records the last time the engine tried to acquire a
 	// MID it learned about, keyed by MID string. It is used both to
 	// suppress redundant re-enqueues/logging and to back off retries
@@ -547,13 +551,23 @@ func (e *AnchorEngine) tick(ctx context.Context) {
 	if err != nil || len(sealed) == 0 {
 		return
 	}
-	maxSample := 4
-	if len(sealed) < maxSample {
-		maxSample = len(sealed)
+	batchSize := e.cfg.ReacquireBatchSize
+	if batchSize <= 0 {
+		batchSize = 32
 	}
+	if len(sealed) < batchSize {
+		batchSize = len(sealed)
+	}
+
+	e.mu.Lock()
+	offset := e.sampleOffset % len(sealed)
+	e.sampleOffset = (offset + batchSize) % len(sealed)
+	e.mu.Unlock()
+
 	var samplePending []enqueuedMID
-	for i := 0; i < maxSample; i++ {
-		m := sealed[i]
+	for i := 0; i < batchSize; i++ {
+		idx := (offset + i) % len(sealed)
+		m := sealed[idx]
 		// Only re-acquire sealed roots whose bytes are actually
 		// missing locally; already-held roots need nothing. No source
 		// peer is known here, so acquisition falls back to DHT/anchors.
