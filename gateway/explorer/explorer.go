@@ -818,8 +818,10 @@ func (e *Explorer) handleMID(w http.ResponseWriter, r *http.Request) {
 			data.MimeType = p2.MimeType
 		}
 	}
-	provs, _ := b.Providers(ctx, root, e.cfg.ProviderLimit)
-	data.Providers = provs
+	if data.Providers == nil {
+		provs, _ := b.Providers(ctx, root, e.cfg.ProviderLimit)
+		data.Providers = provs
+	}
 	if present {
 		data.Size = size
 		data.Blocks = blocks

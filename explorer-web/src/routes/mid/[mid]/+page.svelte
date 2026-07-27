@@ -49,6 +49,18 @@
 	let error = $state<string | null>(null);
 	let copiedMID = $state(false);
 
+	function parseProvider(prov: string) {
+		const raw = prov.trim();
+		const firstSpace = raw.search(/[\s\t]/);
+		if (firstSpace === -1) {
+			return { peerId: raw, addrs: [] };
+		}
+		const peerId = raw.slice(0, firstSpace);
+		const rest = raw.slice(firstSpace).trim();
+		const addrs = rest ? rest.split(',') : [];
+		return { peerId, addrs };
+	}
+
 	function getGatewayURL(mid: string, isDir: boolean): string {
 		if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
 			const portStr = window.location.port ? `:${window.location.port}` : '';
@@ -760,8 +772,17 @@
 					{#if data.Providers && data.Providers.length > 0}
 						<ul class="flex flex-col gap-2">
 							{#each data.Providers as prov}
-								<li class="bg-slate-950/60 border border-slate-850 px-4 py-2.5 rounded-lg font-mono text-xs text-slate-350 break-all select-all flex items-center justify-between group hover:border-slate-800 transition-colors">
-									<span>{prov}</span>
+								{@const parsed = parseProvider(prov)}
+								<li class="bg-slate-950/60 border border-slate-850 px-4 py-2.5 rounded-lg font-mono text-xs text-slate-350 flex items-center justify-between group hover:border-slate-800 transition-colors">
+									<div class="flex items-center gap-2 font-semibold text-slate-200 select-all break-all">
+										<Icon icon="ph:cpu-bold" class="text-cyan-400 text-sm shrink-0" />
+										<span>{parsed.peerId}</span>
+									</div>
+									{#if parsed.addrs.length > 0}
+										<span class="text-[10px] text-slate-500 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full font-sans shrink-0 ml-2">
+											{parsed.addrs.length} addrs
+										</span>
+									{/if}
 								</li>
 							{/each}
 						</ul>

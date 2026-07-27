@@ -55,6 +55,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
+	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/dht"
@@ -402,7 +403,7 @@ func Run(args []string) error {
 
 	// 6) Mem-Herald.
 	hd, err := herald.New(herald.Config{
-		Store:           bs,
+		Store:           heraldStoreWrapper{bs},
 		DHT:             mdht,
 		Strategy:        herald.StrategyRoots,
 		Interval:        cfg.ReprovideInterval,
@@ -1278,4 +1279,46 @@ func ensureGeoIPDatabase(cfg *config.Config, logger *slog.Logger) (string, error
 
 	logger.Info("geo: database downloaded successfully", "path", destPath)
 	return destPath, nil
+}
+
+type heraldStoreWrapper struct {
+	store.Store
+}
+
+func (h heraldStoreWrapper) AllSealed() ([]mid.MID, error) {
+	if h.Store == nil {
+		return nil, nil
+	}
+	sealed, err := h.Store.AllSealed()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(sealed))
+	out := make([]mid.MID, 0, len(sealed))
+	for _, m := range sealed {
+		seen[m.String()] = struct{}{}
+		out = append(out, m)
+	}
+	if objMIDs, oerr := h.Store.AllObjectMIDs(); oerr == nil {
+		for _, m := range objMIDs {
+			if _, ok := seen[m.String()]; !ok {
+				seen[m.String()] = struct{}{}
+				out = append(out, m)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (h heraldStoreWrapper) IterateSealed(fn func(mid.MID) error) error {
+	mids, err := h.AllSealed()
+	if err != nil {
+		return err
+	}
+	for _, m := range mids {
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }

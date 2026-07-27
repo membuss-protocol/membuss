@@ -73,6 +73,10 @@ type daemonBackend struct {
 	anchorsMu        sync.RWMutex
 	anchorsCache     map[string]struct{}
 	anchorsCacheTime time.Time
+
+	// statCache caches StatInfo for sealed MIDs to eliminate 4800+ BadgerDB block walks per Stat call.
+	statMu    sync.RWMutex
+	statCache map[string]serverpkg.StatInfo
 }
 
 // slogAnchorLogger adapts *slog.Logger to anchor.Logger.
@@ -329,6 +333,18 @@ func (b *daemonBackend) GetWithProgress(ctx context.Context, midStr string, offs
 					if c, ok := rc.(io.Closer); ok {
 						_ = c.Close()
 					}
+					oi, _ := store.GetObjectInfo(b.store, root)
+					if !oi.IsRoot {
+						oi.IsRoot = true
+						_ = store.SetObjectInfo(b.store, root, oi)
+					}
+					if b.dht != nil {
+						announceCtx, cancelAnnounce := context.WithTimeout(context.Background(), 10*time.Second)
+						go func() {
+							defer cancelAnnounce()
+							provideRecursive(announceCtx, b.dht, b.store, root)
+						}()
+					}
 				}
 			}
 		}
@@ -514,6 +530,11 @@ func (b *daemonBackend) Unseal(ctx context.Context, midStr string) (uint64, erro
 	if err := b.store.Unseal(root); err != nil {
 		return 0, err
 	}
+	b.statMu.Lock()
+	if b.statCache != nil {
+		delete(b.statCache, midStr)
+	}
+	b.statMu.Unlock()
 	return 1, nil
 }
 
@@ -523,6 +544,16 @@ func (b *daemonBackend) Stat(ctx context.Context, midStr string) (serverpkg.Stat
 	if err != nil {
 		return serverpkg.StatInfo{Present: false}, nil
 	}
+
+	b.statMu.RLock()
+	if b.statCache != nil {
+		if cached, ok := b.statCache[midStr]; ok && cached.Present && cached.Sealed {
+			b.statMu.RUnlock()
+			return cached, nil
+		}
+	}
+	b.statMu.RUnlock()
+
 	has, err := b.store.Has(root)
 	if err != nil {
 		return serverpkg.StatInfo{}, err
@@ -557,9 +588,26 @@ func (b *daemonBackend) Stat(ctx context.Context, midStr string) (serverpkg.Stat
 	}
 
 	if b.dht != nil {
-		provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		provCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		provs, _ := b.dht.FindProviders(provCtx, root)
 		cancel()
+
+		if b.store != nil && b.host != nil {
+			if has, err := b.store.Has(root); err == nil && has {
+				localID := b.host.ID()
+				foundLocal := false
+				for _, p := range provs {
+					if p.ID == localID {
+						foundLocal = true
+						break
+					}
+				}
+				if !foundLocal {
+					provs = append(provs, peer.AddrInfo{ID: localID, Addrs: b.host.Addrs()})
+				}
+			}
+		}
+
 		info.Sealers = len(provs)
 
 		anchors := b.getKnownAnchors(ctx)
@@ -568,6 +616,15 @@ func (b *daemonBackend) Stat(ctx context.Context, midStr string) (serverpkg.Stat
 				info.AnchorSealers++
 			}
 		}
+	}
+
+	if sealed {
+		b.statMu.Lock()
+		if b.statCache == nil {
+			b.statCache = make(map[string]serverpkg.StatInfo)
+		}
+		b.statCache[midStr] = info
+		b.statMu.Unlock()
 	}
 
 	return info, nil
@@ -716,6 +773,11 @@ func (b *daemonBackend) Delete(ctx context.Context, midStr string) (serverpkg.De
 		if b.dht != nil {
 			_ = b.dht.RemoveProviderRecord(m)
 		}
+		b.statMu.Lock()
+		if b.statCache != nil {
+			delete(b.statCache, midStr)
+		}
+		b.statMu.Unlock()
 		return serverpkg.DeleteResult{
 			BlocksDeleted: deleted,
 			BytesFreed:    freed,

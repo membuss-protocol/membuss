@@ -149,18 +149,38 @@ func (a *explorerAdapter) DropAll(ctx context.Context) error {
 // Providers returns DHT-known providers for m.
 func (a *explorerAdapter) Providers(ctx context.Context, m mid.MID, limit int) ([]string, error) {
 	b := a.b
-	if b.dht == nil {
+	if b == nil {
 		return nil, nil
 	}
+	var provs []peer.AddrInfo
+	if b.dht != nil {
+		provCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		provs, _ = b.dht.FindProviders(provCtx, m)
+		cancel()
+	}
+
+	if b.store != nil && b.host != nil {
+		if has, err := b.store.Has(m); err == nil && has {
+			localID := b.host.ID()
+			foundLocal := false
+			for _, p := range provs {
+				if p.ID == localID {
+					foundLocal = true
+					break
+				}
+			}
+			if !foundLocal {
+				provs = append([]peer.AddrInfo{{
+					ID:    localID,
+					Addrs: b.host.Addrs(),
+				}}, provs...)
+			}
+		}
+	}
+
 	var lim uint32
 	if limit > 0 {
 		lim = uint32(limit)
-	}
-	provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	provs, err := b.dht.FindProviders(provCtx, m)
-	if err != nil {
-		return nil, err
 	}
 	if lim > 0 && uint32(len(provs)) > lim {
 		provs = provs[:lim]

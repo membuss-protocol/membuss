@@ -4,6 +4,15 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-015: Explorer UI provider list multiaddr text wall clutter
+  Fixed: 2026-07-27 — Parse provider strings to display clean Node Peer IDs with badge multiaddr counts in Svelte SPA explorer.
+
+[FIXED] BUG-014: High latency on local MID Stat calls and missing reprovides for unsealed content
+  Fixed: 2026-07-27 — Add in-memory statCache for sealed MIDs in daemonBackend and wrap store for MemHerald to re-announce unsealed root MIDs.
+
+[FIXED] BUG-013: O(N) linear scan in blockListCache
+  Fixed: 2026-07-27 — Replace slice-based ordering with O(1) doubly-linked list pointers for LRU cache hits.
+
 [FIXED] BUG-012: ipLimiter background reaper ticker leak
   Fixed: 2026-07-27 — Add stopCh, Stop() method, and MemGate.Close() to cleanly terminate ipLimiter reaper ticker loop.
 
