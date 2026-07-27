@@ -1,6 +1,7 @@
 package memgate_v2
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -423,5 +424,50 @@ func TestSingleflight_DeduplicatesConcurrentRequests(t *testing.T) {
 	blocks, _, err := mg.cachedBlockList(context.Background(), m)
 	if err != nil || len(blocks) == 0 {
 		t.Fatalf("cached read failed: %v", err)
+	}
+}
+
+func TestGzipCompression_TextAndJSON(t *testing.T) {
+	mb := newMemBackend()
+	jsonBody := []byte(`{"status":"ok","message":"hello world from memgate gzip test"}`)
+	m := putRandom(mb, jsonBody)
+
+	mg, err := New(Config{Backend: mb})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(mg.Router())
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/mem/"+m.String()+"?format=json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Errorf("expected Content-Encoding: gzip, got %q", resp.Header.Get("Content-Encoding"))
+	}
+
+	gr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+
+	decompressed, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("ReadAll decompressed: %v", err)
+	}
+
+	if !strings.Contains(string(decompressed), "hello world") {
+		t.Errorf("decompressed content mismatch, got %q", string(decompressed))
 	}
 }

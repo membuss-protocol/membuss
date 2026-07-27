@@ -381,6 +381,19 @@ func (m *MemGate) buildRouter() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(middleware.Compress(5,
+		"text/html",
+		"text/css",
+		"text/plain",
+		"text/xml",
+		"text/javascript",
+		"application/javascript",
+		"application/x-javascript",
+		"application/json",
+		"application/xml",
+		"image/svg+xml",
+		"application/wasm",
+	))
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/explorer") {
