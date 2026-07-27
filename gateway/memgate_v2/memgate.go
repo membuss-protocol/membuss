@@ -4,6 +4,7 @@
 package memgate_v2
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -966,19 +967,22 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 		return
 	}
 
-	// Cache eligibility: only buffer+cache items small enough to fit
-	// under MaxCacheItemBytes. Larger items are streamed below so a
-	// single response can never allocate more than MaxCacheItemBytes
-	// of heap, bounding memory use under concurrency.
-	if info.Size > 0 && info.Size <= m.cfg.MaxCacheItemBytes {
-		buf := make([]byte, info.Size)
-		if _, err := io.ReadFull(rc, buf); err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		m.lru.put(cacheKey, buf)
+	// Cache eligibility: for non-range requests under MaxCacheItemBytes, stream
+	// directly to the response writer while capturing data into a buffer for LRU caching.
+	// This eliminates TTFB latency and pre-buffering memory amplification under concurrency.
+	if info.Size > 0 && info.Size <= m.cfg.MaxCacheItemBytes && r.Header.Get("Range") == "" {
 		m.setResolvedHeaders(w, info, ct, disp, name)
-		m.writeBytes(w, r, midStr, buf, ct)
+		w.Header().Set("Content-Length", strconv.FormatUint(info.Size, 10))
+		w.WriteHeader(http.StatusOK)
+
+		var buf bytes.Buffer
+		buf.Grow(int(info.Size))
+		mw := io.MultiWriter(w, &buf)
+
+		n, err := io.Copy(mw, rc)
+		if err == nil && uint64(n) == info.Size {
+			m.lru.put(cacheKey, buf.Bytes())
+		}
 		return
 	}
 
