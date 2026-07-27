@@ -154,6 +154,12 @@ type Config struct {
 	// Phase 18: MemNS resolver
 	MemNSResolver *memns.Resolver
 	LogLevel      string
+
+	// EnableMetrics enables the Prometheus & OpenTelemetry edge metrics endpoint. Defaults to true.
+	EnableMetrics bool
+	// MetricsToken, if set, requires Authorization: Bearer <MetricsToken> or ?token=<MetricsToken>.
+	// When empty, metrics endpoints are restricted to localhost/internal connections only.
+	MetricsToken string
 }
 
 // MemGate is the public HTTP gateway.
@@ -167,6 +173,7 @@ type MemGate struct {
 	downloadManager *DownloadManager
 	sfBlockList     singleflight.Group
 	sfResolve       singleflight.Group
+	metrics         *gatewayMetrics
 }
 
 // New returns a MemGate ready to be served. The returned
@@ -217,6 +224,7 @@ func New(cfg Config) (*MemGate, error) {
 		blockLists:      newBlockListCache(defaultBlockListCacheEntries),
 		refererTracker:  NewRefererTracker(),
 		downloadManager: NewDownloadManager(),
+		metrics:         newGatewayMetrics(),
 	}
 	mg.ipLimiter = newIPLimiter(cfg.RateLimitPerMin, 10*time.Minute)
 	mg.router = mg.buildRouter()
@@ -314,6 +322,7 @@ func (m *MemGate) Handler() http.Handler {
 func isSystemPath(path string) bool {
 	if strings.HasPrefix(path, "/mem/") ||
 		strings.HasPrefix(path, "/healthz") ||
+		strings.HasPrefix(path, "/metrics") ||
 		strings.HasPrefix(path, "/memns/") ||
 		strings.HasPrefix(path, "/memlink/") {
 		return true
@@ -414,6 +423,10 @@ func (m *MemGate) buildRouter() chi.Router {
 	// limiter by setting RateLimitPerMin=0 in config.
 	r.Use(m.ipLimiter.Middleware)
 
+	if m.metrics != nil {
+		r.Use(m.metrics.middleware)
+	}
+
 	// Explorer is a local admin UI — block non-localhost access
 	r.Use(m.localOnlyMiddleware)
 
@@ -421,6 +434,11 @@ func (m *MemGate) buildRouter() chi.Router {
 	r.Use(m.customDomainMiddleware)
 
 	r.Get("/healthz", m.handleHealth)
+	if m.metrics != nil {
+		metricsHandler := m.metrics.authMiddleware(m.cfg.MetricsToken, m.metrics.handler())
+		r.Handle("/metrics", metricsHandler)
+		r.Handle("/explorer/metrics", metricsHandler)
+	}
 	r.Get("/mem/{mid}", m.handleGet)
 	r.Get("/mem/{mid}/~status", m.handleFetchStatusSSE)
 	r.Head("/mem/{mid}", m.handleHead)
@@ -975,9 +993,15 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 
 	cacheKey := "resolved:" + midStr
 	if data, ok := m.lru.get(cacheKey); ok {
+		if m.metrics != nil {
+			m.metrics.cacheHitsTotal.Inc()
+		}
 		m.setResolvedHeaders(w, info, ct, disp, name)
 		m.writeBytes(w, r, midStr, data, ct)
 		return
+	}
+	if m.metrics != nil {
+		m.metrics.cacheMissesTotal.Inc()
 	}
 
 	// Cache eligibility: for non-range requests under MaxCacheItemBytes, stream
@@ -1249,6 +1273,7 @@ func (m *MemGate) customDomainMiddleware(next http.Handler) http.Handler {
 		// Don't intercept system paths
 		if strings.HasPrefix(path, "/mem/") ||
 			strings.HasPrefix(path, "/healthz") ||
+			strings.HasPrefix(path, "/metrics") ||
 			strings.HasPrefix(path, "/explorer") ||
 			strings.HasPrefix(path, "/memns/") ||
 			strings.HasPrefix(path, "/memlink/") {
@@ -1869,6 +1894,11 @@ func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if m.metrics != nil {
+		m.metrics.activeSSEStreams.Inc()
+		defer m.metrics.activeSSEStreams.Dec()
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
