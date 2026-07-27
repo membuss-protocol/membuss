@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -162,6 +164,8 @@ type MemGate struct {
 	ipLimiter       *ipLimiter
 	refererTracker  *RefererTracker
 	downloadManager *DownloadManager
+	sfBlockList     singleflight.Group
+	sfResolve       singleflight.Group
 }
 
 // New returns a MemGate ready to be served. The returned

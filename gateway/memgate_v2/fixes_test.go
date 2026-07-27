@@ -3,6 +3,7 @@ package memgate_v2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -382,5 +383,45 @@ func TestProductionSubdomainSSERoute(t *testing.T) {
 	expectedSSE := "/mem/" + missingMID.String() + "/~status"
 	if !strings.Contains(body2, expectedSSE) {
 		t.Errorf("expected %s for path gateway request, got body:\n%s", expectedSSE, body2)
+	}
+}
+
+func TestSingleflight_DeduplicatesConcurrentRequests(t *testing.T) {
+	mb := newMemBackend()
+	m := putRandom(mb, []byte("singleflight block data"))
+
+	mg, err := New(Config{Backend: mb})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	const numGoroutines = 50
+	errCh := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			blocks, _, err := mg.cachedBlockList(context.Background(), m)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(blocks) == 0 {
+				errCh <- fmt.Errorf("expected blocks, got 0")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent cachedBlockList failed: %v", err)
+	}
+
+	blocks, _, err := mg.cachedBlockList(context.Background(), m)
+	if err != nil || len(blocks) == 0 {
+		t.Fatalf("cached read failed: %v", err)
 	}
 }

@@ -124,10 +124,15 @@ func (c *blockListCache) remove(node *blockListNode) {
 	node.prev, node.next = nil, nil
 }
 
+type blockListResult struct {
+	blocks    []dagBlock
+	totalSize int64
+}
+
 // cachedBlockList returns the flattened block list for root, building
 // it via buildBlockList on a cache miss and memoizing the result.
-// The returned slice is shared read-only: dagReader only ever reads
-// from r.blocks, so sharing is safe and avoids a per-request copy.
+// Concurrent requests for the same uncached root share a single execution
+// via singleflight. Group to prevent thundering herd.
 func (m *MemGate) cachedBlockList(ctx context.Context, root mid.MID) ([]dagBlock, int64, error) {
 	key := root.String()
 	if m.blockLists != nil {
@@ -135,14 +140,26 @@ func (m *MemGate) cachedBlockList(ctx context.Context, root mid.MID) ([]dagBlock
 			return e.blocks, e.totalSize, nil
 		}
 	}
-	blocks, total, err := buildBlockList(ctx, m.cfg.Backend, root)
+	v, err, _ := m.sfBlockList.Do(key, func() (interface{}, error) {
+		if m.blockLists != nil {
+			if e, ok := m.blockLists.get(key); ok {
+				return blockListResult{blocks: e.blocks, totalSize: e.totalSize}, nil
+			}
+		}
+		blocks, total, err := buildBlockList(ctx, m.cfg.Backend, root)
+		if err != nil {
+			return nil, err
+		}
+		if m.blockLists != nil {
+			m.blockLists.put(key, &blockListEntry{blocks: blocks, totalSize: total})
+		}
+		return blockListResult{blocks: blocks, totalSize: total}, nil
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	if m.blockLists != nil {
-		m.blockLists.put(key, &blockListEntry{blocks: blocks, totalSize: total})
-	}
-	return blocks, total, nil
+	res := v.(blockListResult)
+	return res.blocks, res.totalSize, nil
 }
 
 func buildBlockList(ctx context.Context, backend Backend, root mid.MID) ([]dagBlock, int64, error) {
