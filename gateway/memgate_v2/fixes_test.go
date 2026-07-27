@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
 )
 
@@ -340,3 +341,46 @@ func TestSmallResolvedItem_IsCached(t *testing.T) {
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+func TestProductionSubdomainSSERoute(t *testing.T) {
+	b := newMemBackend()
+	missingMID := mid.FromBytes([]byte("test missing sse content"))
+
+	mg, err := New(Config{Backend: b, MemNSResolver: memns.NewResolver(nil, nil, nil)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// 1. Production domain request: Host = <mid>.memgate.io, Path = /index.html
+	req1 := httptest.NewRequest("GET", "/index.html", nil)
+	req1.Host = missingMID.String() + ".memgate.io"
+	req1.Header.Set("Accept", "text/html")
+	rec1 := httptest.NewRecorder()
+
+	mg.Handler().ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d, body: %s", rec1.Code, rec1.Body.String())
+	}
+	body1 := rec1.Body.String()
+	if !strings.Contains(body1, "/~status") || strings.Contains(body1, "/mem/"+missingMID.String()+"/~status") {
+		t.Errorf("expected /~status for production subdomain, got body:\n%s", body1)
+	}
+
+	// 2. Path-based request: Host = localhost:8083, Path = /mem/<mid>/index.html
+	req2 := httptest.NewRequest("GET", "/mem/"+missingMID.String()+"/index.html", nil)
+	req2.Host = "localhost:8083"
+	req2.Header.Set("Accept", "text/html")
+	rec2 := httptest.NewRecorder()
+
+	mg.Handler().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d, body: %s", rec2.Code, rec2.Body.String())
+	}
+	body2 := rec2.Body.String()
+	expectedSSE := "/mem/" + missingMID.String() + "/~status"
+	if !strings.Contains(body2, expectedSSE) {
+		t.Errorf("expected %s for path gateway request, got body:\n%s", expectedSSE, body2)
+	}
+}

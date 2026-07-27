@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-011: Hardcoded .localhost subdomain check for SSE status route
+  Fixed: 2026-07-27 — Replace .localhost domain check with resolveSubdomain(r) to generate correct SSE /~status URLs on production domain deployments.
+
 [FIXED] BUG-010: Listener channel and goroutine leak in DownloadManager
   Fixed: 2026-07-27 — Fix RemoveListener channel closing, add AddListenerWithContext for SSE disconnect auto-cleanup, and clear listeners on job finish.
 

@@ -891,11 +891,7 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 
 			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
 
-			host := r.Host
-			if idx := strings.Index(host, ":"); idx != -1 {
-				host = host[:idx]
-			}
-			isSubdomain := strings.HasSuffix(host, ".localhost")
+			_, _, isSubdomain := m.resolveSubdomain(r)
 			var ssePath string
 			if isSubdomain {
 				ssePath = "/~status"
@@ -1231,6 +1227,11 @@ func (m *MemGate) customDomainMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		if _, _, ok := m.resolveSubdomain(r); ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if m.cfg.MemNSResolver == nil {
 			http.Error(w, "MemNS resolver not configured", http.StatusInternalServerError)
 			return
@@ -1344,11 +1345,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 
 			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
 
-			host := r.Host
-			if idx := strings.Index(host, ":"); idx != -1 {
-				host = host[:idx]
-			}
-			isSubdomain := strings.HasSuffix(host, ".localhost")
+			_, _, isSubdomain := m.resolveSubdomain(r)
 			var ssePath string
 			if isSubdomain {
 				ssePath = "/~status"
