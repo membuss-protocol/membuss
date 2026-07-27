@@ -570,7 +570,7 @@ func Run(args []string) error {
 
 	var gateSrv *httpServer
 	if cfg.Servers.Gateway.Enabled {
-		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg)
+		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg, cfg.MetricsToken)
 		if err != nil {
 			logger.Error("gateway", "err", err.Error())
 			os.Exit(1)
@@ -969,7 +969,7 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
@@ -977,6 +977,7 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 		RateLimitPerMin: rateLimitPerMin,
 		MemNSResolver:   memnsRes,
 		LogLevel:        logLevel,
+		MetricsToken:    metricsToken,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("memgate: %w", err)
