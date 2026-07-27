@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-012: ipLimiter background reaper ticker leak
+  Fixed: 2026-07-27 — Add stopCh, Stop() method, and MemGate.Close() to cleanly terminate ipLimiter reaper ticker loop.
+
 [FIXED] BUG-011: Hardcoded .localhost subdomain check for SSE status route
   Fixed: 2026-07-27 — Replace .localhost domain check with resolveSubdomain(r) to generate correct SSE /~status URLs on production domain deployments.
 

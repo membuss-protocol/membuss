@@ -218,6 +218,14 @@ func New(cfg Config) (*MemGate, error) {
 	return mg, nil
 }
 
+// Close gracefully shuts down background workers and timers.
+func (m *MemGate) Close() error {
+	if m.ipLimiter != nil {
+		m.ipLimiter.Stop()
+	}
+	return nil
+}
+
 // Router returns the chi router. Exposed so tests can drive
 // the gateway via httptest.
 func (m *MemGate) Router() http.Handler { return m.router }
