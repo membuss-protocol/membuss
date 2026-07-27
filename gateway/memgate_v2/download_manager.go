@@ -46,29 +46,42 @@ func (j *DownloadJob) GetStatus() (string, string, uint64, uint64, uint64, uint6
 
 // AddListener registers a channel to receive progress updates.
 func (j *DownloadJob) AddListener() (int, chan ProgressUpdate) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+	return j.AddListenerWithContext(nil)
+}
 
+// AddListenerWithContext registers a channel to receive progress updates and monitors context cancellation.
+func (j *DownloadJob) AddListenerWithContext(ctx context.Context) (int, chan ProgressUpdate) {
+	j.mu.Lock()
 	id := j.nextListenerID
 	j.nextListenerID++
 	ch := make(chan ProgressUpdate, 10)
 	j.listeners[id] = ch
+	j.mu.Unlock()
+
+	if ctx != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				j.RemoveListener(id)
+			case <-j.ctx.Done():
+			}
+		}()
+	}
+
 	return id, ch
 }
 
-// RemoveListener unregisters a progress channel.
+// RemoveListener unregisters a progress channel and closes it safely.
 func (j *DownloadJob) RemoveListener(id int) {
 	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	if ch, ok := j.listeners[id]; ok {
+	ch, ok := j.listeners[id]
+	if ok {
 		delete(j.listeners, id)
-		// Close the channel safely
-		select {
-		case <-ch:
-		default:
-			close(ch)
-		}
+	}
+	j.mu.Unlock()
+
+	if ok {
+		close(ch)
 	}
 }
 
@@ -150,10 +163,8 @@ func (dm *DownloadManager) GetOrCreateJob(m mid.MID, backend Backend) (*Download
 			job.mu.Lock()
 			job.State = "failed"
 			job.Error = err.Error()
-			listeners := make([]chan ProgressUpdate, 0, len(job.listeners))
-			for _, ch := range job.listeners {
-				listeners = append(listeners, ch)
-			}
+			listeners := job.listeners
+			job.listeners = make(map[int]chan ProgressUpdate)
 			job.mu.Unlock()
 
 			// Notify failure and close channels
@@ -162,7 +173,9 @@ func (dm *DownloadManager) GetOrCreateJob(m mid.MID, backend Backend) (*Download
 				case ch <- ProgressUpdate{}:
 				default:
 				}
+				close(ch)
 			}
+			job.cancel()
 			return
 		}
 		if rc != nil {
@@ -175,19 +188,19 @@ func (dm *DownloadManager) GetOrCreateJob(m mid.MID, backend Backend) (*Download
 			job.BytesTotal = info.Size
 			job.BytesDelivered = info.Size
 		}
-		listeners := make([]chan ProgressUpdate, 0, len(job.listeners))
-		for _, ch := range job.listeners {
-			listeners = append(listeners, ch)
-		}
+		listeners := job.listeners
+		job.listeners = make(map[int]chan ProgressUpdate)
 		job.mu.Unlock()
 
-		// Notify completion
+		// Notify completion and close channels
 		for _, ch := range listeners {
 			select {
 			case ch <- ProgressUpdate{}:
 			default:
 			}
+			close(ch)
 		}
+		job.cancel()
 	}()
 
 	return job, true

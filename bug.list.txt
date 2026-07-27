@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-010: Listener channel and goroutine leak in DownloadManager
+  Fixed: 2026-07-27 — Fix RemoveListener channel closing, add AddListenerWithContext for SSE disconnect auto-cleanup, and clear listeners on job finish.
+
 [FIXED] BUG-009: Memory & Client IP leak in RefererTracker
   Fixed: 2026-07-27 — Replace map clear with LRU eviction for pathMIDs; bound recentMIDs client IPs & add auto-prune TTL.
 

@@ -1853,7 +1853,7 @@ func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 
 	job, _ := m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
 
-	listenerID, ch := job.AddListener()
+	listenerID, ch := job.AddListenerWithContext(r.Context())
 	defer job.RemoveListener(listenerID)
 
 	state, errMsg, blocksResolved, blocksTotal, bytesDelivered, bytesTotal, throughput, eta := job.GetStatus()
