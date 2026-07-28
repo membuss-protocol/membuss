@@ -142,3 +142,15 @@ func TestMetrics_IncrementsCountersOnRequestsAndCache(t *testing.T) {
 		t.Errorf("expected cache misses total 1, got output:\n%s", out)
 	}
 }
+
+func TestMetrics_FlusherAndHijackerInterfaces(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sw := &statusResponseWriter{ResponseWriter: rec, status: 200}
+
+	if _, ok := interface{}(sw).(http.Flusher); !ok {
+		t.Fatalf("expected statusResponseWriter to satisfy http.Flusher interface")
+	}
+
+	// Calling Flush should not panic
+	sw.Flush()
+}
