@@ -81,12 +81,24 @@ func (m *gatewayMetrics) handler() http.Handler {
 // statusResponseWriter wraps http.ResponseWriter to capture the HTTP status code.
 type statusResponseWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusResponseWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
 	w.status = code
+	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (w *statusResponseWriter) Flush() {

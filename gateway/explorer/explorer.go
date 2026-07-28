@@ -1628,7 +1628,9 @@ func (e *Explorer) handleKeyringRm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "deleted": name})
 }
 
 func (e *Explorer) handleMemNSPublish(w http.ResponseWriter, r *http.Request) {

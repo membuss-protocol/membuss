@@ -1098,7 +1098,7 @@ func (a *explorerAdapter) MemNSPublish(ctx context.Context, keyName, value strin
 
 	record, err := memns.BuildRecord(key, value, seq, time.Duration(recTTL)*time.Second, nil, message)
 	if err != nil {
-		return explorer.MemNSRecordInfo{}, fmt.Errorf("build record: %w", err)
+		return explorer.MemNSRecordInfo{}, err
 	}
 
 	err = memns.PublishDHT(ctx, a.memnsRes.DHTClient(), key, record)

@@ -538,7 +538,15 @@ func TestMemGate_GracefulShutdown(t *testing.T) {
 	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Errorf("expected listener channel to be closed on shutdown")
+			// Drain initial update buffered during AddListener to verify channel closure
+			select {
+			case _, ok2 := <-ch:
+				if ok2 {
+					t.Errorf("expected listener channel to be closed on shutdown")
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Errorf("timeout waiting for listener channel closure on shutdown after draining initial update")
+			}
 		}
 	case <-time.After(1 * time.Second):
 		t.Errorf("timeout waiting for listener channel closure on shutdown")

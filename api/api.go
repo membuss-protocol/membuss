@@ -808,7 +808,7 @@ func (a *NodeAPI) handleMemNSPublish(w http.ResponseWriter, r *http.Request) {
 
 	record, err := memns.BuildRecord(key, req.Value, seq, ttl, pbRoutes, req.Message)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, err)
+		fail(w, http.StatusBadRequest, err)
 		return
 	}
 

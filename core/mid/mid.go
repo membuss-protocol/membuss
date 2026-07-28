@@ -183,14 +183,14 @@ func Parse(s string) (MID, error) {
 	}
 	parsed, err := cid.Decode(encoded)
 	if err != nil {
-		return MID{}, fmt.Errorf("mid: cid parse: %w", err)
+		return MID{}, errors.New("mid: invalid encoded multihash")
 	}
 	if parsed.Version() != cidVersion1 {
-		return MID{}, fmt.Errorf("mid: unsupported CID version %d", parsed.Version())
+		return MID{}, fmt.Errorf("mid: unsupported version %d", parsed.Version())
 	}
 	mh := parsed.Hash()
 	if err := validateEnvelope(mh); err != nil {
-		return MID{}, fmt.Errorf("mid: validate multihash: %w", err)
+		return MID{}, fmt.Errorf("mid: invalid multihash envelope: %w", err)
 	}
 	return MID{
 		Version: uint8(parsed.Version()),

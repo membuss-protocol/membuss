@@ -4,6 +4,18 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-026: Double WriteHeader call warning in statusResponseWriter
+  Fixed: 2026-07-29 — Add wroteHeader flag to statusResponseWriter to guard against duplicate WriteHeader calls.
+
+[FIXED] BUG-025: Keyring delete returned 0-byte body causing JSON syntax error in Explorer UI
+  Fixed: 2026-07-29 — Return JSON status payload from handleKeyringRm and safely parse JSON in apiFetch.
+
+[FIXED] BUG-024: Low-level CID library error leaks in mid.Parse
+  Fixed: 2026-07-29 — Clean up mid.Parse error messages to return domain MID errors instead of internal cid parse traces.
+
+[FIXED] BUG-023: MemNS target validation and dirty URL sanitization in core
+  Fixed: 2026-07-29 — Add ValidateAndNormalizeValue to core/memns to enforce strict MID target validation and extract MIDs from pasted URLs.
+
 [FIXED] BUG-022: Herald console log spam when routing table has no peers
   Fixed: 2026-07-29 — Short-circuit retries and suppress per-MID log spam when routing table is empty.
 
