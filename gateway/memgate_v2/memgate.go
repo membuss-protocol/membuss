@@ -1667,7 +1667,7 @@ func (m *MemGate) handleStreamRange(w http.ResponseWriter, r *http.Request, file
 		return true
 	}
 
-	reader := newDagReader(r.Context(), m.cfg.Backend, blocks, totalSize)
+	reader := newDagReader(r.Context(), m.cfg.Backend, m.lru, m.metrics, blocks, totalSize)
 	defer reader.Close()
 
 	if _, err := reader.Seek(start, io.SeekStart); err != nil {

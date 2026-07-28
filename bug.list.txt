@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-019: Missing sub-chunk LRU caching for media range seeking
+  Fixed: 2026-07-27 — Extend dagReader to cache individual 256KB block chunks in shardedLRU, eliminating disk I/O during media seeking.
+
 [FIXED] BUG-018: Uncompressed text, JSON, and web explorer assets in Gateway
   Fixed: 2026-07-27 — Add transparent gzip/deflate HTTP compression middleware (chi/middleware.Compress level 5) for text, JSON, CSS, JS, SVG, and WASM assets.
 

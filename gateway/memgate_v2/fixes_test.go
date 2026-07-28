@@ -471,3 +471,41 @@ func TestGzipCompression_TextAndJSON(t *testing.T) {
 		t.Errorf("decompressed content mismatch, got %q", string(decompressed))
 	}
 }
+
+func TestSubchunkCaching_MediaStreamingSeek(t *testing.T) {
+	mb := newMemBackend()
+	data := []byte("0123456789ABCDEF0123456789ABCDEF")
+	m := putRandom(mb, data)
+
+	mg, err := New(Config{Backend: mb, MaxCacheBytes: 1 << 20, MaxCacheItemBytes: 1024})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	blocks, total, err := mg.cachedBlockList(context.Background(), m)
+	if err != nil {
+		t.Fatalf("cachedBlockList: %v", err)
+	}
+
+	reader1 := newDagReader(context.Background(), mb, mg.lru, mg.metrics, blocks, total)
+	p1 := make([]byte, 8)
+	n1, err := reader1.Read(p1)
+	if err != nil || n1 != 8 {
+		t.Fatalf("Read 1 failed: %v n=%d", err, n1)
+	}
+
+	blockKey := "block:" + blocks[0].mid.String()
+	if cachedData, hit := mg.lru.get(blockKey); !hit || string(cachedData) != string(data) {
+		t.Fatalf("expected block chunk in LRU cache, hit=%v data=%q", hit, string(cachedData))
+	}
+
+	reader2 := newDagReader(context.Background(), mb, mg.lru, mg.metrics, blocks, total)
+	if _, err := reader2.Seek(8, io.SeekStart); err != nil {
+		t.Fatalf("Seek 2 failed: %v", err)
+	}
+	p2 := make([]byte, 8)
+	n2, err := reader2.Read(p2)
+	if err != nil || n2 != 8 || string(p2) != string(data[8:16]) {
+		t.Fatalf("Read 2 sub-chunk hit failed: %v n=%d got=%q", err, n2, string(p2))
+	}
+}

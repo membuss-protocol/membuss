@@ -264,6 +264,8 @@ func buildBlockList(ctx context.Context, backend Backend, root mid.MID) ([]dagBl
 type dagReader struct {
 	ctx         context.Context
 	backend     Backend
+	cache       *shardedLRU
+	metrics     *gatewayMetrics
 	blocks      []dagBlock
 	totalSize   int64
 	pos         int64
@@ -271,10 +273,12 @@ type dagReader struct {
 	curBlockBuf []byte
 }
 
-func newDagReader(ctx context.Context, backend Backend, blocks []dagBlock, totalSize int64) *dagReader {
+func newDagReader(ctx context.Context, backend Backend, cache *shardedLRU, metrics *gatewayMetrics, blocks []dagBlock, totalSize int64) *dagReader {
 	return &dagReader{
 		ctx:         ctx,
 		backend:     backend,
+		cache:       cache,
+		metrics:     metrics,
 		blocks:      blocks,
 		totalSize:   totalSize,
 		curBlockIdx: -1,
@@ -296,9 +300,29 @@ func (r *dagReader) Read(p []byte) (int, error) {
 
 	if r.curBlockIdx != idx || r.curBlockBuf == nil {
 		block := r.blocks[idx]
-		data, err := r.backend.RawBlock(r.ctx, block.mid)
-		if err != nil {
-			return 0, fmt.Errorf("read block %s: %w", block.mid.String(), err)
+		blockKey := "block:" + block.mid.String()
+
+		var data []byte
+		var hit bool
+		if r.cache != nil {
+			data, hit = r.cache.get(blockKey)
+		}
+		if hit {
+			if r.metrics != nil {
+				r.metrics.cacheHitsTotal.Inc()
+			}
+		} else {
+			if r.metrics != nil {
+				r.metrics.cacheMissesTotal.Inc()
+			}
+			var err error
+			data, err = r.backend.RawBlock(r.ctx, block.mid)
+			if err != nil {
+				return 0, fmt.Errorf("read block %s: %w", block.mid.String(), err)
+			}
+			if r.cache != nil {
+				r.cache.put(blockKey, data)
+			}
 		}
 		r.curBlockIdx = idx
 		r.curBlockBuf = data
