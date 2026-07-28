@@ -300,17 +300,22 @@ func (h *MemHerald) RunOnce(ctx context.Context) int {
 			if provideErr == nil {
 				break
 			}
-			
+
 			if errors.Is(provideErr, context.Canceled) || errors.Is(provideErr, context.DeadlineExceeded) {
 				break
 			}
-			
+
 			if h.cfg.Metrics != nil {
 				h.cfg.Metrics.IncDHTProvideFailed()
 			}
-			
+
+			// Don't waste retries or spam logs if the routing table has no peers yet
+			if strings.Contains(provideErr.Error(), "failed to find any peer in table") {
+				break
+			}
+
 			log.Printf("herald: Provide attempt %d failed for MID %s: %v. Retrying...", attempt, m, provideErr)
-			
+
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -320,15 +325,17 @@ func (h *MemHerald) RunOnce(ctx context.Context) int {
 
 		if provideErr != nil {
 			failed++
-			log.Printf("herald: failed to provide MID %s after 3 attempts: %v", m, provideErr)
+			if !strings.Contains(provideErr.Error(), "failed to find any peer in table") {
+				log.Printf("herald: failed to provide MID %s: %v", m, provideErr)
+			}
 			return nil // continue walking/collecting
 		}
-		
+
 		announced++
 		if h.cfg.Metrics != nil {
 			h.cfg.Metrics.IncDHTProvide()
 		}
-		
+
 		// Progress tracking log every 100 successful announcements
 		if announced%100 == 0 {
 			log.Printf("herald progress: successfully provided %d MIDs (failed: %d) in this round", announced, failed)
@@ -340,6 +347,10 @@ func (h *MemHerald) RunOnce(ctx context.Context) int {
 	err := h.collectStream(ctx, announceFn)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("herald: reprovide run error: %v", err)
+	}
+
+	if announced > 0 || failed > 0 {
+		log.Printf("herald round complete: %d provided, %d skipped/failed", announced, failed)
 	}
 
 	h.mu.Lock()
