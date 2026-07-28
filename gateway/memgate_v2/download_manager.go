@@ -205,3 +205,26 @@ func (dm *DownloadManager) GetOrCreateJob(m mid.MID, backend Backend) (*Download
 
 	return job, true
 }
+
+// Close gracefully terminates all background download jobs and cancels their listeners.
+func (dm *DownloadManager) Close() {
+	if dm == nil {
+		return
+	}
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	for _, job := range dm.jobs {
+		job.mu.Lock()
+		if job.cancel != nil {
+			job.cancel()
+		}
+		listeners := job.listeners
+		job.listeners = make(map[int]chan ProgressUpdate)
+		job.mu.Unlock()
+
+		for _, ch := range listeners {
+			close(ch)
+		}
+	}
+	dm.jobs = make(map[string]*DownloadJob)
+}

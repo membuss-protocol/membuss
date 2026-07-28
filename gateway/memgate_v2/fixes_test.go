@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
@@ -506,6 +507,40 @@ func TestSubchunkCaching_MediaStreamingSeek(t *testing.T) {
 	p2 := make([]byte, 8)
 	n2, err := reader2.Read(p2)
 	if err != nil || n2 != 8 || string(p2) != string(data[8:16]) {
-		t.Fatalf("Read 2 sub-chunk hit failed: %v n=%d got=%q", err, n2, string(p2))
+		t.Errorf("Read 2 sub-chunk hit failed: %v n=%d got=%q", err, n2, string(p2))
+	}
+}
+
+func TestMemGate_GracefulShutdown(t *testing.T) {
+	mb := newMemBackend()
+	data := []byte("shutdown test payload")
+	m := putRandom(mb, data)
+
+	mg, err := New(Config{Backend: mb, RateLimitPerMin: 60})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	job, created := mg.downloadManager.GetOrCreateJob(m, mb)
+	if !created || job == nil {
+		t.Fatalf("GetOrCreateJob failed")
+	}
+
+	_, ch := job.AddListener()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := mg.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Errorf("expected listener channel to be closed on shutdown")
+		}
+	case <-time.After(1 * time.Second):
+		t.Errorf("timeout waiting for listener channel closure on shutdown")
 	}
 }

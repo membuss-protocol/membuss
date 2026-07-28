@@ -231,12 +231,30 @@ func New(cfg Config) (*MemGate, error) {
 	return mg, nil
 }
 
-// Close gracefully shuts down background workers and timers.
+// Close gracefully shuts down background workers, timers, and active download tasks.
 func (m *MemGate) Close() error {
 	if m.ipLimiter != nil {
 		m.ipLimiter.Stop()
 	}
+	if m.downloadManager != nil {
+		m.downloadManager.Close()
+	}
 	return nil
+}
+
+// Shutdown gracefully shuts down MemGate before the context deadline expires.
+func (m *MemGate) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		_ = m.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Router returns the chi router. Exposed so tests can drive

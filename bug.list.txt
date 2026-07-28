@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-020: Missing graceful shutdown and resource cleanup in MemGate
+  Fixed: 2026-07-28 — Add Shutdown(ctx) and DownloadManager.Close() to cancel active jobs, close listener channels, and stop rate limiter tickers.
+
 [FIXED] BUG-019: Missing sub-chunk LRU caching for media range seeking
   Fixed: 2026-07-27 — Extend dagReader to cache individual 256KB block chunks in shardedLRU, eliminating disk I/O during media seeking.
 

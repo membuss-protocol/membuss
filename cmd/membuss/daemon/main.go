@@ -991,7 +991,13 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 			}
 		}
 	}
-	return startHTTP(addr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
+	hs, err := startHTTP(addr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
+	if err != nil {
+		_ = mg.Close()
+		return nil, err
+	}
+	hs.onClose = mg.Shutdown
+	return hs, nil
 }
 
 // startNodeAPI brings up the local Node control API. mtrx
@@ -1105,6 +1111,7 @@ type httpServer struct {
 	// for the lifetime of the listener (useful when the
 	// caller passed ":0" and needs the resolved port).
 	boundAddr string
+	onClose   func(ctx context.Context) error
 }
 
 // Addr returns the address the server is listening on.
@@ -1142,9 +1149,7 @@ func (h *httpServer) Close() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := h.srv.Shutdown(ctx); err != nil {
-		slog.Warn("http shutdown", "name", h.name, "err", err.Error())
-	}
+	_ = h.ShutdownCtx(ctx)
 }
 
 // ShutdownCtx performs a graceful shutdown bounded by the
@@ -1154,6 +1159,9 @@ func (h *httpServer) Close() {
 func (h *httpServer) ShutdownCtx(ctx context.Context) error {
 	if h == nil || h.srv == nil {
 		return nil
+	}
+	if h.onClose != nil {
+		_ = h.onClose(ctx)
 	}
 	// Try graceful shutdown with a short timeout first (e.g. 500ms)
 	// to allow normal active requests to complete, then force close
