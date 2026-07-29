@@ -198,6 +198,11 @@ func (s *MemStore) initBloom(cfg BloomConfig) error {
 	return nil
 }
 
+// LargeBlockThreshold is the payload size threshold (1 MiB) above which
+// block data is written to external flat file storage when blocksPath is set.
+// Small and medium blocks (< 1 MiB) are stored directly in Pebble SSTables.
+const LargeBlockThreshold = 1024 * 1024
+
 // Put stores data under the given MID.
 func (s *MemStore) Put(m mid.MID, data []byte) error {
 	if err := s.enter(); err != nil {
@@ -224,8 +229,8 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 	b := s.db.NewBatch()
 	defer b.Close()
 
-	if s.blocksPath != "" {
-		// Write block data to flat file on disk
+	if s.blocksPath != "" && len(data) >= LargeBlockThreshold {
+		// Write block data to flat file on disk for large blobs (>= 1MB)
 		fpath := s.blockPath(m)
 		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
 			return fmt.Errorf("store: create block dir: %w", err)
@@ -287,8 +292,8 @@ func (s *MemStore) PutDAG(m mid.MID, data []byte) error {
 	b := s.db.NewBatch()
 	defer b.Close()
 
-	if s.blocksPath != "" {
-		// Write block data to flat file on disk
+	if s.blocksPath != "" && len(data) >= LargeBlockThreshold {
+		// Write block data to flat file on disk for large blobs (>= 1MB)
 		fpath := s.blockPath(m)
 		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
 			return fmt.Errorf("store: create block dir: %w", err)
@@ -353,37 +358,35 @@ func (s *MemStore) Get(m mid.MID) ([]byte, error) {
 	}
 
 	var data []byte
-	if s.blocksPath != "" {
-		hasBlock, err := s.db.Has(db.BlockKey(m))
-		if err != nil {
-			return nil, err
-		}
-		hasDag, err := s.db.Has(db.DagKey(m))
-		if err != nil {
-			return nil, err
-		}
-		if !hasBlock && !hasDag {
-			return nil, ErrNotFound
-		}
-		d, err := os.ReadFile(s.blockPath(m))
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, ErrNotFound
-			}
-			return nil, err
-		}
-		data = d
-	} else if b, err := s.db.Get(db.BlockKey(m)); err == nil {
-		data = b
+	var val []byte
+	var valErr error
+
+	if b, err := s.db.Get(db.BlockKey(m)); err == nil {
+		val = b
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return nil, err
+	} else if d, err := s.db.Get(db.DagKey(m)); err == nil {
+		val = d
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return nil, err
 	} else {
-		val, err := s.db.Get(db.DagKey(m))
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, ErrNotFound
-		} else if err != nil {
+		valErr = ErrNotFound
+	}
+
+	if valErr != nil {
+		return nil, valErr
+	}
+
+	if s.blocksPath != "" && len(val) == 8 {
+		fpath := s.blockPath(m)
+		if d, err := os.ReadFile(fpath); err == nil {
+			data = d
+		} else if os.IsNotExist(err) {
+			data = val
+		} else {
 			return nil, err
 		}
+	} else {
 		data = val
 	}
 
@@ -403,29 +406,24 @@ func (s *MemStore) GetDAG(m mid.MID) ([]byte, error) {
 		return nil, errors.New("store: zero MID")
 	}
 
-	if s.blocksPath != "" {
-		hasDag, err := s.db.Has(db.DagKey(m))
-		if err != nil {
-			return nil, err
-		}
-		if !hasDag {
-			return nil, ErrNotFound
-		}
-		data, err := os.ReadFile(s.blockPath(m))
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, ErrNotFound
-			}
-			return nil, err
-		}
-		return data, nil
-	}
-
 	val, err := s.db.Get(db.DagKey(m))
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
 	}
-	return val, err
+
+	if s.blocksPath != "" && len(val) == 8 {
+		fpath := s.blockPath(m)
+		if d, err := os.ReadFile(fpath); err == nil {
+			return d, nil
+		} else if os.IsNotExist(err) {
+			return val, nil
+		} else {
+			return nil, err
+		}
+	}
+	return val, nil
 }
 
 // Has reports whether a block OR a DAG node exists for m.

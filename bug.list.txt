@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-033: Flat file double-write overhead in Pebble blockstore
+  Fixed: 2026-07-29 — Add LargeBlockThreshold (1 MiB) in core/store/pebble.go so small/medium blocks (<1 MiB) are written directly to Pebble DB SSTables, avoiding filesystem file creation.
+
 [FIXED] BUG-032: Heap allocation overhead in mid.Bytes(), mid.RawBytes(), and Block.RawData()
   Fixed: 2026-07-29 — Make mid.Bytes() and mid.RawBytes() return m.Hash directly without copying, and add Block.RawData() zero-copy getter for internal pipelines.
 

@@ -78,11 +78,13 @@ func (g *gcWriteTracker) IsProtected(m mid.MID, writeTs uint64, minAge time.Dura
 
 	if writeTs > 0 {
 		effectiveGrace := grace
-		if minAge > 0 && minAge < grace {
+		if minAge == 0 {
+			effectiveGrace = 0
+		} else if minAge < grace {
 			effectiveGrace = minAge
 		}
 		cutoff := uint64(time.Now().Add(-effectiveGrace).Unix())
-		if writeTs >= cutoff {
+		if writeTs >= cutoff && effectiveGrace > 0 {
 			return true
 		}
 	}
