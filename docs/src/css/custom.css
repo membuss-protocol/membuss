@@ -1,0 +1,253 @@
+/**
+ * Membuss Documentation — Restrained Design System
+ * Clean, warm, content-first. No gradients on text. No glow. No glass.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --ifm-font-family-base: 'Inter', system-ui, -apple-system, sans-serif;
+  --ifm-font-family-heading: 'Inter', system-ui, -apple-system, sans-serif;
+  --ifm-font-family-monospace: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --ifm-color-primary: #c8956c;
+  --ifm-color-primary-dark: #b5845e;
+  --ifm-color-primary-darker: #a97b57;
+  --ifm-color-primary-darkest: #8b6447;
+  --ifm-color-primary-light: #d4a67e;
+  --ifm-color-primary-lighter: #dab089;
+  --ifm-color-primary-lightest: #e5c5a5;
+
+  --ifm-code-font-size: 85%;
+  --docusaurus-highlighted-code-line-bg: rgba(200, 149, 108, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-background-color: #0e1015;
+  --ifm-background-surface-color: #161920;
+  --ifm-navbar-background-color: rgba(14, 16, 21, 0.92);
+  --ifm-card-background-color: #161920;
+  --ifm-footer-background-color: #0b0d11;
+
+  --ifm-color-content: #a0a8b8;
+  --ifm-heading-color: #e2e5eb;
+  --ifm-link-color: #c8956c;
+  --ifm-link-hover-color: #d4a67e;
+  --ifm-toc-border-color: rgba(255, 255, 255, 0.06);
+
+  --ifm-menu-color-active: #c8956c;
+  --ifm-menu-color-background-active: rgba(200, 149, 108, 0.08);
+}
+
+html, body {
+  background-color: #0e1015;
+  background-attachment: scroll !important;
+  background-image: none !important;
+  color: #a0a8b8;
+}
+
+.main-wrapper {
+  background-color: #0e1015;
+  background-attachment: scroll !important;
+  background-image: none !important;
+}
+
+.theme-doc-sidebar-container,
+.sidebar {
+  background-color: #0e1015 !important;
+  background-attachment: scroll !important;
+  background-image: none !important;
+}
+
+/* ─── Navbar ────────────────────────────────────────────── */
+
+.navbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.navbar__title {
+  font-weight: 700;
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+  color: #e2e5eb;
+}
+
+.navbar__logo img {
+  border-radius: 6px;
+}
+
+/* ─── Headings ──────────────────────────────────────────── */
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--ifm-font-family-heading);
+  letter-spacing: -0.02em;
+  color: #e2e5eb;
+}
+
+h1 {
+  font-weight: 700;
+  font-size: 2.5rem;
+  line-height: 1.15;
+  color: #e2e5eb;
+}
+
+h2 {
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 0.75rem;
+  margin-top: 2.5rem;
+}
+
+/* ─── Table of Contents ─────────────────────────────────── */
+
+.table-of-contents__link {
+  color: #7a828e;
+  font-size: 0.85rem;
+}
+
+.table-of-contents__link:hover {
+  color: #a0a8b8;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.table-of-contents__link--active {
+  color: #c8956c;
+  border-left-color: #c8956c;
+  background: rgba(200, 149, 108, 0.04);
+}
+
+/* ─── Admonitions / MDX ─────────────────────────────────── */
+
+.admonition {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ─── Sidebar — Clear Hierarchy ──────────────────────────── */
+
+.theme-doc-sidebar-container {
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.menu {
+  padding: 0.5rem 0;
+}
+
+.menu__list {
+  margin: 0;
+  padding: 0;
+}
+
+.menu__list-item {
+  margin: 0;
+  padding: 0;
+}
+
+/* Section headers */
+.menu__link--sublist {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #5a6270 !important;
+  padding: 0.6rem 0.75rem;
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: color 160ms ease-out;
+}
+
+.menu__link--sublist:first-child {
+  margin-top: 0;
+}
+
+.menu__link--sublist:hover {
+  color: #8891a5 !important;
+  background: none !important;
+}
+
+/* Hide default caret */
+.menu__caret {
+  display: none !important;
+}
+
+/* Child items container — left border as vertical line */
+.menu__list .menu__list {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  margin-left: 1rem;
+  padding: 0.15rem 0 0.35rem 0;
+}
+
+/* Page links */
+.menu__link {
+  font-size: 0.825rem;
+  font-weight: 400;
+  color: #7a828e !important;
+  padding: 0.35rem 0.65rem;
+  margin: 1px 0;
+  border-radius: 4px;
+  display: block;
+  transition: color 160ms ease-out, background 160ms ease-out;
+}
+
+.menu__link:hover {
+  color: #c5cdd8 !important;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Active page */
+.menu__link--active:not(.menu__link--sublist) {
+  color: #c8956c !important;
+  background: rgba(200, 149, 108, 0.06);
+  font-weight: 500;
+  border-left: 2px solid #c8956c;
+  padding-left: calc(0.65rem - 2px);
+}
+
+/* ─── Mermaid SVG Diagram Styling ───────────────────────── */
+.docusaurus-mermaid-container {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  margin: 2rem 0 !important;
+  padding: 1.75rem 1.5rem !important;
+  background: #141720 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 10px !important;
+  overflow-x: auto !important;
+  width: 100% !important;
+}
+
+.docusaurus-mermaid-container svg {
+  max-width: 100% !important;
+  height: auto !important;
+  font-family: var(--ifm-font-family-base) !important;
+}
+
+.docusaurus-mermaid-container .node rect,
+.docusaurus-mermaid-container .node circle,
+.docusaurus-mermaid-container .node polygon {
+  fill: #1a1e29 !important;
+  stroke: #c8956c !important;
+  stroke-width: 1.5px !important;
+  rx: 6px !important;
+  ry: 6px !important;
+}
+
+.docusaurus-mermaid-container .node .label {
+  color: #f1f3f7 !important;
+  font-size: 0.9rem !important;
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+}
+
+.docusaurus-mermaid-container .edgePath .path {
+  stroke: #c8956c !important;
+  stroke-width: 1.5px !important;
+}
+
+.docusaurus-mermaid-container .marker {
+  fill: #c8956c !important;
+  stroke: #c8956c !important;
+}

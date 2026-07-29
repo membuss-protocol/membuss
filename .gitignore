@@ -47,6 +47,10 @@ secrets.yaml
 # Local dev artifacts
 /dev/
 
+# Docusaurus build output & dependencies
+docs/.docusaurus/
+docs/build/
+docs/node_modules/
 
 # graphify
 graphify-out/
@@ -78,4 +82,3 @@ nul
 Screenshot 2026-07-17 105706.png
 records.txt
 finding.txt
-
