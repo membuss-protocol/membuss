@@ -474,9 +474,7 @@ func (s *MemStore) Delete(m mid.MID) error {
 	}
 
 	if s.bloom != nil {
-		if rerr := s.bloom.rebuildFromDB(s.db); rerr != nil {
-			return fmt.Errorf("store: bloom rebuild after delete: %w", rerr)
-		}
+		s.bloom.recordDelete(s.db)
 	}
 	if s.Hooks != nil {
 		s.Hooks.TriggerAfterBlockDel(context.Background(), m)
@@ -506,9 +504,7 @@ func (s *MemStore) DeleteDAG(m mid.MID) error {
 	}
 
 	if s.bloom != nil {
-		if rerr := s.bloom.rebuildFromDB(s.db); rerr != nil {
-			return fmt.Errorf("store: bloom rebuild after delete: %w", rerr)
-		}
+		s.bloom.recordDelete(s.db)
 	}
 	return nil
 }

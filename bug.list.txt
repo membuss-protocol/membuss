@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-028: Severe O(N) full DB scans on MemStore Delete and DeleteDAG
+  Fixed: 2026-07-29 — Replace per-delete DB rebuild calls with in-memory deletion counter and 5-second debounced background rebuilds in bloomIndex.
+
 [FIXED] BUG-027: MemNS single-file metadata resolution and directory listing chi URLParam lookup errors
   Fixed: 2026-07-29 — Delegate bare MemNS requests directly to handleResolved, truncate defaultFilename multihashes to 16 chars, and create handleDirListForMID. Commit 0c6fa58.
 

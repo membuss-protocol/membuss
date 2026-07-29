@@ -86,11 +86,12 @@ type bloomIndex struct {
 	fpRate   float64
 	path     string
 
-	rebuildCh chan *db.DB
-	closeCh   chan struct{}
-	closed    bool
-	ctx       context.Context
-	cancel    context.CancelFunc
+	rebuildCh    chan *db.DB
+	closeCh      chan struct{}
+	closed       bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	deletedCount uint64
 }
 
 // newBloomIndex constructs a fresh filter with the
@@ -198,6 +199,30 @@ func (b *bloomIndex) add(m mid.MID) {
 	b.mu.Unlock()
 }
 
+// recordDelete records a block deletion in memory.
+// Standard bloom filters do not support item removal, so deleted MIDs remain
+// as benign false positives without compromising Has/Get correctness.
+// If cumulative deletions exceed 10% of configured capacity, a debounced
+// background rebuild is queued.
+func (b *bloomIndex) recordDelete(database *db.DB) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.deletedCount++
+	threshold := uint64(b.capacity / 10)
+	if threshold == 0 {
+		threshold = 1000
+	}
+	shouldRebuild := b.deletedCount >= threshold
+	b.mu.Unlock()
+
+	if shouldRebuild {
+		_ = b.rebuildFromDB(database)
+	}
+}
+
+// rebuildFromDB queues an asynchronous, debounced rebuild of the bloom filter.
 func (b *bloomIndex) rebuildFromDB(database *db.DB) error {
 	if b == nil {
 		return nil
@@ -236,6 +261,7 @@ func (b *bloomIndex) performRebuild(database *db.DB) error {
 	}
 	b.mu.Lock()
 	b.filter = fresh
+	b.deletedCount = 0
 	b.mu.Unlock()
 	return nil
 }
@@ -243,7 +269,7 @@ func (b *bloomIndex) performRebuild(database *db.DB) error {
 func (b *bloomIndex) rebuildWorker() {
 	defer close(b.closeCh)
 	var lastDb *db.DB
-	timer := time.NewTimer(500 * time.Millisecond)
+	timer := time.NewTimer(5 * time.Second)
 	if !timer.Stop() {
 		<-timer.C
 	}
@@ -258,7 +284,7 @@ func (b *bloomIndex) rebuildWorker() {
 			return
 		case database := <-b.rebuildCh:
 			lastDb = database
-			timer.Reset(500 * time.Millisecond)
+			timer.Reset(5 * time.Second)
 		case <-timer.C:
 			if lastDb != nil {
 				_ = b.performRebuild(lastDb)
