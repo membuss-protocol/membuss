@@ -27,6 +27,7 @@
 package mid
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -82,6 +83,8 @@ type MID struct {
 	// cid is the parsed go-cid form. Cached so callers that
 	// want the rich cid.Cid API do not have to re-parse.
 	cid cid.Cid
+	// str is the cached public string form ("mem" + base32).
+	str string
 }
 
 // FromBytes returns the MID for the given content bytes. The
@@ -161,11 +164,13 @@ func build(version uint8, codec uint64, mh []byte) (MID, error) {
 		return MID{}, fmt.Errorf("mid: unsupported CID version %d", version)
 	}
 	c := cid.NewCidV1(codec, mh)
+	str := Prefix + c.String()
 	return MID{
 		Version: version,
 		codec:   codec,
 		Hash:    mh,
 		cid:     c,
+		str:     str,
 	}, nil
 }
 
@@ -192,11 +197,17 @@ func Parse(s string) (MID, error) {
 	if err := validateEnvelope(mh); err != nil {
 		return MID{}, fmt.Errorf("mid: invalid multihash envelope: %w", err)
 	}
+	str := s
+	formatted := Prefix + parsed.String()
+	if str != formatted {
+		str = formatted
+	}
 	return MID{
 		Version: uint8(parsed.Version()),
 		codec:   parsed.Prefix().Codec,
 		Hash:    append([]byte(nil), mh...),
 		cid:     parsed,
+		str:     str,
 	}, nil
 }
 
@@ -265,6 +276,12 @@ func (m MID) CID() cid.Cid { return m.cid }
 // the "mem" prefix followed by the multibase (base32lower)
 // encoding of the CIDv1 bytes.
 func (m MID) String() string {
+	if m.str != "" {
+		return m.str
+	}
+	if len(m.Hash) == 0 {
+		return ""
+	}
 	c := cid.NewCidV1(m.codec, m.Hash)
 	return Prefix + c.String()
 }
@@ -278,15 +295,7 @@ func (m MID) Equal(other MID) bool {
 	if m.codec != other.codec {
 		return false
 	}
-	if len(m.Hash) != len(other.Hash) {
-		return false
-	}
-	for i := range m.Hash {
-		if m.Hash[i] != other.Hash[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(m.Hash, other.Hash)
 }
 
 // IsZero reports whether m is the zero value, which is not

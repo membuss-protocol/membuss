@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-030: Allocation & string formatting overhead in MID String and Equal
+  Fixed: 2026-07-29 — Memoize m.str in MID struct during build/Parse and optimize Equal using assembly-optimized bytes.Equal.
+
 [FIXED] BUG-029: Garbage collection race condition with concurrent block ingestion
   Fixed: 2026-07-29 — Implement gcWriteTracker (core/store/gc_tracker.go) to track active writes during GC sweeps and enforce a 5-minute ingestion grace period.
 
