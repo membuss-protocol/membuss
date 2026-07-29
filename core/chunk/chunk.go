@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/nnlgsakib/membuss/core/mid"
 
@@ -29,6 +30,35 @@ const MaxBlockSize = 4 * 1024 * 1024
 // MinBlockSize is the lower bound for any chunker. Sub-block-size
 // inputs are emitted as a single block rather than being split.
 const MinBlockSize = 1024
+
+var blockBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, DefaultBlockSize)
+		return &b
+	},
+}
+
+// GetBlockBuffer returns a byte slice pointer of length size from the pool
+// if size equals DefaultBlockSize (256 KiB). Otherwise, it allocates a new buffer.
+func GetBlockBuffer(size int) *[]byte {
+	if size == DefaultBlockSize {
+		if ptr, ok := blockBufferPool.Get().(*[]byte); ok {
+			*ptr = (*ptr)[:DefaultBlockSize]
+			return ptr
+		}
+	}
+	b := make([]byte, size)
+	return &b
+}
+
+// PutBlockBuffer recycles a byte slice pointer back into blockBufferPool
+// if its capacity equals DefaultBlockSize (256 KiB).
+func PutBlockBuffer(buf *[]byte) {
+	if buf != nil && cap(*buf) == DefaultBlockSize {
+		*buf = (*buf)[:DefaultBlockSize]
+		blockBufferPool.Put(buf)
+	}
+}
 
 // Block is the user-facing view of a single chunk. The underlying
 // protobuf message is kept side by side so callers can serialize it
@@ -97,7 +127,11 @@ func NewFixed(size int) ChunkerFactory {
 		if size > MaxBlockSize {
 			return nil, fmt.Errorf("chunk: fixed size %d above maximum %d", size, MaxBlockSize)
 		}
-		return &fixedChunker{r: r, size: size}, nil
+		return &fixedChunker{
+			r:      r,
+			size:   size,
+			bufPtr: GetBlockBuffer(size),
+		}, nil
 	}
 }
 
@@ -110,12 +144,20 @@ func closeReader(r io.Reader) {
 type fixedChunker struct {
 	r       io.Reader
 	size    int
-	buf     []byte
+	bufPtr  *[]byte
 	eofSeen bool
+	closed  bool
 }
 
 func (f *fixedChunker) Close() error {
-	f.eofSeen = true
+	if !f.closed {
+		f.closed = true
+		f.eofSeen = true
+		if f.bufPtr != nil {
+			PutBlockBuffer(f.bufPtr)
+			f.bufPtr = nil
+		}
+	}
 	if closer, ok := f.r.(io.Closer); ok {
 		return closer.Close()
 	}
@@ -124,32 +166,44 @@ func (f *fixedChunker) Close() error {
 
 func (f *fixedChunker) Next() (Block, error) {
 	if f.eofSeen {
+		if f.bufPtr != nil {
+			PutBlockBuffer(f.bufPtr)
+			f.bufPtr = nil
+		}
 		return Block{}, io.EOF
 	}
-	if cap(f.buf) < f.size {
-		f.buf = make([]byte, f.size)
+	if f.bufPtr == nil {
+		f.bufPtr = GetBlockBuffer(f.size)
 	}
-	f.buf = f.buf[:f.size]
 
+	buf := (*f.bufPtr)[:f.size]
 	read := 0
 	for read < f.size {
-		n, err := f.r.Read(f.buf[read:])
+		n, err := f.r.Read(buf[read:])
 		read += n
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				f.eofSeen = true
 				closeReader(f.r)
+				if f.bufPtr != nil {
+					PutBlockBuffer(f.bufPtr)
+					f.bufPtr = nil
+				}
 				if read == 0 {
 					return Block{}, io.EOF
 				}
-				return f.makeBlock(f.buf[:read]), nil
+				return f.makeBlock(buf[:read]), nil
 			}
 			f.eofSeen = true
 			closeReader(f.r)
+			if f.bufPtr != nil {
+				PutBlockBuffer(f.bufPtr)
+				f.bufPtr = nil
+			}
 			return Block{}, fmt.Errorf("chunk: read: %w", err)
 		}
 	}
-	return f.makeBlock(f.buf), nil
+	return f.makeBlock(buf), nil
 }
 
 func (f *fixedChunker) makeBlock(data []byte) Block {

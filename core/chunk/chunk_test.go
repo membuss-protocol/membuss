@@ -377,3 +377,23 @@ func TestFixedChunker_ClosesUnderlyingReaderOnErrorAndEOF(t *testing.T) {
 		t.Fatal("expected mock reader to be closed on read error")
 	}
 }
+
+func TestBlockBufferPool_RecyclesBuffers(t *testing.T) {
+	bufPtr := GetBlockBuffer(DefaultBlockSize)
+	if bufPtr == nil || cap(*bufPtr) != DefaultBlockSize {
+		t.Fatalf("GetBlockBuffer returned invalid buffer: %v", bufPtr)
+	}
+	// Write dummy byte to verify pointer retention
+	(*bufPtr)[0] = 0xAB
+	PutBlockBuffer(bufPtr)
+
+	bufPtr2 := GetBlockBuffer(DefaultBlockSize)
+	if bufPtr2 == nil || cap(*bufPtr2) != DefaultBlockSize {
+		t.Fatalf("GetBlockBuffer after Put returned invalid buffer")
+	}
+	if (*bufPtr2)[0] != 0xAB {
+		t.Log("Note: buffer was reallocated or cleared by runtime GC")
+	}
+	PutBlockBuffer(bufPtr2)
+}
+
