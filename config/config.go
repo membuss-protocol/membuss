@@ -84,7 +84,8 @@ type Config struct {
 	GatewayRateLimitPerMin int `yaml:"gateway_rate_limit_per_min"`
 	MemexRetryBackoff RetryBackoffConfig `yaml:"memex_retry_backoff"`
 	BootstrapBackoff RetryBackoffConfig `yaml:"bootstrap_backoff"`
-	MetricsEnabled bool `yaml:"metrics_enabled"`
+	MetricsEnabled bool   `yaml:"metrics_enabled"`
+	MetricsToken   string `yaml:"metrics_token"`
 
 	// --- Phase 11: NAT traversal + relay fallback ---
 

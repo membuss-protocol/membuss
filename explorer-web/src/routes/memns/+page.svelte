@@ -111,6 +111,13 @@
 		e.preventDefault();
 		if (!selectedKey || !publishValue.trim()) return;
 
+		let val = publishValue.trim();
+		if (val.includes('/explorer/mid/')) {
+			val = val.substring(val.indexOf('/explorer/mid/') + 14);
+		} else if (val.includes('/mem/')) {
+			val = val.substring(val.indexOf('/mem/') + 5);
+		}
+
 		try {
 			publishing = true;
 			errorPublish = null;
@@ -119,7 +126,7 @@
 				method: 'POST',
 				body: JSON.stringify({
 					key: selectedKey,
-					value: publishValue.trim(),
+					value: val,
 					ttl: Number(publishTTL),
 					message: publishMsg.trim()
 				})

@@ -17,7 +17,8 @@ export async function apiFetch(path: string, init?: RequestInit) {
 	if (!res.ok) {
 		throw new Error(await res.text() || `HTTP ${res.status}`);
 	}
-	return res.json();
+	const text = await res.text();
+	return text ? JSON.parse(text) : null;
 }
 
 export function formatBytes(bytes: number): string {

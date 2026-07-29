@@ -4,6 +4,63 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-027: MemNS single-file metadata resolution and directory listing chi URLParam lookup errors
+  Fixed: 2026-07-29 — Delegate bare MemNS requests directly to handleResolved, truncate defaultFilename multihashes to 16 chars, and create handleDirListForMID. Commit 0c6fa58.
+
+[FIXED] BUG-026: Double WriteHeader call warning in statusResponseWriter
+  Fixed: 2026-07-29 — Add wroteHeader flag to statusResponseWriter to guard against duplicate WriteHeader calls.
+
+[FIXED] BUG-025: Keyring delete returned 0-byte body causing JSON syntax error in Explorer UI
+  Fixed: 2026-07-29 — Return JSON status payload from handleKeyringRm and safely parse JSON in apiFetch.
+
+[FIXED] BUG-024: Low-level CID library error leaks in mid.Parse
+  Fixed: 2026-07-29 — Clean up mid.Parse error messages to return domain MID errors instead of internal cid parse traces.
+
+[FIXED] BUG-023: MemNS target validation and dirty URL sanitization in core
+  Fixed: 2026-07-29 — Add ValidateAndNormalizeValue to core/memns to enforce strict MID target validation and extract MIDs from pasted URLs.
+
+[FIXED] BUG-022: Herald console log spam when routing table has no peers
+  Fixed: 2026-07-29 — Short-circuit retries and suppress per-MID log spam when routing table is empty.
+
+[FIXED] BUG-021: 500 Internal Server Error on SSE resolve-stream due to missing http.Flusher in statusResponseWriter
+  Fixed: 2026-07-29 — Implement Flush() and Hijack() on statusResponseWriter to support SSE progress streaming.
+
+[FIXED] BUG-020: Missing graceful shutdown and resource cleanup in MemGate
+  Fixed: 2026-07-28 — Add Shutdown(ctx) and DownloadManager.Close() to cancel active jobs, close listener channels, and stop rate limiter tickers.
+
+[FIXED] BUG-019: Missing sub-chunk LRU caching for media range seeking
+  Fixed: 2026-07-27 — Extend dagReader to cache individual 256KB block chunks in shardedLRU, eliminating disk I/O during media seeking.
+
+[FIXED] BUG-018: Uncompressed text, JSON, and web explorer assets in Gateway
+  Fixed: 2026-07-27 — Add transparent gzip/deflate HTTP compression middleware (chi/middleware.Compress level 5) for text, JSON, CSS, JS, SVG, and WASM assets.
+
+[FIXED] BUG-017: Memory amplification in Gateway response buffering
+  Fixed: 2026-07-27 — Implement zero-copy dual-streaming with io.MultiWriter to eliminate pre-buffering memory amplification and TTFB latency.
+
+[FIXED] BUG-016: Thundering herd on uncached MID DAG lookups
+  Fixed: 2026-07-27 — Wrap buildBlockList in singleflight.Group Do so concurrent requests share a single DAG traversal.
+
+[FIXED] BUG-015: Explorer UI provider list multiaddr text wall clutter
+  Fixed: 2026-07-27 — Parse provider strings to display clean Node Peer IDs with badge multiaddr counts in Svelte SPA explorer.
+
+[FIXED] BUG-014: High latency on local MID Stat calls and missing reprovides for unsealed content
+  Fixed: 2026-07-27 — Add in-memory statCache for sealed MIDs in daemonBackend and wrap store for MemHerald to re-announce unsealed root MIDs.
+
+[FIXED] BUG-013: O(N) linear scan in blockListCache
+  Fixed: 2026-07-27 — Replace slice-based ordering with O(1) doubly-linked list pointers for LRU cache hits.
+
+[FIXED] BUG-012: ipLimiter background reaper ticker leak
+  Fixed: 2026-07-27 — Add stopCh, Stop() method, and MemGate.Close() to cleanly terminate ipLimiter reaper ticker loop.
+
+[FIXED] BUG-011: Hardcoded .localhost subdomain check for SSE status route
+  Fixed: 2026-07-27 — Replace .localhost domain check with resolveSubdomain(r) to generate correct SSE /~status URLs on production domain deployments.
+
+[FIXED] BUG-010: Listener channel and goroutine leak in DownloadManager
+  Fixed: 2026-07-27 — Fix RemoveListener channel closing, add AddListenerWithContext for SSE disconnect auto-cleanup, and clear listeners on job finish.
+
+[FIXED] BUG-009: Memory & Client IP leak in RefererTracker
+  Fixed: 2026-07-27 — Replace map clear with LRU eviction for pathMIDs; bound recentMIDs client IPs & add auto-prune TTL.
+
 [FIXED] BUG-008: Swarm fallback & automatic re-announcements on node restart
   Fixed: 2026-07-26 — MemHerald background re-announcements & fallback to connected swarm peers when DHT providers expire.
 

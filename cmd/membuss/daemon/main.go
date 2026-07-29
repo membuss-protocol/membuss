@@ -55,6 +55,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
+	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/dht"
@@ -402,7 +403,7 @@ func Run(args []string) error {
 
 	// 6) Mem-Herald.
 	hd, err := herald.New(herald.Config{
-		Store:           bs,
+		Store:           heraldStoreWrapper{bs},
 		DHT:             mdht,
 		Strategy:        herald.StrategyRoots,
 		Interval:        cfg.ReprovideInterval,
@@ -569,7 +570,7 @@ func Run(args []string) error {
 
 	var gateSrv *httpServer
 	if cfg.Servers.Gateway.Enabled {
-		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg)
+		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg, cfg.MetricsToken)
 		if err != nil {
 			logger.Error("gateway", "err", err.Error())
 			os.Exit(1)
@@ -968,7 +969,7 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
@@ -976,6 +977,7 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 		RateLimitPerMin: rateLimitPerMin,
 		MemNSResolver:   memnsRes,
 		LogLevel:        logLevel,
+		MetricsToken:    metricsToken,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("memgate: %w", err)
@@ -989,7 +991,13 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 			}
 		}
 	}
-	return startHTTP(addr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
+	hs, err := startHTTP(addr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
+	if err != nil {
+		_ = mg.Close()
+		return nil, err
+	}
+	hs.onClose = mg.Shutdown
+	return hs, nil
 }
 
 // startNodeAPI brings up the local Node control API. mtrx
@@ -1103,6 +1111,7 @@ type httpServer struct {
 	// for the lifetime of the listener (useful when the
 	// caller passed ":0" and needs the resolved port).
 	boundAddr string
+	onClose   func(ctx context.Context) error
 }
 
 // Addr returns the address the server is listening on.
@@ -1140,9 +1149,7 @@ func (h *httpServer) Close() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := h.srv.Shutdown(ctx); err != nil {
-		slog.Warn("http shutdown", "name", h.name, "err", err.Error())
-	}
+	_ = h.ShutdownCtx(ctx)
 }
 
 // ShutdownCtx performs a graceful shutdown bounded by the
@@ -1152,6 +1159,9 @@ func (h *httpServer) Close() {
 func (h *httpServer) ShutdownCtx(ctx context.Context) error {
 	if h == nil || h.srv == nil {
 		return nil
+	}
+	if h.onClose != nil {
+		_ = h.onClose(ctx)
 	}
 	// Try graceful shutdown with a short timeout first (e.g. 500ms)
 	// to allow normal active requests to complete, then force close
@@ -1278,4 +1288,46 @@ func ensureGeoIPDatabase(cfg *config.Config, logger *slog.Logger) (string, error
 
 	logger.Info("geo: database downloaded successfully", "path", destPath)
 	return destPath, nil
+}
+
+type heraldStoreWrapper struct {
+	store.Store
+}
+
+func (h heraldStoreWrapper) AllSealed() ([]mid.MID, error) {
+	if h.Store == nil {
+		return nil, nil
+	}
+	sealed, err := h.Store.AllSealed()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(sealed))
+	out := make([]mid.MID, 0, len(sealed))
+	for _, m := range sealed {
+		seen[m.String()] = struct{}{}
+		out = append(out, m)
+	}
+	if objMIDs, oerr := h.Store.AllObjectMIDs(); oerr == nil {
+		for _, m := range objMIDs {
+			if _, ok := seen[m.String()]; !ok {
+				seen[m.String()] = struct{}{}
+				out = append(out, m)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (h heraldStoreWrapper) IterateSealed(fn func(mid.MID) error) error {
+	mids, err := h.AllSealed()
+	if err != nil {
+		return err
+	}
+	for _, m := range mids {
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }

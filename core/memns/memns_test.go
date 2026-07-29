@@ -17,6 +17,8 @@ import (
 	"github.com/multiformats/go-multiaddr"
 
 	"github.com/nnlgsakib/membuss/core/keyring"
+	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/net/dht"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
@@ -460,5 +462,55 @@ func TestResolverDNSLink(t *testing.T) {
 	_, err = resolver.Resolve(ctx, "invalid.com")
 	if err == nil {
 		t.Error("expected error for invalid.com since no resolver configured")
+	}
+}
+
+func TestValidateAndNormalizeValue(t *testing.T) {
+	mb, err := store.NewMemStore(store.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("NewMemStore: %v", err)
+	}
+	defer mb.Close()
+
+	data := []byte("test payload for memns validation")
+	m := mid.FromBytes(data)
+	if err := mb.Put(m, data); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	val1, err := ValidateAndNormalizeValue(m.String())
+	if err != nil || val1 != "/mem/"+m.String() {
+		t.Fatalf("expected /mem/%s, got %q, err: %v", m.String(), val1, err)
+	}
+
+	dirtyURL := "http://localhost:8083/explorer/mid/" + m.String()
+	val2, err := ValidateAndNormalizeValue(dirtyURL)
+	if err != nil || val2 != "/mem/"+m.String() {
+		t.Fatalf("expected /mem/%s from dirty URL, got %q, err: %v", m.String(), val2, err)
+	}
+
+	val3, err := ValidateAndNormalizeValue("/memns/k51qziw")
+	if err != nil || val3 != "/memns/k51qziw" {
+		t.Fatalf("expected /memns/k51qziw, got %q, err: %v", val3, err)
+	}
+
+	_, err = ValidateAndNormalizeValue("random text string not a mid")
+	if err == nil {
+		t.Fatalf("expected error for arbitrary non-MID text, got nil")
+	}
+
+	_, err = ValidateAndNormalizeValue("membhttp://localhost:8083/explorer/mid/corruptmid")
+	if err == nil {
+		t.Fatalf("expected error for corrupt mangled MID, got nil")
+	}
+}
+
+func TestBuildRecord_RejectsNonMID(t *testing.T) {
+	priv, _, _ := crypto.GenerateEd25519Key(rand.Reader)
+	key := &keyring.Key{Name: "testkey", PrivKey: priv, PubKey: priv.GetPublic(), MemNSName: "/memns/k51qziw"}
+
+	_, err := BuildRecord(key, "invalid non mid value", 1, 10*time.Second, nil, "")
+	if err == nil {
+		t.Fatalf("expected BuildRecord to reject non-MID target value")
 	}
 }

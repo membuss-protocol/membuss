@@ -818,8 +818,10 @@ func (e *Explorer) handleMID(w http.ResponseWriter, r *http.Request) {
 			data.MimeType = p2.MimeType
 		}
 	}
-	provs, _ := b.Providers(ctx, root, e.cfg.ProviderLimit)
-	data.Providers = provs
+	if data.Providers == nil {
+		provs, _ := b.Providers(ctx, root, e.cfg.ProviderLimit)
+		data.Providers = provs
+	}
 	if present {
 		data.Size = size
 		data.Blocks = blocks
@@ -1626,7 +1628,9 @@ func (e *Explorer) handleKeyringRm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "deleted": name})
 }
 
 func (e *Explorer) handleMemNSPublish(w http.ResponseWriter, r *http.Request) {

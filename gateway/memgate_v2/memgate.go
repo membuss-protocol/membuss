@@ -4,6 +4,7 @@
 package memgate_v2
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/go-chi/chi/v5"
@@ -151,6 +154,12 @@ type Config struct {
 	// Phase 18: MemNS resolver
 	MemNSResolver *memns.Resolver
 	LogLevel      string
+
+	// EnableMetrics enables the Prometheus & OpenTelemetry edge metrics endpoint. Defaults to true.
+	EnableMetrics bool
+	// MetricsToken, if set, requires Authorization: Bearer <MetricsToken> or ?token=<MetricsToken>.
+	// When empty, metrics endpoints are restricted to localhost/internal connections only.
+	MetricsToken string
 }
 
 // MemGate is the public HTTP gateway.
@@ -162,6 +171,9 @@ type MemGate struct {
 	ipLimiter       *ipLimiter
 	refererTracker  *RefererTracker
 	downloadManager *DownloadManager
+	sfBlockList     singleflight.Group
+	sfResolve       singleflight.Group
+	metrics         *gatewayMetrics
 }
 
 // New returns a MemGate ready to be served. The returned
@@ -212,10 +224,37 @@ func New(cfg Config) (*MemGate, error) {
 		blockLists:      newBlockListCache(defaultBlockListCacheEntries),
 		refererTracker:  NewRefererTracker(),
 		downloadManager: NewDownloadManager(),
+		metrics:         newGatewayMetrics(),
 	}
 	mg.ipLimiter = newIPLimiter(cfg.RateLimitPerMin, 10*time.Minute)
 	mg.router = mg.buildRouter()
 	return mg, nil
+}
+
+// Close gracefully shuts down background workers, timers, and active download tasks.
+func (m *MemGate) Close() error {
+	if m.ipLimiter != nil {
+		m.ipLimiter.Stop()
+	}
+	if m.downloadManager != nil {
+		m.downloadManager.Close()
+	}
+	return nil
+}
+
+// Shutdown gracefully shuts down MemGate before the context deadline expires.
+func (m *MemGate) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		_ = m.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Router returns the chi router. Exposed so tests can drive
@@ -301,6 +340,7 @@ func (m *MemGate) Handler() http.Handler {
 func isSystemPath(path string) bool {
 	if strings.HasPrefix(path, "/mem/") ||
 		strings.HasPrefix(path, "/healthz") ||
+		strings.HasPrefix(path, "/metrics") ||
 		strings.HasPrefix(path, "/memns/") ||
 		strings.HasPrefix(path, "/memlink/") {
 		return true
@@ -368,6 +408,19 @@ func (m *MemGate) buildRouter() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(middleware.Compress(5,
+		"text/html",
+		"text/css",
+		"text/plain",
+		"text/xml",
+		"text/javascript",
+		"application/javascript",
+		"application/x-javascript",
+		"application/json",
+		"application/xml",
+		"image/svg+xml",
+		"application/wasm",
+	))
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/explorer") {
@@ -388,6 +441,10 @@ func (m *MemGate) buildRouter() chi.Router {
 	// limiter by setting RateLimitPerMin=0 in config.
 	r.Use(m.ipLimiter.Middleware)
 
+	if m.metrics != nil {
+		r.Use(m.metrics.middleware)
+	}
+
 	// Explorer is a local admin UI — block non-localhost access
 	r.Use(m.localOnlyMiddleware)
 
@@ -395,6 +452,11 @@ func (m *MemGate) buildRouter() chi.Router {
 	r.Use(m.customDomainMiddleware)
 
 	r.Get("/healthz", m.handleHealth)
+	if m.metrics != nil {
+		metricsHandler := m.metrics.authMiddleware(m.cfg.MetricsToken, m.metrics.handler())
+		r.Handle("/metrics", metricsHandler)
+		r.Handle("/explorer/metrics", metricsHandler)
+	}
 	r.Get("/mem/{mid}", m.handleGet)
 	r.Get("/mem/{mid}/~status", m.handleFetchStatusSSE)
 	r.Head("/mem/{mid}", m.handleHead)
@@ -526,6 +588,10 @@ func (m *MemGate) handleDirList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	m.handleDirListForMID(w, r, root, midStr)
+}
+
+func (m *MemGate) handleDirListForMID(w http.ResponseWriter, r *http.Request, root mid.MID, midStr string) {
 	info, err := m.cfg.Backend.MemFSInfo(r.Context(), root)
 	if err != nil {
 		http.Error(w, "memfs: "+err.Error(), http.StatusNotFound)
@@ -891,11 +957,7 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 
 			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
 
-			host := r.Host
-			if idx := strings.Index(host, ":"); idx != -1 {
-				host = host[:idx]
-			}
-			isSubdomain := strings.HasSuffix(host, ".localhost")
+			_, _, isSubdomain := m.resolveSubdomain(r)
 			var ssePath string
 			if isSubdomain {
 				ssePath = "/~status"
@@ -928,21 +990,21 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 			return
 		}
-		m.handleDirList(w, r)
+		m.handleDirListForMID(w, r, root, midStr)
 		return
 	}
-
-	// Content-Type: prefer the backend's resolved MIME; fall back
-	// to a content sniff so renderable types (HTML, images, text)
-	// still render correctly when no metadata was supplied.
-	ct := chooseContentType(info.ContentType, DetectContentType(midStr, nil, info.MimeType))
 
 	// Filename + disposition. Inline by default so the browser
 	// renders renderable types; ?download=1 forces attachment.
 	name := info.Name
 	if name == "" {
-		name = defaultFilename(midStr, ct)
+		name = defaultFilename(midStr, info.ContentType)
 	}
+
+	// Content-Type: prefer the backend's resolved MIME; fall back
+	// to a content sniff so renderable types (HTML, images, text)
+	// still render correctly when no metadata was supplied.
+	ct := chooseContentType(info.ContentType, DetectContentType(name, nil, info.MimeType))
 	disp := contentDisposition(ct, info.Size)
 	if r.URL.Query().Get("download") == "1" {
 		disp = "attachment"
@@ -953,24 +1015,33 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 
 	cacheKey := "resolved:" + midStr
 	if data, ok := m.lru.get(cacheKey); ok {
+		if m.metrics != nil {
+			m.metrics.cacheHitsTotal.Inc()
+		}
 		m.setResolvedHeaders(w, info, ct, disp, name)
 		m.writeBytes(w, r, midStr, data, ct)
 		return
 	}
+	if m.metrics != nil {
+		m.metrics.cacheMissesTotal.Inc()
+	}
 
-	// Cache eligibility: only buffer+cache items small enough to fit
-	// under MaxCacheItemBytes. Larger items are streamed below so a
-	// single response can never allocate more than MaxCacheItemBytes
-	// of heap, bounding memory use under concurrency.
-	if info.Size > 0 && info.Size <= m.cfg.MaxCacheItemBytes {
-		buf := make([]byte, info.Size)
-		if _, err := io.ReadFull(rc, buf); err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		m.lru.put(cacheKey, buf)
+	// Cache eligibility: for non-range requests under MaxCacheItemBytes, stream
+	// directly to the response writer while capturing data into a buffer for LRU caching.
+	// This eliminates TTFB latency and pre-buffering memory amplification under concurrency.
+	if info.Size > 0 && info.Size <= m.cfg.MaxCacheItemBytes && r.Header.Get("Range") == "" {
 		m.setResolvedHeaders(w, info, ct, disp, name)
-		m.writeBytes(w, r, midStr, buf, ct)
+		w.Header().Set("Content-Length", strconv.FormatUint(info.Size, 10))
+		w.WriteHeader(http.StatusOK)
+
+		var buf bytes.Buffer
+		buf.Grow(int(info.Size))
+		mw := io.MultiWriter(w, &buf)
+
+		n, err := io.Copy(mw, rc)
+		if err == nil && uint64(n) == info.Size {
+			m.lru.put(cacheKey, buf.Bytes())
+		}
 		return
 	}
 
@@ -981,6 +1052,9 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 		return
 	}
 
+	if info.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatUint(info.Size, 10))
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, rc)
 }
@@ -991,34 +1065,48 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 func (m *MemGate) setResolvedHeaders(w http.ResponseWriter, info ContentInfo, ct, disp, name string) {
 	h := w.Header()
 	h.Set("Content-Type", ct)
-	h.Set("X-Membuss-MID", info.MID)
+	cleanMID := strings.TrimSuffix(info.MID, "/")
+	h.Set("X-Membuss-MID", cleanMID)
 	h.Set("X-Membuss-Size", strconv.FormatUint(info.Size, 10))
 	h.Set("X-Membuss-Blocks", strconv.FormatUint(info.Blocks, 10))
 	h.Set("X-Membuss-Sealed", strconv.FormatBool(info.Sealed))
-	h.Set("X-Membuss-Name", info.Name)
+	h.Set("X-Membuss-Name", sanitizeFilename(info.Name))
 	h.Set("X-Membuss-MimeType", info.MimeType)
-	h.Set("ETag", `"`+info.MID+`"`)
+	h.Set("ETag", `"`+cleanMID+`"`)
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Cache-Control", "public, immutable, max-age=31536000")
 	// Once-only: don't overwrite a header the caller set explicitly.
 	if h.Get("Content-Disposition") == "" {
-		h.Set("Content-Disposition",
-			mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(name)}))
+		fn := sanitizeFilename(name)
+		if fn == "" || fn == "download" || fn == "." {
+			fn = defaultFilename(cleanMID, ct)
+		}
+		formatted := mime.FormatMediaType(disp, map[string]string{"filename": fn})
+		if formatted == "" {
+			formatted = disp + `; filename="` + sanitizeFilename(fn) + `"`
+		}
+		h.Set("Content-Disposition", formatted)
 	}
 }
 
 // defaultFilename derives a download filename from the MID and
 // content type when the uploader did not supply a name.
-// 🖖 falls back to <mid>.bin for unknown types.
+// Caps the MID portion at 16 characters so browsers (Chrome/Firefox)
+// do not discard the name or fall back to "download".
 func defaultFilename(midStr, ct string) string {
+	ext := ".bin"
 	base := ct
 	if idx := strings.IndexByte(ct, ';'); idx >= 0 {
 		base = ct[:idx]
 	}
 	if exts, err := mime.ExtensionsByType(strings.TrimSpace(base)); err == nil && len(exts) > 0 {
-		return midStr + exts[0]
+		ext = exts[0]
 	}
-	return midStr + ".bin"
+	shortMID := midStr
+	if len(shortMID) > 16 {
+		shortMID = shortMID[:16]
+	}
+	return shortMID + ext
 }
 
 // writeBytes writes data to w honoring an optional Range
@@ -1224,9 +1312,15 @@ func (m *MemGate) customDomainMiddleware(next http.Handler) http.Handler {
 		// Don't intercept system paths
 		if strings.HasPrefix(path, "/mem/") ||
 			strings.HasPrefix(path, "/healthz") ||
+			strings.HasPrefix(path, "/metrics") ||
 			strings.HasPrefix(path, "/explorer") ||
 			strings.HasPrefix(path, "/memns/") ||
 			strings.HasPrefix(path, "/memlink/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if _, _, ok := m.resolveSubdomain(r); ok {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1279,6 +1373,7 @@ func (m *MemGate) localOnlyMiddleware(next http.Handler) http.Handler {
 
 func (m *MemGate) handleMemNSResolve(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	name = strings.Trim(name, "/")
 	innerPath := chi.URLParam(r, "*")
 
 	if m.cfg.MemNSResolver == nil {
@@ -1292,17 +1387,47 @@ func (m *MemGate) handleMemNSResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	midStr := resolved
-	if strings.HasPrefix(midStr, "/mem/") {
-		midStr = midStr[5:]
-	}
-
 	if strings.HasPrefix(resolved, "https://") || strings.HasPrefix(resolved, "/ipfs/") {
 		http.Redirect(w, r, resolved, http.StatusTemporaryRedirect)
 		return
 	}
 
-	m.serveMemFSPath(w, r, midStr, innerPath)
+	midStr := resolved
+	if strings.HasPrefix(midStr, "/mem/") {
+		midStr = midStr[5:]
+	} else if strings.HasPrefix(midStr, "mem/") {
+		midStr = midStr[4:]
+	}
+	midStr = strings.TrimPrefix(midStr, "/")
+
+	rootStr := midStr
+	subpath := ""
+	if idx := strings.Index(midStr, "/"); idx != -1 {
+		rootStr = midStr[:idx]
+		subpath = midStr[idx+1:]
+	}
+
+	if !strings.HasPrefix(rootStr, "mem") && strings.HasPrefix(rootStr, "b") {
+		rootStr = "mem" + rootStr
+	}
+
+	rootMID, err := mid.Parse(rootStr)
+	if err != nil {
+		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	targetPath := strings.TrimPrefix(innerPath, "/")
+	if targetPath == "" {
+		targetPath = subpath
+	}
+
+	if targetPath == "" {
+		m.handleResolved(w, r, rootMID, rootMID.String())
+		return
+	}
+
+	m.serveMemFSPath(w, r, rootMID.String(), targetPath)
 }
 
 func (m *MemGate) handleMemLinkGet(w http.ResponseWriter, r *http.Request) {
@@ -1344,11 +1469,7 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 
 			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
 
-			host := r.Host
-			if idx := strings.Index(host, ":"); idx != -1 {
-				host = host[:idx]
-			}
-			isSubdomain := strings.HasSuffix(host, ".localhost")
+			_, _, isSubdomain := m.resolveSubdomain(r)
 			var ssePath string
 			if isSubdomain {
 				ssePath = "/~status"
@@ -1616,7 +1737,7 @@ func (m *MemGate) handleStreamRange(w http.ResponseWriter, r *http.Request, file
 		return true
 	}
 
-	reader := newDagReader(r.Context(), m.cfg.Backend, blocks, totalSize)
+	reader := newDagReader(r.Context(), m.cfg.Backend, m.lru, m.metrics, blocks, totalSize)
 	defer reader.Close()
 
 	if _, err := reader.Seek(start, io.SeekStart); err != nil {
@@ -1844,6 +1965,11 @@ func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	if m.metrics != nil {
+		m.metrics.activeSSEStreams.Inc()
+		defer m.metrics.activeSSEStreams.Dec()
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -1853,7 +1979,7 @@ func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 
 	job, _ := m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
 
-	listenerID, ch := job.AddListener()
+	listenerID, ch := job.AddListenerWithContext(r.Context())
 	defer job.RemoveListener(listenerID)
 
 	state, errMsg, blocksResolved, blocksTotal, bytesDelivered, bytesTotal, throughput, eta := job.GetStatus()

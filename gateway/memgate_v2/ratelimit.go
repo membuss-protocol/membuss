@@ -19,6 +19,8 @@ type ipLimiter struct {
 	burst       int
 	idleTimeout time.Duration
 	visitors    map[string]*visitor
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 type visitor struct {
@@ -38,9 +40,20 @@ func newIPLimiter(rps int, idleTimeout time.Duration) *ipLimiter {
 		burst:       rps,
 		idleTimeout: idleTimeout,
 		visitors:    make(map[string]*visitor),
+		stopCh:      make(chan struct{}),
 	}
 	go il.reaper()
 	return il
+}
+
+// Stop stops the background reaper goroutine safely.
+func (i *ipLimiter) Stop() {
+	if i == nil {
+		return
+	}
+	i.stopOnce.Do(func() {
+		close(i.stopCh)
+	})
 }
 
 // limitFor returns (and lazily creates) the limiter for ip.
@@ -59,15 +72,20 @@ func (i *ipLimiter) limitFor(ip string) *rate.Limiter {
 func (i *ipLimiter) reaper() {
 	t := time.NewTicker(i.idleTimeout)
 	defer t.Stop()
-	for range t.C {
-		cutoff := time.Now().Add(-i.idleTimeout)
-		i.mu.Lock()
-		for ip, v := range i.visitors {
-			if v.lastSeen.Before(cutoff) {
-				delete(i.visitors, ip)
+	for {
+		select {
+		case <-i.stopCh:
+			return
+		case <-t.C:
+			cutoff := time.Now().Add(-i.idleTimeout)
+			i.mu.Lock()
+			for ip, v := range i.visitors {
+				if v.lastSeen.Before(cutoff) {
+					delete(i.visitors, ip)
+				}
 			}
+			i.mu.Unlock()
 		}
-		i.mu.Unlock()
 	}
 }
 

@@ -39,9 +39,16 @@ type blockListEntry struct {
 type blockListCache struct {
 	mu         sync.Mutex
 	maxEntries int
-	entries    map[string]*blockListEntry
-	// order holds keys most-recent-last for LRU eviction.
-	order []string
+	entries    map[string]*blockListNode
+	head       *blockListNode // most-recently-used
+	tail       *blockListNode // least-recently-used
+}
+
+type blockListNode struct {
+	key   string
+	entry *blockListEntry
+	prev  *blockListNode
+	next  *blockListNode
 }
 
 func newBlockListCache(maxEntries int) *blockListCache {
@@ -50,50 +57,82 @@ func newBlockListCache(maxEntries int) *blockListCache {
 	}
 	return &blockListCache{
 		maxEntries: maxEntries,
-		entries:    make(map[string]*blockListEntry),
+		entries:    make(map[string]*blockListNode),
 	}
 }
 
 func (c *blockListCache) get(key string) (*blockListEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[key]
-	if ok {
-		c.touch(key)
+	node, ok := c.entries[key]
+	if !ok {
+		return nil, false
 	}
-	return e, ok
+	c.moveToFront(node)
+	return node.entry, true
 }
 
 func (c *blockListCache) put(key string, e *blockListEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, exists := c.entries[key]; !exists {
-		c.order = append(c.order, key)
+	if node, ok := c.entries[key]; ok {
+		node.entry = e
+		c.moveToFront(node)
+	} else {
+		node := &blockListNode{key: key, entry: e}
+		c.entries[key] = node
+		c.pushFront(node)
 	}
-	c.entries[key] = e
-	c.touch(key)
-	for len(c.entries) > c.maxEntries && len(c.order) > 0 {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		delete(c.entries, oldest)
+	for len(c.entries) > c.maxEntries && c.tail != nil {
+		oldest := c.tail
+		c.remove(oldest)
+		delete(c.entries, oldest.key)
 	}
 }
 
-// touch moves key to the most-recently-used position. Caller holds mu.
-func (c *blockListCache) touch(key string) {
-	for i, k := range c.order {
-		if k == key {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			break
-		}
+func (c *blockListCache) moveToFront(node *blockListNode) {
+	if c.head == node {
+		return
 	}
-	c.order = append(c.order, key)
+	c.remove(node)
+	c.pushFront(node)
+}
+
+func (c *blockListCache) pushFront(node *blockListNode) {
+	node.prev = nil
+	node.next = c.head
+	if c.head != nil {
+		c.head.prev = node
+	}
+	c.head = node
+	if c.tail == nil {
+		c.tail = node
+	}
+}
+
+func (c *blockListCache) remove(node *blockListNode) {
+	if node.prev != nil {
+		node.prev.next = node.next
+	} else {
+		c.head = node.next
+	}
+	if node.next != nil {
+		node.next.prev = node.prev
+	} else {
+		c.tail = node.prev
+	}
+	node.prev, node.next = nil, nil
+}
+
+type blockListResult struct {
+	blocks    []dagBlock
+	totalSize int64
 }
 
 // cachedBlockList returns the flattened block list for root, building
 // it via buildBlockList on a cache miss and memoizing the result.
-// The returned slice is shared read-only: dagReader only ever reads
-// from r.blocks, so sharing is safe and avoids a per-request copy.
+// Concurrent requests for the same uncached root share a single execution
+// via singleflight. Group to prevent thundering herd.
 func (m *MemGate) cachedBlockList(ctx context.Context, root mid.MID) ([]dagBlock, int64, error) {
 	key := root.String()
 	if m.blockLists != nil {
@@ -101,14 +140,26 @@ func (m *MemGate) cachedBlockList(ctx context.Context, root mid.MID) ([]dagBlock
 			return e.blocks, e.totalSize, nil
 		}
 	}
-	blocks, total, err := buildBlockList(ctx, m.cfg.Backend, root)
+	v, err, _ := m.sfBlockList.Do(key, func() (interface{}, error) {
+		if m.blockLists != nil {
+			if e, ok := m.blockLists.get(key); ok {
+				return blockListResult{blocks: e.blocks, totalSize: e.totalSize}, nil
+			}
+		}
+		blocks, total, err := buildBlockList(ctx, m.cfg.Backend, root)
+		if err != nil {
+			return nil, err
+		}
+		if m.blockLists != nil {
+			m.blockLists.put(key, &blockListEntry{blocks: blocks, totalSize: total})
+		}
+		return blockListResult{blocks: blocks, totalSize: total}, nil
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	if m.blockLists != nil {
-		m.blockLists.put(key, &blockListEntry{blocks: blocks, totalSize: total})
-	}
-	return blocks, total, nil
+	res := v.(blockListResult)
+	return res.blocks, res.totalSize, nil
 }
 
 func buildBlockList(ctx context.Context, backend Backend, root mid.MID) ([]dagBlock, int64, error) {
@@ -213,6 +264,8 @@ func buildBlockList(ctx context.Context, backend Backend, root mid.MID) ([]dagBl
 type dagReader struct {
 	ctx         context.Context
 	backend     Backend
+	cache       *shardedLRU
+	metrics     *gatewayMetrics
 	blocks      []dagBlock
 	totalSize   int64
 	pos         int64
@@ -220,10 +273,12 @@ type dagReader struct {
 	curBlockBuf []byte
 }
 
-func newDagReader(ctx context.Context, backend Backend, blocks []dagBlock, totalSize int64) *dagReader {
+func newDagReader(ctx context.Context, backend Backend, cache *shardedLRU, metrics *gatewayMetrics, blocks []dagBlock, totalSize int64) *dagReader {
 	return &dagReader{
 		ctx:         ctx,
 		backend:     backend,
+		cache:       cache,
+		metrics:     metrics,
 		blocks:      blocks,
 		totalSize:   totalSize,
 		curBlockIdx: -1,
@@ -245,9 +300,29 @@ func (r *dagReader) Read(p []byte) (int, error) {
 
 	if r.curBlockIdx != idx || r.curBlockBuf == nil {
 		block := r.blocks[idx]
-		data, err := r.backend.RawBlock(r.ctx, block.mid)
-		if err != nil {
-			return 0, fmt.Errorf("read block %s: %w", block.mid.String(), err)
+		blockKey := "block:" + block.mid.String()
+
+		var data []byte
+		var hit bool
+		if r.cache != nil {
+			data, hit = r.cache.get(blockKey)
+		}
+		if hit {
+			if r.metrics != nil {
+				r.metrics.cacheHitsTotal.Inc()
+			}
+		} else {
+			if r.metrics != nil {
+				r.metrics.cacheMissesTotal.Inc()
+			}
+			var err error
+			data, err = r.backend.RawBlock(r.ctx, block.mid)
+			if err != nil {
+				return 0, fmt.Errorf("read block %s: %w", block.mid.String(), err)
+			}
+			if r.cache != nil {
+				r.cache.put(blockKey, data)
+			}
 		}
 		r.curBlockIdx = idx
 		r.curBlockBuf = data

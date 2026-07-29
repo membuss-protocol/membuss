@@ -72,3 +72,18 @@ func TestIPLimiter_ZeroRPSIsNoop(t *testing.T) {
 		t.Errorf("expected nil limiter for rps=0, got %+v", il)
 	}
 }
+
+func TestIPLimiter_Stop(t *testing.T) {
+	il := newIPLimiter(60, 100*time.Millisecond)
+	if il == nil {
+		t.Fatalf("expected non-nil limiter")
+	}
+
+	// Verify Stop is safe and idempotent
+	il.Stop()
+	il.Stop()
+
+	// Calling Stop on nil is safe
+	var nilLimiter *ipLimiter
+	nilLimiter.Stop()
+}

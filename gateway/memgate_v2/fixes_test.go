@@ -1,8 +1,10 @@
 package memgate_v2
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +13,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
 )
 
@@ -340,3 +344,211 @@ func TestSmallResolvedItem_IsCached(t *testing.T) {
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+func TestProductionSubdomainSSERoute(t *testing.T) {
+	b := newMemBackend()
+	missingMID := mid.FromBytes([]byte("test missing sse content"))
+
+	mg, err := New(Config{Backend: b, MemNSResolver: memns.NewResolver(nil, nil, nil)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// 1. Production domain request: Host = <mid>.memgate.io, Path = /index.html
+	req1 := httptest.NewRequest("GET", "/index.html", nil)
+	req1.Host = missingMID.String() + ".memgate.io"
+	req1.Header.Set("Accept", "text/html")
+	rec1 := httptest.NewRecorder()
+
+	mg.Handler().ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d, body: %s", rec1.Code, rec1.Body.String())
+	}
+	body1 := rec1.Body.String()
+	if !strings.Contains(body1, "/~status") || strings.Contains(body1, "/mem/"+missingMID.String()+"/~status") {
+		t.Errorf("expected /~status for production subdomain, got body:\n%s", body1)
+	}
+
+	// 2. Path-based request: Host = localhost:8083, Path = /mem/<mid>/index.html
+	req2 := httptest.NewRequest("GET", "/mem/"+missingMID.String()+"/index.html", nil)
+	req2.Host = "localhost:8083"
+	req2.Header.Set("Accept", "text/html")
+	rec2 := httptest.NewRecorder()
+
+	mg.Handler().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d, body: %s", rec2.Code, rec2.Body.String())
+	}
+	body2 := rec2.Body.String()
+	expectedSSE := "/mem/" + missingMID.String() + "/~status"
+	if !strings.Contains(body2, expectedSSE) {
+		t.Errorf("expected %s for path gateway request, got body:\n%s", expectedSSE, body2)
+	}
+}
+
+func TestSingleflight_DeduplicatesConcurrentRequests(t *testing.T) {
+	mb := newMemBackend()
+	m := putRandom(mb, []byte("singleflight block data"))
+
+	mg, err := New(Config{Backend: mb})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	const numGoroutines = 50
+	errCh := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			blocks, _, err := mg.cachedBlockList(context.Background(), m)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(blocks) == 0 {
+				errCh <- fmt.Errorf("expected blocks, got 0")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent cachedBlockList failed: %v", err)
+	}
+
+	blocks, _, err := mg.cachedBlockList(context.Background(), m)
+	if err != nil || len(blocks) == 0 {
+		t.Fatalf("cached read failed: %v", err)
+	}
+}
+
+func TestGzipCompression_TextAndJSON(t *testing.T) {
+	mb := newMemBackend()
+	jsonBody := []byte(`{"status":"ok","message":"hello world from memgate gzip test"}`)
+	m := putRandom(mb, jsonBody)
+
+	mg, err := New(Config{Backend: mb})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(mg.Router())
+	defer srv.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/mem/"+m.String()+"?format=json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Errorf("expected Content-Encoding: gzip, got %q", resp.Header.Get("Content-Encoding"))
+	}
+
+	gr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+
+	decompressed, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("ReadAll decompressed: %v", err)
+	}
+
+	if !strings.Contains(string(decompressed), "hello world") {
+		t.Errorf("decompressed content mismatch, got %q", string(decompressed))
+	}
+}
+
+func TestSubchunkCaching_MediaStreamingSeek(t *testing.T) {
+	mb := newMemBackend()
+	data := []byte("0123456789ABCDEF0123456789ABCDEF")
+	m := putRandom(mb, data)
+
+	mg, err := New(Config{Backend: mb, MaxCacheBytes: 1 << 20, MaxCacheItemBytes: 1024})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	blocks, total, err := mg.cachedBlockList(context.Background(), m)
+	if err != nil {
+		t.Fatalf("cachedBlockList: %v", err)
+	}
+
+	reader1 := newDagReader(context.Background(), mb, mg.lru, mg.metrics, blocks, total)
+	p1 := make([]byte, 8)
+	n1, err := reader1.Read(p1)
+	if err != nil || n1 != 8 {
+		t.Fatalf("Read 1 failed: %v n=%d", err, n1)
+	}
+
+	blockKey := "block:" + blocks[0].mid.String()
+	if cachedData, hit := mg.lru.get(blockKey); !hit || string(cachedData) != string(data) {
+		t.Fatalf("expected block chunk in LRU cache, hit=%v data=%q", hit, string(cachedData))
+	}
+
+	reader2 := newDagReader(context.Background(), mb, mg.lru, mg.metrics, blocks, total)
+	if _, err := reader2.Seek(8, io.SeekStart); err != nil {
+		t.Fatalf("Seek 2 failed: %v", err)
+	}
+	p2 := make([]byte, 8)
+	n2, err := reader2.Read(p2)
+	if err != nil || n2 != 8 || string(p2) != string(data[8:16]) {
+		t.Errorf("Read 2 sub-chunk hit failed: %v n=%d got=%q", err, n2, string(p2))
+	}
+}
+
+func TestMemGate_GracefulShutdown(t *testing.T) {
+	mb := newMemBackend()
+	data := []byte("shutdown test payload")
+	m := putRandom(mb, data)
+
+	mg, err := New(Config{Backend: mb, RateLimitPerMin: 60})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	job, created := mg.downloadManager.GetOrCreateJob(m, mb)
+	if !created || job == nil {
+		t.Fatalf("GetOrCreateJob failed")
+	}
+
+	_, ch := job.AddListener()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := mg.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			// Drain initial update buffered during AddListener to verify channel closure
+			select {
+			case _, ok2 := <-ch:
+				if ok2 {
+					t.Errorf("expected listener channel to be closed on shutdown")
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Errorf("timeout waiting for listener channel closure on shutdown after draining initial update")
+			}
+		}
+	case <-time.After(1 * time.Second):
+		t.Errorf("timeout waiting for listener channel closure on shutdown")
+	}
+}
