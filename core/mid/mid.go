@@ -252,6 +252,17 @@ func (m MID) HashBytes() []byte {
 	return out
 }
 
+// CopyBytes returns a fresh defensive copy of the multihash envelope.
+func (m MID) CopyBytes() []byte {
+	out := make([]byte, len(m.Hash))
+	copy(out, m.Hash)
+	return out
+}
+
+// RawBytes returns the underlying multihash envelope slice without allocating a copy.
+// Callers MUST treat the returned slice as read-only.
+func (m MID) RawBytes() []byte { return m.Hash }
+
 // DigestBytes returns the raw hash digest (decoded from the
 // multihash envelope).
 func (m MID) DigestBytes() ([]byte, error) {
@@ -262,10 +273,9 @@ func (m MID) DigestBytes() ([]byte, error) {
 	return d.Digest, nil
 }
 
-// Bytes returns the multihash envelope. It is equivalent to
-// HashBytes and is the form used in protobuf message bodies
-// and in the BadgerDB key layout.
-func (m MID) Bytes() []byte { return m.HashBytes() }
+// Bytes returns the multihash envelope without allocating a copy.
+// It is the form used in protobuf message bodies and in Pebble DB keys.
+func (m MID) Bytes() []byte { return m.Hash }
 
 // CID returns the underlying go-cid Cid. The returned value
 // is suitable for use with the ipfs/go-cid APIs. It shares

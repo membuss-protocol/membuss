@@ -47,6 +47,15 @@ func (b Block) Data() []byte {
 	return out
 }
 
+// RawData returns the underlying byte slice without allocating a copy.
+// Callers MUST treat the returned slice as read-only.
+func (b Block) RawData() []byte {
+	if b.Block == nil {
+		return nil
+	}
+	return b.Block.Data
+}
+
 // MID returns the block's content identifier.
 func (b Block) MID() mid.MID {
 	if b.Block == nil || b.Block.Mid == "" {

@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-032: Heap allocation overhead in mid.Bytes(), mid.RawBytes(), and Block.RawData()
+  Fixed: 2026-07-29 — Make mid.Bytes() and mid.RawBytes() return m.Hash directly without copying, and add Block.RawData() zero-copy getter for internal pipelines.
+
 [FIXED] BUG-031: Reader resource leaks in fixed, FastCDC, and Rabin chunker failures
   Fixed: 2026-07-29 — Add closeReader helper and Close method to fixed, FastCDC, and Rabin chunkers to cleanly close io.Closer readers on EOF and read errors.
 
