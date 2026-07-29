@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-029: Garbage collection race condition with concurrent block ingestion
+  Fixed: 2026-07-29 — Implement gcWriteTracker (core/store/gc_tracker.go) to track active writes during GC sweeps and enforce a 5-minute ingestion grace period.
+
 [FIXED] BUG-028: Severe O(N) full DB scans on MemStore Delete and DeleteDAG
   Fixed: 2026-07-29 — Replace per-delete DB rebuild calls with in-memory deletion counter and 5-second debounced background rebuilds in bloomIndex.
 

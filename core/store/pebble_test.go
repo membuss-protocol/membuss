@@ -903,3 +903,49 @@ func TestFlatFileStore(t *testing.T) {
 	}
 }
 
+func TestMemStoreGC_ConcurrentUploadRace(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewMemStore(Options{Path: dir})
+	if err != nil {
+		t.Fatalf("NewMemStore: %v", err)
+	}
+	defer s.Close()
+
+	// Put a sealed block to have a valid sealed root
+	sealedData := []byte("sealed root block data for GC test")
+	sealedMID := mid.FromBytes(sealedData)
+	if err := s.Put(sealedMID, sealedData); err != nil {
+		t.Fatalf("Put sealed: %v", err)
+	}
+	if err := s.Seal(sealedMID, false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	// Write a new block concurrently during GC
+	newData := []byte("concurrent block written during GC sweep")
+	newMID := mid.FromBytes(newData)
+
+	// Simulate concurrent write by putting block inside a goroutine while GC runs
+	done := make(chan error, 1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		done <- s.Put(newMID, newData)
+	}()
+
+	if _, err := s.GC(context.Background()); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Concurrent Put failed: %v", err)
+	}
+
+	// Verify that the concurrent block written during GC was NOT deleted
+	has, err := s.Has(newMID)
+	if err != nil {
+		t.Fatalf("Has newMID: %v", err)
+	}
+	if !has {
+		t.Fatalf("GC race condition! Concurrent block %s was mistakenly deleted by GC", newMID.String())
+	}
+}
+

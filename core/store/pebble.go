@@ -95,6 +95,9 @@ type MemStore struct {
 	// against current state instead of racing on deletion.
 	gcMu sync.Mutex
 
+	// gcTracker protects concurrent block writes and recent unsealed uploads from GC deletion.
+	gcTracker *gcWriteTracker
+
 	// Hooks receives store operation interceptors from the plugin framework.
 	Hooks StoreHooks
 }
@@ -146,7 +149,10 @@ func NewMemStore(opts Options) (*MemStore, error) {
 		return nil, err
 	}
 
-	s := &MemStore{db: pdb}
+	s := &MemStore{
+		db:        pdb,
+		gcTracker: newGCWriteTracker(0),
+	}
 	if !opts.InMemory {
 		if opts.BlocksPath != "" {
 			s.blocksPath = opts.BlocksPath
@@ -256,6 +262,9 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 	if s.bloom != nil {
 		s.bloom.add(m)
 	}
+	if s.gcTracker != nil {
+		s.gcTracker.RecordWrite(m)
+	}
 	if s.Hooks != nil {
 		s.Hooks.TriggerAfterBlockPut(context.Background(), m, int64(len(data)))
 	}
@@ -315,6 +324,9 @@ func (s *MemStore) PutDAG(m mid.MID, data []byte) error {
 
 	if s.bloom != nil {
 		s.bloom.add(m)
+	}
+	if s.gcTracker != nil {
+		s.gcTracker.RecordWrite(m)
 	}
 	return nil
 }
