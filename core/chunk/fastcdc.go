@@ -37,6 +37,14 @@ type fastCDCChunker struct {
 	eofSeen bool
 }
 
+func (c *fastCDCChunker) Close() error {
+	c.eofSeen = true
+	if closer, ok := c.r.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // NewFastCDC returns a ChunkerFactory that splits the input using FastCDC.
 func NewFastCDC() ChunkerFactory {
 	return func(r io.Reader) (Chunker, error) {
@@ -71,6 +79,8 @@ func (c *fastCDCChunker) Next() (Block, error) {
 				if errors.Is(err, io.EOF) {
 					c.eofSeen = true
 				} else {
+					c.eofSeen = true
+					closeReader(c.r)
 					return Block{}, fmt.Errorf("chunk: fastcdc read: %w", err)
 				}
 			}
@@ -79,6 +89,7 @@ func (c *fastCDCChunker) Next() (Block, error) {
 
 		available := c.limit - c.pos
 		if available == 0 {
+			closeReader(c.r)
 			return Block{}, io.EOF
 		}
 

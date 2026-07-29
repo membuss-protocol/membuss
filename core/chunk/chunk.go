@@ -1,4 +1,4 @@
-﻿// Package chunk splits an input stream into fixed-size or
+// Package chunk splits an input stream into fixed-size or
 // content-defined blocks and produces a typed Block for each.
 //
 // Every Block is addressed by its content via the core/mid package.
@@ -92,11 +92,25 @@ func NewFixed(size int) ChunkerFactory {
 	}
 }
 
+func closeReader(r io.Reader) {
+	if closer, ok := r.(io.Closer); ok {
+		_ = closer.Close()
+	}
+}
+
 type fixedChunker struct {
 	r       io.Reader
 	size    int
 	buf     []byte
 	eofSeen bool
+}
+
+func (f *fixedChunker) Close() error {
+	f.eofSeen = true
+	if closer, ok := f.r.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 func (f *fixedChunker) Next() (Block, error) {
@@ -115,11 +129,14 @@ func (f *fixedChunker) Next() (Block, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				f.eofSeen = true
+				closeReader(f.r)
 				if read == 0 {
 					return Block{}, io.EOF
 				}
 				return f.makeBlock(f.buf[:read]), nil
 			}
+			f.eofSeen = true
+			closeReader(f.r)
 			return Block{}, fmt.Errorf("chunk: read: %w", err)
 		}
 	}
