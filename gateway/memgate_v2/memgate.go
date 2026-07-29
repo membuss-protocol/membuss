@@ -588,6 +588,10 @@ func (m *MemGate) handleDirList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	m.handleDirListForMID(w, r, root, midStr)
+}
+
+func (m *MemGate) handleDirListForMID(w http.ResponseWriter, r *http.Request, root mid.MID, midStr string) {
 	info, err := m.cfg.Backend.MemFSInfo(r.Context(), root)
 	if err != nil {
 		http.Error(w, "memfs: "+err.Error(), http.StatusNotFound)
@@ -986,21 +990,21 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 			return
 		}
-		m.handleDirList(w, r)
+		m.handleDirListForMID(w, r, root, midStr)
 		return
 	}
-
-	// Content-Type: prefer the backend's resolved MIME; fall back
-	// to a content sniff so renderable types (HTML, images, text)
-	// still render correctly when no metadata was supplied.
-	ct := chooseContentType(info.ContentType, DetectContentType(midStr, nil, info.MimeType))
 
 	// Filename + disposition. Inline by default so the browser
 	// renders renderable types; ?download=1 forces attachment.
 	name := info.Name
 	if name == "" {
-		name = defaultFilename(midStr, ct)
+		name = defaultFilename(midStr, info.ContentType)
 	}
+
+	// Content-Type: prefer the backend's resolved MIME; fall back
+	// to a content sniff so renderable types (HTML, images, text)
+	// still render correctly when no metadata was supplied.
+	ct := chooseContentType(info.ContentType, DetectContentType(name, nil, info.MimeType))
 	disp := contentDisposition(ct, info.Size)
 	if r.URL.Query().Get("download") == "1" {
 		disp = "attachment"
@@ -1048,6 +1052,9 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 		return
 	}
 
+	if info.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatUint(info.Size, 10))
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, rc)
 }
@@ -1058,34 +1065,48 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 func (m *MemGate) setResolvedHeaders(w http.ResponseWriter, info ContentInfo, ct, disp, name string) {
 	h := w.Header()
 	h.Set("Content-Type", ct)
-	h.Set("X-Membuss-MID", info.MID)
+	cleanMID := strings.TrimSuffix(info.MID, "/")
+	h.Set("X-Membuss-MID", cleanMID)
 	h.Set("X-Membuss-Size", strconv.FormatUint(info.Size, 10))
 	h.Set("X-Membuss-Blocks", strconv.FormatUint(info.Blocks, 10))
 	h.Set("X-Membuss-Sealed", strconv.FormatBool(info.Sealed))
-	h.Set("X-Membuss-Name", info.Name)
+	h.Set("X-Membuss-Name", sanitizeFilename(info.Name))
 	h.Set("X-Membuss-MimeType", info.MimeType)
-	h.Set("ETag", `"`+info.MID+`"`)
+	h.Set("ETag", `"`+cleanMID+`"`)
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Cache-Control", "public, immutable, max-age=31536000")
 	// Once-only: don't overwrite a header the caller set explicitly.
 	if h.Get("Content-Disposition") == "" {
-		h.Set("Content-Disposition",
-			mime.FormatMediaType(disp, map[string]string{"filename": sanitizeFilename(name)}))
+		fn := sanitizeFilename(name)
+		if fn == "" || fn == "download" || fn == "." {
+			fn = defaultFilename(cleanMID, ct)
+		}
+		formatted := mime.FormatMediaType(disp, map[string]string{"filename": fn})
+		if formatted == "" {
+			formatted = disp + `; filename="` + sanitizeFilename(fn) + `"`
+		}
+		h.Set("Content-Disposition", formatted)
 	}
 }
 
 // defaultFilename derives a download filename from the MID and
 // content type when the uploader did not supply a name.
-// 🖖 falls back to <mid>.bin for unknown types.
+// Caps the MID portion at 16 characters so browsers (Chrome/Firefox)
+// do not discard the name or fall back to "download".
 func defaultFilename(midStr, ct string) string {
+	ext := ".bin"
 	base := ct
 	if idx := strings.IndexByte(ct, ';'); idx >= 0 {
 		base = ct[:idx]
 	}
 	if exts, err := mime.ExtensionsByType(strings.TrimSpace(base)); err == nil && len(exts) > 0 {
-		return midStr + exts[0]
+		ext = exts[0]
 	}
-	return midStr + ".bin"
+	shortMID := midStr
+	if len(shortMID) > 16 {
+		shortMID = shortMID[:16]
+	}
+	return shortMID + ext
 }
 
 // writeBytes writes data to w honoring an optional Range
@@ -1352,6 +1373,7 @@ func (m *MemGate) localOnlyMiddleware(next http.Handler) http.Handler {
 
 func (m *MemGate) handleMemNSResolve(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	name = strings.Trim(name, "/")
 	innerPath := chi.URLParam(r, "*")
 
 	if m.cfg.MemNSResolver == nil {
@@ -1365,17 +1387,47 @@ func (m *MemGate) handleMemNSResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	midStr := resolved
-	if strings.HasPrefix(midStr, "/mem/") {
-		midStr = midStr[5:]
-	}
-
 	if strings.HasPrefix(resolved, "https://") || strings.HasPrefix(resolved, "/ipfs/") {
 		http.Redirect(w, r, resolved, http.StatusTemporaryRedirect)
 		return
 	}
 
-	m.serveMemFSPath(w, r, midStr, innerPath)
+	midStr := resolved
+	if strings.HasPrefix(midStr, "/mem/") {
+		midStr = midStr[5:]
+	} else if strings.HasPrefix(midStr, "mem/") {
+		midStr = midStr[4:]
+	}
+	midStr = strings.TrimPrefix(midStr, "/")
+
+	rootStr := midStr
+	subpath := ""
+	if idx := strings.Index(midStr, "/"); idx != -1 {
+		rootStr = midStr[:idx]
+		subpath = midStr[idx+1:]
+	}
+
+	if !strings.HasPrefix(rootStr, "mem") && strings.HasPrefix(rootStr, "b") {
+		rootStr = "mem" + rootStr
+	}
+
+	rootMID, err := mid.Parse(rootStr)
+	if err != nil {
+		http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	targetPath := strings.TrimPrefix(innerPath, "/")
+	if targetPath == "" {
+		targetPath = subpath
+	}
+
+	if targetPath == "" {
+		m.handleResolved(w, r, rootMID, rootMID.String())
+		return
+	}
+
+	m.serveMemFSPath(w, r, rootMID.String(), targetPath)
 }
 
 func (m *MemGate) handleMemLinkGet(w http.ResponseWriter, r *http.Request) {
