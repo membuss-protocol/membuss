@@ -484,7 +484,7 @@ func (s *MemStore) Delete(m mid.MID) error {
 	}
 
 	if s.bloom != nil {
-		s.bloom.recordDelete(s.db)
+		s.bloom.recordDelete(m)
 	}
 	if s.Hooks != nil {
 		s.Hooks.TriggerAfterBlockDel(context.Background(), m)
@@ -514,7 +514,7 @@ func (s *MemStore) DeleteDAG(m mid.MID) error {
 	}
 
 	if s.bloom != nil {
-		s.bloom.recordDelete(s.db)
+		s.bloom.recordDelete(m)
 	}
 	return nil
 }

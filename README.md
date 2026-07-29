@@ -50,7 +50,7 @@ Membuss takes a different position. Every leaf block is erasure-coded at the sto
 | **Erasure coding** | Reed-Solomon `10+4` at the storage layer | None — availability depends on providers | Optional parity files, not protocol-level |
 | **Content persistence** | Anchor Nodes auto-mirror announced content | Manual pinning required | Seeders must stay online |
 | **Block streaming** | `FetchStream` returns an `io.Reader` immediately — first bytes arrive as the first block resolves | Waits for the DAG before delivering data | Piece-level streaming only |
-| **Block verification** | SHA-256 verified before every block hits disk | Trusts the blockstore | Piece hashes only |
+| **Block verification** | BLAKE3 (default) / SHA-256 verified before every block hits disk | Trusts the blockstore | Piece hashes only |
 | **Congestion control** | AIMD sliding window per peer | None | uTP at transport level |
 | **Provider selection** | Ranked by latency + bandwidth + freshness | Unranked list | Unranked list |
 | **Reprovide cost** | Entry-node-only announcing, split into incremental groups | Full re-announce every cycle | N/A (tracker-based) |
@@ -62,19 +62,19 @@ Membuss takes a different position. Every leaf block is erasure-coded at the sto
 ## How It Works
 
 ```
- add ──►  Chunk  ──►  Hash  ──►  MemFS / DAG  ──►  Erasure-code leaves  ──►  Store  ──►  Announce
-            │           │              │                    │                  │            │
-      256 KiB blocks  SHA-256      FILE / DIR         Reed-Solomon 10+4      Pebble      Kademlia
-      (fixed default)   → MID      envelopes          (lose any 4 of 14)   blockstore      DHT
+ add ──►  Chunk  ──►  Parallel Hash  ──►  MemFS / DAG  ──►  Erasure-code leaves  ──►  Store  ──►  Announce
+            │               │                 │                    │                  │            │
+      256 KiB blocks   BLAKE3 (default)   FILE / DIR         Reed-Solomon 10+4      Pebble      Kademlia
+      (fixed default)    parallel pool    envelopes          (lose any 4 of 14)   hybrid DB     DHT
 
  get ──►  DHT: who has the root?  ──►  Memex session  ──►  walk DAG, pull blocks  ──►  verify  ──►  reassemble
 ```
 
 1. **Chunk** — the input is split into content blocks (fixed 256 KiB by default; Rabin and FastCDC are also available).
-2. **Hash** — each block is SHA-256 hashed, wrapped in a CIDv1 multihash, and tagged with a codec to form a **MID**.
+2. **Hash** — each block is hashed concurrently in parallel (BLAKE3 by default, configurable to SHA-256 or SHA-512), wrapped in a CIDv1 multihash, and tagged with a codec to form a **MID**.
 3. **Structure** — files and directories become a MemFS tree (`FILE` / `DIR` / `SYMLINK` / `METADATA` nodes) over the content-addressed block graph, with automatic deduplication.
 4. **Erase** — every raw leaf is Reed-Solomon encoded into `10 data + 4 parity` shards; any 4 of the 14 can be lost and the block still recovers.
-5. **Store** — blocks are written to a Pebble-backed blockstore, accelerated by an in-memory bloom filter and verified on write.
+5. **Store** — blocks are stored in Pebble SSTables (with large blobs >= 1 MB on disk), accelerated by an in-memory Counting Bloom Filter for O(1) insertions, deletions, and lookup.
 6. **Announce** — provider records for the content's entry nodes are published to the Kademlia DHT and gossiped over PEX.
 7. **Fetch** — a peer locates a provider of the root, opens a Memex session, and streams the whole tree from that provider — pulling child blocks over the same connection rather than re-querying the DHT per block.
 8. **Reprovide** — Mem-Herald periodically re-announces entry nodes, split across incremental groups to keep DHT traffic low.

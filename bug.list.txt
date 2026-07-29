@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-034: Bloom filter background DB rebuild overhead on deletions
+  Fixed: 2026-07-29 — Replace standard Bloom filter with thread-safe Counting Bloom Filter (8-bit saturating counters), enabling O(1) deletions without DB scans.
+
 [FIXED] BUG-033: Flat file double-write overhead in Pebble blockstore
   Fixed: 2026-07-29 — Add LargeBlockThreshold (1 MiB) in core/store/pebble.go so small/medium blocks (<1 MiB) are written directly to Pebble DB SSTables, avoiding filesystem file creation.
 
