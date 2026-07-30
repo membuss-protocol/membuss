@@ -166,10 +166,10 @@ func TestBloomStoreSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
-// TestBloomStoreRebuildOnDelete verifies that an explicit
-// Delete causes the bloom to be rebuilt so the deleted
-// MID is reported as absent.
-func TestBloomStoreRebuildOnDelete(t *testing.T) {
+// TestBloomStoreO1Delete verifies that an explicit
+// Delete immediately decrements the counting bloom filter counters
+// so the deleted MID is reported as absent in O(1) time.
+func TestBloomStoreO1Delete(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewMemStore(Options{
 		Path: filepath.Join(dir, "store"),

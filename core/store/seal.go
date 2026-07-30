@@ -169,6 +169,11 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 	s.gcMu.Lock()
 	defer s.gcMu.Unlock()
 
+	if s.gcTracker != nil {
+		s.gcTracker.StartGC()
+		defer s.gcTracker.EndGC()
+	}
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -236,13 +241,22 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 				continue
 			}
 
+			// Check if key is protected by gcTracker (concurrent write or within grace period)
+			m, merr := mid.FromMultihash(mid.CodecRaw, raw)
+			if merr == nil {
+				var writeTs uint64
+				if ts, terr := db.ReadTimestamp(s.db, m); terr == nil {
+					writeTs = ts
+				}
+				if s.gcTracker != nil && s.gcTracker.IsProtected(m, writeTs, minAge) {
+					continue
+				}
+			}
+
 			// Check if key is older than minAge
-			if minAgeTs > 0 {
-				m, merr := mid.FromMultihash(mid.CodecRaw, raw)
-				if merr == nil {
-					if ts, terr := db.ReadTimestamp(s.db, m); terr == nil && ts >= minAgeTs {
-						continue
-					}
+			if minAgeTs > 0 && merr == nil {
+				if ts, terr := db.ReadTimestamp(s.db, m); terr == nil && ts >= minAgeTs {
+					continue
 				}
 			}
 

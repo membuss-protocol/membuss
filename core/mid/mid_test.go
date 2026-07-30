@@ -105,7 +105,10 @@ func TestParseRejectsCIDv0(t *testing.T) {
 
 func TestDigestMatchesSHA256(t *testing.T) {
 	data := []byte("verify me")
-	m := FromBytes(data)
+	m, err := FromBytesWithHash(data, multihash.SHA2_256)
+	if err != nil {
+		t.Fatalf("FromBytesWithHash: %v", err)
+	}
 	digest, err := m.DigestBytes()
 	if err != nil {
 		t.Fatalf("DigestBytes: %v", err)
@@ -199,5 +202,37 @@ func TestStringStableAcrossFormats(t *testing.T) {
 	}
 	if !bytes.Equal(m.HashBytes(), back.HashBytes()) {
 		t.Fatalf("hash envelope changed across roundtrip")
+	}
+}
+
+func TestConfigurableHashAlgorithms(t *testing.T) {
+	orig := GetDefaultHash()
+	defer func() { _ = SetDefaultHash(orig) }()
+
+	// Test BLAKE3 (Default)
+	if err := SetDefaultHashByName("blake3"); err != nil {
+		t.Fatalf("SetDefaultHashByName blake3: %v", err)
+	}
+	mB3 := FromBytes([]byte("test blake3"))
+	sB3 := mB3.String()
+	parsedB3, err := Parse(sB3)
+	if err != nil {
+		t.Fatalf("Parse BLAKE3: %v", err)
+	}
+	if !mB3.Equal(parsedB3) {
+		t.Fatal("BLAKE3 roundtrip mismatch")
+	}
+
+	// Test SHA2-256
+	if err := SetDefaultHashByName("sha256"); err != nil {
+		t.Fatalf("SetDefaultHashByName sha256: %v", err)
+	}
+	mSHA := FromBytes([]byte("test sha256"))
+	parsedSHA, err := Parse(mSHA.String())
+	if err != nil {
+		t.Fatalf("Parse SHA256: %v", err)
+	}
+	if !mSHA.Equal(parsedSHA) {
+		t.Fatal("SHA256 roundtrip mismatch")
 	}
 }

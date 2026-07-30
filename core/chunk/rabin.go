@@ -1,4 +1,4 @@
-﻿package chunk
+package chunk
 
 import (
 	"errors"
@@ -64,6 +64,14 @@ type rabinChunker struct {
 	eofSeen bool
 }
 
+func (c *rabinChunker) Close() error {
+	c.eofSeen = true
+	if closer, ok := c.r.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // NewRabin returns a ChunkerFactory that splits the input using
 // content-defined (Rabin) chunking. Blocks land in a size band
 // roughly bounded by rabinMin and rabinMax, with a geometric mean
@@ -105,12 +113,15 @@ func (c *rabinChunker) Next() (Block, error) {
 		}
 		if errors.Is(err, io.EOF) {
 			c.eofSeen = true
+			closeReader(c.r)
 			if len(c.pending) == 0 {
 				return Block{}, io.EOF
 			}
 			return c.cut()
 		}
 		if err != nil {
+			c.eofSeen = true
+			closeReader(c.r)
 			return Block{}, fmt.Errorf("chunk: rabin read: %w", err)
 		}
 	}

@@ -1,4 +1,4 @@
-﻿// Package dag builds and resolves Merkle DAGs over content
+// Package dag builds and resolves Merkle DAGs over content
 // produced by core/chunk.
 //
 // A DAG has two kinds of nodes:
@@ -217,7 +217,10 @@ func (s *levelStack) collapse(children []mid.MID) (mid.MID, error) {
 		links[i] = c.String()
 	}
 	canonical := &membusspb.DAGNode{Links: links}
-	raw, err := proto.Marshal(canonical)
+	bufPtr := chunk.GetBlockBuffer(chunk.DefaultBlockSize)
+	defer chunk.PutBlockBuffer(bufPtr)
+
+	raw, err := proto.MarshalOptions{}.MarshalAppend((*bufPtr)[:0], canonical)
 	if err != nil {
 		return mid.MID{}, fmt.Errorf("dag: marshal node: %w", err)
 	}

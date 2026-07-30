@@ -3,6 +3,7 @@ package chunk
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"io"
 	"testing"
 )
@@ -323,3 +324,76 @@ func TestFastCDCChunkerDeduplicatesAppend(t *testing.T) {
 		t.Fatal("expected at least one shared block MID between the two shifted inputs")
 	}
 }
+
+type mockCloseReader struct {
+	io.Reader
+	closed bool
+	err    error
+}
+
+func (m *mockCloseReader) Read(p []byte) (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	return m.Reader.Read(p)
+}
+
+func (m *mockCloseReader) Close() error {
+	m.closed = true
+	return nil
+}
+
+func TestFixedChunker_ClosesUnderlyingReaderOnErrorAndEOF(t *testing.T) {
+	// Test EOF closes reader
+	mockEOF := &mockCloseReader{Reader: bytes.NewReader(make([]byte, 2000))}
+	cEOF, err := NewFixed(1024)(mockEOF)
+	if err != nil {
+		t.Fatalf("NewFixed: %v", err)
+	}
+	for {
+		_, err := cEOF.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+	}
+	if !mockEOF.closed {
+		t.Fatal("expected mock reader to be closed on EOF")
+	}
+
+	// Test non-EOF error closes reader
+	mockErr := &mockCloseReader{Reader: bytes.NewReader(make([]byte, 2000)), err: errors.New("read error")}
+	cErr, err := NewFixed(1024)(mockErr)
+	if err != nil {
+		t.Fatalf("NewFixed: %v", err)
+	}
+	_, err = cErr.Next()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !mockErr.closed {
+		t.Fatal("expected mock reader to be closed on read error")
+	}
+}
+
+func TestBlockBufferPool_RecyclesBuffers(t *testing.T) {
+	bufPtr := GetBlockBuffer(DefaultBlockSize)
+	if bufPtr == nil || cap(*bufPtr) != DefaultBlockSize {
+		t.Fatalf("GetBlockBuffer returned invalid buffer: %v", bufPtr)
+	}
+	// Write dummy byte to verify pointer retention
+	(*bufPtr)[0] = 0xAB
+	PutBlockBuffer(bufPtr)
+
+	bufPtr2 := GetBlockBuffer(DefaultBlockSize)
+	if bufPtr2 == nil || cap(*bufPtr2) != DefaultBlockSize {
+		t.Fatalf("GetBlockBuffer after Put returned invalid buffer")
+	}
+	if (*bufPtr2)[0] != 0xAB {
+		t.Log("Note: buffer was reallocated or cleared by runtime GC")
+	}
+	PutBlockBuffer(bufPtr2)
+}
+

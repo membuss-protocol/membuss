@@ -4,6 +4,30 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-035: Memory allocation spikes during high-volume file chunking and DAG building
+  Fixed: 2026-07-30 — Implement thread-safe sync.Pool block buffer recycling (GetBlockBuffer / PutBlockBuffer) for 256 KiB chunk buffers in core/chunk and core/dag.
+
+[FIXED] BUG-034: Bloom filter background DB rebuild overhead on deletions
+  Fixed: 2026-07-29 — Replace standard Bloom filter with thread-safe Counting Bloom Filter (8-bit saturating counters), enabling O(1) deletions without DB scans.
+
+[FIXED] BUG-033: Flat file double-write overhead in Pebble blockstore
+  Fixed: 2026-07-29 — Add LargeBlockThreshold (1 MiB) in core/store/pebble.go so small/medium blocks (<1 MiB) are written directly to Pebble DB SSTables, avoiding filesystem file creation.
+
+[FIXED] BUG-032: Heap allocation overhead in mid.Bytes(), mid.RawBytes(), and Block.RawData()
+  Fixed: 2026-07-29 — Make mid.Bytes() and mid.RawBytes() return m.Hash directly without copying, and add Block.RawData() zero-copy getter for internal pipelines.
+
+[FIXED] BUG-031: Reader resource leaks in fixed, FastCDC, and Rabin chunker failures
+  Fixed: 2026-07-29 — Add closeReader helper and Close method to fixed, FastCDC, and Rabin chunkers to cleanly close io.Closer readers on EOF and read errors.
+
+[FIXED] BUG-030: Allocation & string formatting overhead in MID String and Equal
+  Fixed: 2026-07-29 — Memoize m.str in MID struct during build/Parse and optimize Equal using assembly-optimized bytes.Equal.
+
+[FIXED] BUG-029: Garbage collection race condition with concurrent block ingestion
+  Fixed: 2026-07-29 — Implement gcWriteTracker (core/store/gc_tracker.go) to track active writes during GC sweeps and enforce a 5-minute ingestion grace period.
+
+[FIXED] BUG-028: Severe O(N) full DB scans on MemStore Delete and DeleteDAG
+  Fixed: 2026-07-29 — Replace per-delete DB rebuild calls with in-memory deletion counter and 5-second debounced background rebuilds in bloomIndex.
+
 [FIXED] BUG-027: MemNS single-file metadata resolution and directory listing chi URLParam lookup errors
   Fixed: 2026-07-29 — Delegate bare MemNS requests directly to handleResolved, truncate defaultFilename multihashes to 16 chars, and create handleDirListForMID. Commit 0c6fa58.
 
@@ -55,9 +79,6 @@
 [FIXED] BUG-011: Hardcoded .localhost subdomain check for SSE status route
   Fixed: 2026-07-27 — Replace .localhost domain check with resolveSubdomain(r) to generate correct SSE /~status URLs on production domain deployments.
 
-[FIXED] BUG-010: Listener channel and goroutine leak in DownloadManager
-  Fixed: 2026-07-27 — Fix RemoveListener channel closing, add AddListenerWithContext for SSE disconnect auto-cleanup, and clear listeners on job finish.
-
 [FIXED] BUG-009: Memory & Client IP leak in RefererTracker
   Fixed: 2026-07-27 — Replace map clear with LRU eviction for pathMIDs; bound recentMIDs client IPs & add auto-prune TTL.
 
@@ -77,15 +98,3 @@
 
 [FIXED] BUG-004: Desktop auto-start daemon on GUI launch unreliable
   Superseded by BUG-005 (auto-start removed by design).
-
-[FIXED] BUG-003: Desktop "Check Updates" fails with GitHub API rate limit
-  Fixed: 2026-07-11 — non-API-first (redirect → atom → API last) + 30m cache.
-
-[FIXED] BUG-002: Desktop explorer iframe opened every link in system browser
-  (including in-app /explorer/* SPA route changes). Interceptor now only
-  forwards external / target=_blank / download / non-explorer URLs.
-  Fixed: 2026-07-11 — gateway/explorer/explorer.go inject + desktop main.js.
-
-[FIXED] BUG-001: Root URL serves leaked MID content via RefererTracker state
-  Fixed: 2026-07-09 — skip referer resolution for root, remove cookie fallback,
-  scope recentMIDs per client IP. Commit on features branch.

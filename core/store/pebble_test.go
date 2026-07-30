@@ -856,8 +856,8 @@ func TestFlatFileStore(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Put a block
-	data1 := []byte("hello flat file blockstore")
+	// Put a large block (>= 1MB) to trigger flat file storage
+	data1 := bytes.Repeat([]byte("hello flat file blockstore"), 50000)
 	m1 := mid.FromBytes(data1)
 	if err := s.Put(m1, data1); err != nil {
 		t.Fatalf("Put failed: %v", err)
@@ -900,6 +900,100 @@ func TestFlatFileStore(t *testing.T) {
 	// Verify block is not in store
 	if has, _ := s.Has(m1); has {
 		t.Fatal("Store still reports block exists after delete")
+	}
+}
+
+func TestMemStoreGC_ConcurrentUploadRace(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewMemStore(Options{Path: dir})
+	if err != nil {
+		t.Fatalf("NewMemStore: %v", err)
+	}
+	defer s.Close()
+
+	// Put a sealed block to have a valid sealed root
+	sealedData := []byte("sealed root block data for GC test")
+	sealedMID := mid.FromBytes(sealedData)
+	if err := s.Put(sealedMID, sealedData); err != nil {
+		t.Fatalf("Put sealed: %v", err)
+	}
+	if err := s.Seal(sealedMID, false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	// Write a new block concurrently during GC
+	newData := []byte("concurrent block written during GC sweep")
+	newMID := mid.FromBytes(newData)
+
+	// Simulate concurrent write by putting block inside a goroutine while GC runs
+	done := make(chan error, 1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		done <- s.Put(newMID, newData)
+	}()
+
+	if _, err := s.GC(context.Background()); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Concurrent Put failed: %v", err)
+	}
+
+	// Verify that the concurrent block written during GC was NOT deleted
+	has, err := s.Has(newMID)
+	if err != nil {
+		t.Fatalf("Has newMID: %v", err)
+	}
+	if !has {
+		t.Fatalf("GC race condition! Concurrent block %s was mistakenly deleted by GC", newMID.String())
+	}
+}
+
+func TestMemStore_HybridBlockStorageThreshold(t *testing.T) {
+	dbDir := t.TempDir()
+	blocksDir := t.TempDir()
+
+	s, err := NewMemStore(Options{
+		Path:       dbDir,
+		BlocksPath: blocksDir,
+	})
+	if err != nil {
+		t.Fatalf("NewMemStore: %v", err)
+	}
+	defer s.Close()
+
+	// Small block (256 KB)
+	smallData := bytes.Repeat([]byte{0xAA}, 256*1024)
+	smallMID := mid.FromBytes(smallData)
+	if err := s.Put(smallMID, smallData); err != nil {
+		t.Fatalf("Put small: %v", err)
+	}
+
+	// Large block (1.2 MB)
+	largeData := bytes.Repeat([]byte{0xBB}, 1200*1024)
+	largeMID := mid.FromBytes(largeData)
+	if err := s.Put(largeMID, largeData); err != nil {
+		t.Fatalf("Put large: %v", err)
+	}
+
+	// Verify small block is NOT on disk as a flat file
+	if _, err := os.Stat(s.blockPath(smallMID)); err == nil {
+		t.Fatalf("Expected small block %s to be stored in Pebble DB, but found flat file on disk", smallMID.String())
+	}
+
+	// Verify large block IS on disk as a flat file
+	if _, err := os.Stat(s.blockPath(largeMID)); os.IsNotExist(err) {
+		t.Fatalf("Expected large block %s to be stored on disk, but file missing", largeMID.String())
+	}
+
+	// Verify Get returns correct data for both
+	gotSmall, err := s.Get(smallMID)
+	if err != nil || !bytes.Equal(gotSmall, smallData) {
+		t.Fatalf("Get small block failed or mismatch: %v", err)
+	}
+	gotLarge, err := s.Get(largeMID)
+	if err != nil || !bytes.Equal(gotLarge, largeData) {
+		t.Fatalf("Get large block failed or mismatch: %v", err)
 	}
 }
 

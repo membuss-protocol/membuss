@@ -22,15 +22,12 @@ package store
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
-	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/nnlgsakib/membuss/core/db"
 
 	"github.com/nnlgsakib/membuss/core/mid"
@@ -75,25 +72,20 @@ func DefaultBloomConfig() BloomConfig {
 	}
 }
 
-// bloomIndex is a thread-safe in-memory bloom filter
-// wrapper. It owns the underlying bloom.BloomFilter and
+// bloomIndex is a thread-safe in-memory counting bloom filter
+// wrapper. It owns the underlying CountingBloomFilter and
 // the snapshot path; the MemStore holds one and calls
 // into it from Put/Delete/Has.
 type bloomIndex struct {
 	mu       sync.RWMutex
-	filter   *bloom.BloomFilter
+	cbf      *CountingBloomFilter
 	capacity uint
 	fpRate   float64
 	path     string
-
-	rebuildCh chan *db.DB
-	closeCh   chan struct{}
-	closed    bool
-	ctx       context.Context
-	cancel    context.CancelFunc
+	closed   bool
 }
 
-// newBloomIndex constructs a fresh filter with the
+// newBloomIndex constructs a fresh counting bloom filter with the
 // requested capacity / FPRate. If path points at an
 // existing readable file the filter is loaded from it;
 // otherwise the filter is returned empty and the caller
@@ -112,45 +104,32 @@ func newBloomIndex(cfg BloomConfig) (*bloomIndex, error) {
 		path:     cfg.SnapshotPath,
 	}
 
-	idx.rebuildCh = make(chan *db.DB, 1)
-	idx.closeCh = make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	idx.ctx = ctx
-	idx.cancel = cancel
-
 	if cfg.SnapshotPath != "" {
 		if data, err := os.ReadFile(cfg.SnapshotPath); err == nil {
-			bf := &bloom.BloomFilter{}
-			if uerr := bf.UnmarshalBinary(data); uerr == nil {
-				idx.filter = bf
-				go idx.rebuildWorker()
+			cbf := &CountingBloomFilter{}
+			if uerr := cbf.UnmarshalBinary(data); uerr == nil {
+				idx.cbf = cbf
 				return idx, nil
 			}
-			// Fall through: snapshot was corrupt; build a
-			// fresh one and let the next Close rewrite it.
+			// Fall through: snapshot was corrupt; build a fresh one
 		}
 	}
 
-	idx.filter = bloom.NewWithEstimates(cfg.Capacity, cfg.FPRate)
-	go idx.rebuildWorker()
-
+	idx.cbf = NewCountingBloomFilter(cfg.Capacity, cfg.FPRate)
 	return idx, nil
 }
 
 // fromDB walks every block/DAG key in the store and adds
 // the corresponding MID to the filter. Used on startup
-// when no snapshot file is available. This is a
-// one-time, blocking operation; the caller is expected
-// to invoke it from a constructor.
+// when no snapshot file is available.
 func (b *bloomIndex) fromDB(database *db.DB) error {
 	if database == nil {
 		return errors.New("bloom: nil db")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// Ensure we have a live filter.
-	if b.filter == nil {
-		b.filter = bloom.NewWithEstimates(b.capacity, b.fpRate)
+	if b.cbf == nil {
+		b.cbf = NewCountingBloomFilter(b.capacity, b.fpRate)
 	}
 	it, err := database.NewIter()
 	if err != nil {
@@ -164,26 +143,24 @@ func (b *bloomIndex) fromDB(database *db.DB) error {
 			if len(raw) <= len(p) {
 				continue
 			}
-			b.filter.Add(raw[len(p):])
+			b.cbf.Add(raw[len(p):])
 		}
 	}
 	return nil
 }
 
 // maybeTest is the RAM-only check. It returns false if
-// the filter is sure the MID is absent and true
-// otherwise. Callers MUST treat a true result as a hint
-// that requires a DB confirmation.
+// the filter is sure the MID is absent and true otherwise.
 func (b *bloomIndex) maybeTest(m mid.MID) bool {
 	if b == nil || m.IsZero() {
 		return true
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if b.filter == nil {
+	if b.cbf == nil {
 		return true
 	}
-	return b.filter.Test(m.Bytes())
+	return b.cbf.Test(m.Bytes())
 }
 
 // add records m in the filter. Safe to call concurrently.
@@ -192,33 +169,37 @@ func (b *bloomIndex) add(m mid.MID) {
 		return
 	}
 	b.mu.Lock()
-	if b.filter != nil {
-		b.filter.Add(m.Bytes())
+	if b.cbf != nil {
+		b.cbf.Add(m.Bytes())
 	}
 	b.mu.Unlock()
 }
 
-func (b *bloomIndex) rebuildFromDB(database *db.DB) error {
-	if b == nil {
-		return nil
+// recordDelete removes m from the counting bloom filter in O(1) time.
+func (b *bloomIndex) recordDelete(m mid.MID) {
+	if b == nil || m.IsZero() {
+		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
-		return errors.New("bloom: closed")
+	if b.cbf != nil {
+		b.cbf.Remove(m.Bytes())
 	}
-	select {
-	case b.rebuildCh <- database:
-	default:
+	b.mu.Unlock()
+}
+
+// rebuildFromDB performs an immediate rebuild of the counting bloom filter from the DB.
+func (b *bloomIndex) rebuildFromDB(database *db.DB) error {
+	if b == nil || database == nil {
+		return nil
 	}
-	return nil
+	return b.performRebuild(database)
 }
 
 func (b *bloomIndex) performRebuild(database *db.DB) error {
 	if database == nil {
 		return errors.New("bloom: nil db")
 	}
-	fresh := bloom.NewWithEstimates(b.capacity, b.fpRate)
+	fresh := NewCountingBloomFilter(b.capacity, b.fpRate)
 	it, err := database.NewIter()
 	if err != nil {
 		return err
@@ -235,37 +216,9 @@ func (b *bloomIndex) performRebuild(database *db.DB) error {
 		}
 	}
 	b.mu.Lock()
-	b.filter = fresh
+	b.cbf = fresh
 	b.mu.Unlock()
 	return nil
-}
-
-func (b *bloomIndex) rebuildWorker() {
-	defer close(b.closeCh)
-	var lastDb *db.DB
-	timer := time.NewTimer(500 * time.Millisecond)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-b.ctx.Done():
-			if lastDb != nil {
-				_ = b.performRebuild(lastDb)
-			}
-			return
-		case database := <-b.rebuildCh:
-			lastDb = database
-			timer.Reset(500 * time.Millisecond)
-		case <-timer.C:
-			if lastDb != nil {
-				_ = b.performRebuild(lastDb)
-				lastDb = nil
-			}
-		}
-	}
 }
 
 func (b *bloomIndex) Close() error {
@@ -278,23 +231,22 @@ func (b *bloomIndex) Close() error {
 		return nil
 	}
 	b.closed = true
-	b.cancel()
 	b.mu.Unlock()
 
-	<-b.closeCh
 	return b.saveSnapshot()
 }
 
-// saveSnapshot serializes the filter to disk. A nil path
-// is a no-op. Errors are returned to the caller; the
-// store treats them as warnings (the on-disk state is
-// advisory, the source of truth is BadgerDB).
+// saveSnapshot serializes the filter to disk. A nil path is a no-op.
 func (b *bloomIndex) saveSnapshot() error {
 	if b == nil || b.path == "" {
 		return nil
 	}
 	b.mu.RLock()
-	data, err := b.filter.MarshalBinary()
+	if b.cbf == nil {
+		b.mu.RUnlock()
+		return nil
+	}
+	data, err := b.cbf.MarshalBinary()
 	b.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("bloom: marshal: %w", err)

@@ -27,10 +27,12 @@
 package mid
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multihash"
@@ -58,8 +60,61 @@ const CodecDAGPB uint64 = 0x70
 // registered for Membuss's UnixFS-equivalent layer (Phase 17).
 const CodecMemFS uint64 = 0x72
 
-// DefaultHash is the multihash code used to hash content.
-const DefaultHash = multihash.SHA2_256
+// Supported multihash algorithm constants.
+const (
+	HashBLAKE3   = multihash.BLAKE3
+	HashSHA256   = multihash.SHA2_256
+	HashSHA512   = multihash.SHA2_512
+)
+
+// DefaultHash is the default multihash code used to hash content (BLAKE3).
+const DefaultHash = multihash.BLAKE3
+
+var (
+	defaultHashMu  sync.RWMutex
+	defaultHashAlg uint64 = multihash.BLAKE3
+)
+
+// GetDefaultHash returns the current default multihash algorithm code.
+func GetDefaultHash() uint64 {
+	defaultHashMu.RLock()
+	defer defaultHashMu.RUnlock()
+	return defaultHashAlg
+}
+
+// SetDefaultHash sets the default multihash algorithm code (e.g. multihash.BLAKE3, multihash.SHA2_256).
+func SetDefaultHash(code uint64) error {
+	if !isSupportedHash(code) {
+		return fmt.Errorf("mid: unsupported hash algorithm code %#x", code)
+	}
+	defaultHashMu.Lock()
+	defaultHashAlg = code
+	defaultHashMu.Unlock()
+	return nil
+}
+
+// SetDefaultHashByName sets the default multihash algorithm by string name ("blake3", "sha256", "sha512").
+func SetDefaultHashByName(name string) error {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "blake3", "blake3-256", "blake":
+		return SetDefaultHash(multihash.BLAKE3)
+	case "sha256", "sha2-256":
+		return SetDefaultHash(multihash.SHA2_256)
+	case "sha512", "sha2-512":
+		return SetDefaultHash(multihash.SHA2_512)
+	default:
+		return fmt.Errorf("mid: unknown hash algorithm name %q", name)
+	}
+}
+
+func isSupportedHash(code uint64) bool {
+	switch code {
+	case multihash.BLAKE3, multihash.SHA2_256, multihash.SHA2_512, multihash.KECCAK_256, multihash.SHAKE_256:
+		return true
+	default:
+		return false
+	}
+}
 
 // MID is a content identifier: a CIDv1-encoded codec +
 // multihash digest.
@@ -82,40 +137,47 @@ type MID struct {
 	// cid is the parsed go-cid form. Cached so callers that
 	// want the rich cid.Cid API do not have to re-parse.
 	cid cid.Cid
+	// str is the cached public string form ("mem" + base32).
+	str string
 }
 
-// FromBytes returns the MID for the given content bytes. The
-// content is hashed with SHA-256, wrapped as a multihash,
-// embedded in a CIDv1, and tagged with the raw codec (0x55).
+// FromBytes returns the MID for the given content bytes using the configured default multihash algorithm (BLAKE3 by default).
 func FromBytes(data []byte) MID {
-	sum := sha256.Sum256(data)
-	mh, err := multihash.Encode(sum[:], DefaultHash)
+	alg := GetDefaultHash()
+	m, err := FromBytesWithCodecAndHash(data, CodecRaw, alg)
 	if err != nil {
-		// SHA2_256 is always encodable; this branch is unreachable.
-		panic(fmt.Sprintf("mid: encode multihash: %v", err))
+		sum := sha256.Sum256(data)
+		mh, _ := multihash.Encode(sum[:], multihash.SHA2_256)
+		return FromCodecAndHash(cidVersion1, CodecRaw, mh)
 	}
-	return FromCodecAndHash(cidVersion1, CodecRaw, mh)
+	return m
 }
 
-// FromBytesWithCodec returns the MID for the given content
-// bytes tagged with the supplied codec. SHA-256 is always used
-// for the digest, and the result is a CIDv1 wrapping a
-// sha2-256 multihash, exactly like FromBytes. The difference
-// is the codec tag: callers can attach a typed wrapper (e.g.
-// core/memfs's FILE / DIR / SYMLINK / METADATA nodes) to a
-// hash that would otherwise be tagged CodecRaw.
-//
-// This is the building block for typed-but-content-addressed
-// nodes that share the same content-hash semantics as raw
-// leaves but carry a different on-wire type.
+// FromBytesWithCodec returns the MID for the given content bytes tagged with the supplied codec using the configured default multihash algorithm.
 func FromBytesWithCodec(data []byte, codec uint64) MID {
-	sum := sha256.Sum256(data)
-	mh, err := multihash.Encode(sum[:], DefaultHash)
+	alg := GetDefaultHash()
+	m, err := FromBytesWithCodecAndHash(data, codec, alg)
 	if err != nil {
-		// SHA2_256 is always encodable; this branch is unreachable.
-		panic(fmt.Sprintf("mid: encode multihash: %v", err))
+		sum := sha256.Sum256(data)
+		mh, _ := multihash.Encode(sum[:], multihash.SHA2_256)
+		return FromCodecAndHash(cidVersion1, codec, mh)
 	}
-	return FromCodecAndHash(cidVersion1, codec, mh)
+	return m
+}
+
+// FromBytesWithHash returns the MID for the given content bytes using the specified hash algorithm.
+// Supported algorithms include multihash.BLAKE3, multihash.SHA2_256, multihash.BLAKE2B_256, and multihash.SHA2_512.
+func FromBytesWithHash(data []byte, hashAlg uint64) (MID, error) {
+	return FromBytesWithCodecAndHash(data, CodecRaw, hashAlg)
+}
+
+// FromBytesWithCodecAndHash returns the MID for the given content bytes tagged with the supplied codec and hash algorithm.
+func FromBytesWithCodecAndHash(data []byte, codec uint64, hashAlg uint64) (MID, error) {
+	mh, err := multihash.Sum(data, hashAlg, -1)
+	if err != nil {
+		return MID{}, fmt.Errorf("mid: sum multihash algorithm %#x: %w", hashAlg, err)
+	}
+	return fromCodecAndHashErr(cidVersion1, codec, mh)
 }
 
 // FromMultihash wraps a pre-built multihash envelope with the
@@ -161,11 +223,13 @@ func build(version uint8, codec uint64, mh []byte) (MID, error) {
 		return MID{}, fmt.Errorf("mid: unsupported CID version %d", version)
 	}
 	c := cid.NewCidV1(codec, mh)
+	str := Prefix + c.String()
 	return MID{
 		Version: version,
 		codec:   codec,
 		Hash:    mh,
 		cid:     c,
+		str:     str,
 	}, nil
 }
 
@@ -192,11 +256,17 @@ func Parse(s string) (MID, error) {
 	if err := validateEnvelope(mh); err != nil {
 		return MID{}, fmt.Errorf("mid: invalid multihash envelope: %w", err)
 	}
+	str := s
+	formatted := Prefix + parsed.String()
+	if str != formatted {
+		str = formatted
+	}
 	return MID{
 		Version: uint8(parsed.Version()),
 		codec:   parsed.Prefix().Codec,
 		Hash:    append([]byte(nil), mh...),
 		cid:     parsed,
+		str:     str,
 	}, nil
 }
 
@@ -222,7 +292,7 @@ func validateEnvelope(mh []byte) error {
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
-	if d.Code != DefaultHash {
+	if !isSupportedHash(d.Code) {
 		return fmt.Errorf("unsupported hash code %#x", d.Code)
 	}
 	if len(d.Digest) != d.Length {
@@ -241,6 +311,17 @@ func (m MID) HashBytes() []byte {
 	return out
 }
 
+// CopyBytes returns a fresh defensive copy of the multihash envelope.
+func (m MID) CopyBytes() []byte {
+	out := make([]byte, len(m.Hash))
+	copy(out, m.Hash)
+	return out
+}
+
+// RawBytes returns the underlying multihash envelope slice without allocating a copy.
+// Callers MUST treat the returned slice as read-only.
+func (m MID) RawBytes() []byte { return m.Hash }
+
 // DigestBytes returns the raw hash digest (decoded from the
 // multihash envelope).
 func (m MID) DigestBytes() ([]byte, error) {
@@ -251,10 +332,9 @@ func (m MID) DigestBytes() ([]byte, error) {
 	return d.Digest, nil
 }
 
-// Bytes returns the multihash envelope. It is equivalent to
-// HashBytes and is the form used in protobuf message bodies
-// and in the BadgerDB key layout.
-func (m MID) Bytes() []byte { return m.HashBytes() }
+// Bytes returns the multihash envelope without allocating a copy.
+// It is the form used in protobuf message bodies and in Pebble DB keys.
+func (m MID) Bytes() []byte { return m.Hash }
 
 // CID returns the underlying go-cid Cid. The returned value
 // is suitable for use with the ipfs/go-cid APIs. It shares
@@ -265,6 +345,12 @@ func (m MID) CID() cid.Cid { return m.cid }
 // the "mem" prefix followed by the multibase (base32lower)
 // encoding of the CIDv1 bytes.
 func (m MID) String() string {
+	if m.str != "" {
+		return m.str
+	}
+	if len(m.Hash) == 0 {
+		return ""
+	}
 	c := cid.NewCidV1(m.codec, m.Hash)
 	return Prefix + c.String()
 }
@@ -278,15 +364,7 @@ func (m MID) Equal(other MID) bool {
 	if m.codec != other.codec {
 		return false
 	}
-	if len(m.Hash) != len(other.Hash) {
-		return false
-	}
-	for i := range m.Hash {
-		if m.Hash[i] != other.Hash[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(m.Hash, other.Hash)
 }
 
 // IsZero reports whether m is the zero value, which is not
