@@ -46,6 +46,7 @@ import (
 	memgate "github.com/nnlgsakib/membuss/gateway/memgate_v2"
 
 	"github.com/nnlgsakib/membuss/core/db"
+	"github.com/nnlgsakib/membuss/core/ipc"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -508,9 +509,33 @@ func Run(args []string) error {
 		retryBackoff: cfg.MemexRetryBackoff,
 		logger:       logger,
 	}
+
+	// 8) IPC Socket & gRPC / Node API multiplexer.
+	var ipcPath string
+	var ipcLis, grpcIPCLis, httpIPCLis net.Listener
+	if cfg.Servers.IPC.Enabled {
+		ipcPath = cfg.IPCPath
+		if ipcPath == "" {
+			ipcPath = ipc.DefaultSocketPath(cfg.DataDir)
+		}
+		lis, ipcErr := ipc.Listen(ipcPath)
+		if ipcErr != nil {
+			logger.Warn("ipc listen warning", "path", ipcPath, "err", ipcErr.Error())
+		} else {
+			ipcLis = lis
+			grpcIPCLis, httpIPCLis = ipc.Multiplex(ipcLis)
+			defer ipc.Cleanup(ipcPath)
+			defer ipcLis.Close()
+			fmt.Fprintf(os.Stdout, "  ipc_path:       %s\n", ipcPath)
+		}
+	} else {
+		logger.Info("IPC server disabled by config")
+		fmt.Fprintf(os.Stdout, "  ipc_path:       disabled\n")
+	}
+
 	var grpcSrv *serverGRPC
 	if cfg.Servers.GRPC.Enabled {
-		srv, err := startGRPC(cfg.GRPCAddr, backend)
+		srv, err := startGRPC(cfg.GRPCAddr, grpcIPCLis, backend)
 		if err != nil {
 			logger.Error("grpc", "err", err.Error())
 			os.Exit(1)
@@ -557,6 +582,8 @@ func Run(args []string) error {
 		GatewayHTTP: gateHTTPReg,
 		NodeHTTP:    nodeHTTPReg,
 		CLIRegistry: cliReg,
+		IPCPath:     ipcPath,
+		IPCListener: ipcLis,
 		Logger:      logger,
 	}
 
@@ -585,7 +612,7 @@ func Run(args []string) error {
 	// 10) Node API: local control plane over HTTP/JSON.
 	var apiSrv *httpServer
 	if cfg.Servers.NodeAPI.Enabled {
-		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg)
+		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg, httpIPCLis)
 		if err != nil {
 			logger.Error("api", "err", err.Error())
 			os.Exit(1)
@@ -935,9 +962,8 @@ func parsePeer(s string) (peer.AddrInfo, error) {
 	return peer.AddrInfo{ID: id}, nil
 }
 
-// startGRPC brings up the gRPC server on addr and returns it
-// to the caller. The caller is responsible for GracefulStop.
-func startGRPC(addr string, b serverpkg.Backend) (*serverGRPC, error) {
+// startGRPC brings up the gRPC server on TCP addr and optional IPC listener.
+func startGRPC(addr string, ipcLis net.Listener, b serverpkg.Backend) (*serverGRPC, error) {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
@@ -945,6 +971,9 @@ func startGRPC(addr string, b serverpkg.Backend) (*serverGRPC, error) {
 	s := newServerGRPC()
 	serverpkg.NewServer(b).Register(s.gsrv)
 	go func() { _ = s.gsrv.Serve(lis) }()
+	if ipcLis != nil {
+		go func() { _ = s.gsrv.Serve(ipcLis) }()
+	}
 	return s, nil
 }
 
@@ -1003,7 +1032,7 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 // startNodeAPI brings up the local Node control API. mtrx
 // exposes Prometheus at /metrics; apiKey enables X-Membuss-Key
 // auth on every /api/v1 endpoint; tls enables HTTPS.
-func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, pluginReg *plugin.MapHTTPRegistry) (*httpServer, error) {
+func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, pluginReg *plugin.MapHTTPRegistry, extraLis ...net.Listener) (*httpServer, error) {
 	nodeAPI, err := api.New(api.Config{
 		Backend:        b,
 		MaxUploadBytes: 1 << 30, // 1 GiB
@@ -1017,14 +1046,14 @@ func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey stri
 	if err != nil {
 		return nil, fmt.Errorf("nodeapi: %w", err)
 	}
-	return startHTTP(addr, "membuss-api", nodeAPI.Handler(), tlsCfg, dataDir)
+	return startHTTP(addr, "membuss-api", nodeAPI.Handler(), tlsCfg, dataDir, extraLis...)
 }
 
 // startHTTP binds an http.Handler to addr in a goroutine and
 // returns a handle whose Close method does a graceful shutdown.
 // A non-ErrServerClosed error from Serve is logged. When tls
 // is non-empty, the server runs HTTPS with the supplied cert+key.
-func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataDir string) (*httpServer, error) {
+func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataDir string, extraLis ...net.Listener) (*httpServer, error) {
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      h,
@@ -1074,6 +1103,16 @@ func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataD
 				}
 				return nil, err
 			}
+		}
+	}
+
+	for _, extra := range extraLis {
+		if extra != nil {
+			go func(l net.Listener) {
+				if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					slog.Error("http serve extra listener", "name", name, "err", err.Error())
+				}
+			}(extra)
 		}
 	}
 

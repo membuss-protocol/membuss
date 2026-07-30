@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -78,11 +79,13 @@ type Core struct {
 	// --- 2. Universal Hook Bus (Event Interceptors) ---
 	Hooks *HookBus
 
-	// --- 3. Extension Registries ---
+	// --- 3. Extension Registries & IPC Handles ---
 	GatewayHTTP HTTPRegistry
 	NodeHTTP    HTTPRegistry
 	GRPCServer  *grpc.Server
 	CLIRegistry CLIRegistry
+	IPCPath     string
+	IPCListener net.Listener
 
 	// --- 4. Context & Logging ---
 	Logger    *slog.Logger

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -45,6 +46,7 @@ import (
 
 	"github.com/nnlgsakib/membuss/cmd/membuss/daemon"
 	"github.com/nnlgsakib/membuss/config"
+	"github.com/nnlgsakib/membuss/core/ipc"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/pkg/plugin"
@@ -65,6 +67,8 @@ var (
 	// then $MEMBUSS_API_ADDR, then the config file's
 	// APIAddr, then 127.0.0.1:5001.
 	globalAPIAddr string
+	// globalDataDir is the data directory passed via --datadir.
+	globalDataDir string
 )
 
 func init() {
@@ -165,7 +169,7 @@ Run "membuss init" first to set up the data directory.`,
 	root.PersistentFlags().StringVar(&globalAddr, "addr", "", "daemon gRPC address (default: from config)")
 	root.PersistentFlags().StringVar(&globalAPIAddr, "api-addr", "", "daemon HTTP API address for MemFS commands (default: 127.0.0.1:5001)")
 	root.PersistentFlags().StringVar(&globalConfigPath, "config", "membuss.yaml", "config file used to locate the daemon")
-	root.PersistentFlags().String("datadir", "", "data directory (default $HOME/.memdata; overrides MEMBUSS_DATADIR)")
+	root.PersistentFlags().StringVar(&globalDataDir, "datadir", "", "data directory (default $HOME/.memdata; overrides MEMBUSS_DATADIR)")
 
 	root.AddCommand(
 		newAddCmd(),
@@ -236,7 +240,7 @@ func resolveAddr() (string, error) {
 	if v := os.Getenv("MEMBUSS_ADDR"); v != "" {
 		return v, nil
 	}
-	if datadir := config.ResolveDataDir(""); datadir != "" {
+	if datadir := config.ResolveDataDir(globalDataDir); datadir != "" {
 		if cfg, err := config.LoadConfig(datadir); err == nil && cfg.GRPCAddr != "" {
 			return cfg.GRPCAddr, nil
 		}
@@ -247,8 +251,26 @@ func resolveAddr() (string, error) {
 	return "127.0.0.1:50051", nil
 }
 
-// dial opens a gRPC connection to the daemon.
+// dial opens a gRPC connection to the daemon via IPC socket or TCP.
 func dial() (membusspb.MembussNodeClient, membusspb.NodeClient, *grpc.ClientConn, error) {
+	resolvedDataDir := config.ResolveDataDir(globalDataDir)
+	ipcPath := ipc.DefaultSocketPath(resolvedDataDir)
+	if cfg, err := config.LoadConfig(resolvedDataDir); err == nil && cfg.IPCPath != "" {
+		ipcPath = cfg.IPCPath
+	}
+
+	if _, err := os.Stat(ipcPath); err == nil && globalAddr == "" && os.Getenv("MEMBUSS_ADDR") == "" {
+		conn, err := grpc.NewClient("passthrough:///unix",
+			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+				return ipc.Dial(ctx, ipcPath)
+			}),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err == nil {
+			return membusspb.NewMembussNodeClient(conn), membusspb.NewNodeClient(conn), conn, nil
+		}
+	}
+
 	addr, err := resolveAddr()
 	if err != nil {
 		return nil, nil, nil, err

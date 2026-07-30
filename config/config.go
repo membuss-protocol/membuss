@@ -52,6 +52,9 @@ type Config struct {
 	// service. Example: "127.0.0.1:50051".
 	GRPCAddr string `yaml:"grpc_addr"`
 
+	// IPCPath is the filesystem socket path / named pipe for local IPC.
+	IPCPath string `yaml:"ipc_path"`
+
 	// AnchorMode toggles the Anchor Node full-sync engine. When true,
 	// the node will attempt to mirror all announced content so that
 	// it remains available when original providers go offline.
@@ -241,6 +244,7 @@ type ServersConfig struct {
 	Gateway ServerToggle `yaml:"gateway"`
 	NodeAPI ServerToggle `yaml:"node_api"`
 	GRPC    ServerToggle `yaml:"grpc"`
+	IPC     ServerToggle `yaml:"ipc"`
 }
 
 // ServerToggle represents an individual server enablement flag.
@@ -368,6 +372,7 @@ func Default() *Config {
 			Gateway: ServerToggle{Enabled: true},
 			NodeAPI: ServerToggle{Enabled: true},
 			GRPC:    ServerToggle{Enabled: true},
+			IPC:     ServerToggle{Enabled: true},
 		},
 	}
 }
