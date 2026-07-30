@@ -9,9 +9,9 @@ Decentralized storage and high-speed streaming built on protocol-level Reed-Solo
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/nnlgsakib/membuss)](https://github.com/nnlgsakib/membuss/releases)
-[![Docs Website](https://img.shields.io/badge/Documentation-Live_Docs_Hub-c8956c?logo=docusaurus&logoColor=white)](docs/)
+[![Docs Website](https://img.shields.io/badge/Documentation-Live_Docs_Hub-c8956c?logo=docusaurus&logoColor=white)](https://membuss-docs.vercel.app/)
 
-[🌐 Interactive Documentation Hub](docs/) • [📦 Precompiled Releases](https://github.com/nnlgsakib/membuss/releases) • [🖥️ Desktop GUI App](#desktop-gui-recommended)
+[🌐 Interactive Documentation Hub](https://membuss-docs.vercel.app/) • [📦 Precompiled Releases](https://github.com/nnlgsakib/membuss/releases) • [🖥️ Desktop GUI App](#desktop-gui-recommended)
 
 </div>
 
@@ -49,15 +49,15 @@ Ingest (256KB) ──► BLAKE3 Parallel Pool ──► MemFS DAG ──► Reed
 
 Explore the full interactive documentation website featuring deep-dive technical architecture blueprints, mathematical proofs, sequence flowcharts, protocol specifications, and API references:
 
-> 🔗 **[Explore Full Interactive Documentation Website](docs/)**
+> 🔗 **[Explore Full Interactive Documentation Website](https://membuss-docs.vercel.app/)**
 
 ### Highlights in the Documentation
-- **[Executive System Thesis](docs/docs/01-getting-started/introduction.md)** — Core protocol philosophy, problem analysis, and market comparison.
-- **[System Architecture Blueprint](docs/docs/02-architecture/overview.md)** — Interactive Mermaid sequence diagrams & end-to-end data pipelines.
-- **[Reed-Solomon Erasure Coding](docs/docs/02-architecture/erasure-coding.md)** — SIMD Galois Field $GF(2^8)$ matrix arithmetic specifications.
-- **[Pebble Hybrid Store & Bloom Filter](docs/docs/04-low-level-specs/pebble-hybrid-store.md)** — LSM SSTable engine & $O(1)$ saturating counter math.
-- **[Memex v2 Protocol Spec](docs/docs/03-core-protocols/memex.md)** — Multiplexed libp2p block transfer & AIMD sliding window flow control.
-- **[APIs & Protobuf Specs](docs/docs/05-apis-and-interfaces/grpc-api.md)** — gRPC contracts, Node REST API (`/api/v1`), and Mem-Gate HTTP CDN (`:8080`).
+- **[Executive System Thesis](https://membuss-docs.vercel.app/docs/getting-started/introduction)** — Core protocol philosophy, problem analysis, and market comparison.
+- **[System Architecture Blueprint](https://membuss-docs.vercel.app/docs/architecture/overview)** — Interactive Mermaid sequence diagrams & end-to-end data pipelines.
+- **[Reed-Solomon Erasure Coding](https://membuss-docs.vercel.app/docs/architecture/erasure-coding)** — SIMD Galois Field $GF(2^8)$ matrix arithmetic specifications.
+- **[Pebble Hybrid Store & Bloom Filter](https://membuss-docs.vercel.app/docs/low-level-specs/pebble-hybrid-store)** — LSM SSTable engine & $O(1)$ saturating counter math.
+- **[Memex v2 Protocol Spec](https://membuss-docs.vercel.app/docs/core-protocols/memex)** — Multiplexed libp2p block transfer & AIMD sliding window flow control.
+- **[APIs & Protobuf Specs](https://membuss-docs.vercel.app/docs/apis-and-interfaces/grpc-api)** — gRPC contracts, Node REST API (`/api/v1`), and Mem-Gate HTTP CDN (`:8080`).
 
 ---
 
@@ -70,7 +70,7 @@ Membuss includes a cross-platform graphical desktop application powered by **Wai
 - **Windows**: Download `Membuss-v2.3.0-windows-amd64-installer.exe` or `.zip`.
 - **Linux**: Download `Membuss-v2.3.0-linux-amd64.AppImage` or `.tar.gz`.
 
-👉 **[Download Precompiled Executables on GitHub Releases](https://github.com/nnlgsakib/membuss/releases)**
+👉 **[Download Precompiled Executables](https://membuss-docs.vercel.app/downloads)**
 
 ---
 

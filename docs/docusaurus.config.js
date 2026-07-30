@@ -72,9 +72,9 @@ const config = {
             label: 'Documentation',
           },
           {
-            to: '/docs/getting-started/installation',
+            to: '/downloads',
             position: 'left',
-            label: 'Downloads & Releases',
+            label: 'Downloads',
           },
           {
             href: 'https://github.com/nnlgsakib/membuss',
