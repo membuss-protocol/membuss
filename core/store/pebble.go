@@ -613,20 +613,31 @@ func (s *MemStore) Size() (uint64, error) {
 	}
 	defer s.exit()
 	var total uint64
+	seen := make(map[string]struct{})
 	it, err := s.db.NewIter()
 	if err != nil {
 		return 0, err
 	}
 	defer it.Close()
-	prefix := []byte(db.PrefixBlock)
-	for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
-		val := it.Value()
-		if s.blocksPath != "" {
-			if len(val) == 8 {
-				total += binary.BigEndian.Uint64(val)
+
+	for _, prefix := range [][]byte{[]byte(db.PrefixBlock), []byte(db.PrefixDAG)} {
+		for it.SeekGE(prefix); it.Valid() && bytes.HasPrefix(it.Key(), prefix); it.Next() {
+			keyStr := string(it.Key())
+			if _, ok := seen[keyStr]; ok {
+				continue
 			}
-		} else {
-			total += uint64(len(val))
+			seen[keyStr] = struct{}{}
+
+			val := it.Value()
+			if s.blocksPath != "" {
+				if len(val) == 8 {
+					total += binary.BigEndian.Uint64(val)
+				} else {
+					total += uint64(len(val))
+				}
+			} else {
+				total += uint64(len(val))
+			}
 		}
 	}
 	return total, nil
