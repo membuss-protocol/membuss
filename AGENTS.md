@@ -62,9 +62,22 @@ Format: `[STATUS] description` where status is `OPEN`, `FIXED`, or `WONTFIX`.
 When fixing a bug from the list, change its status to `FIXED` and append the commit hash.
 When starting work, check the file for `OPEN` items relevant to the task.
 
+## Development Workflow & Rules
+
+Always follow the strict 5-Step Development Workflow for every feature and bug fix:
+1. 🔍 **Step 1: Investigation & Diagnosis** — Investigate the codebase, identify root cause, and document findings.
+2. 🎯 **Step 2: Confirmation of Architecture** — Present Step 1 and Step 2 in text to the user FIRST, and wait for explicit user confirmation before editing files or executing heavy refactors.
+3. 🛠️ **Step 3: Implementation** — Implement clean, modular, well-structured, and tested code.
+4. 🧪 **Step 4: Verification & Testing** — Run builds, unit tests, end-to-end tests, and `graphify update .` to verify 100% correctness.
+5. 📊 **Step 5: Report & Synthesis** — Present a comprehensive final report summarizing the work and verification results, and ask for explicit user permission before committing or pushing.
+
+**Git Rules**:
+- NEVER run `git commit` or `git push` automatically. Always complete and verify implementation locally, report to the user in Step 5, and wait for explicit prompt authorization before committing or pushing.
+
 ## Code Quality & Modularity
 
 - Keep code clean, modular, and well-structured.
 - When introducing new features, helpers, or data structures, prefer creating dedicated files and folders instead of bundling everything into a single monolithic file.
 - Keep source files focused and well-organized for maximum readability and long-term maintainability.
+
 

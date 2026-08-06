@@ -93,12 +93,18 @@ func IngestFile(ctx context.Context, s store.Store, r io.Reader, opts Options) (
 			return nil
 		})
 
-		if oi, oerr := store.GetObjectInfo(s, rootMID); oerr == nil {
-			oi.IsRoot = true
-			_ = store.SetObjectInfo(s, rootMID, oi)
+		oi, oerr := store.GetObjectInfo(s, rootMID)
+		if oerr != nil {
+			oi = store.ObjectInfo{Name: opts.Name, MimeType: opts.MimeType, Size: totalSize}
+		}
+		oi.IsRoot = true
+		if err := store.SetObjectInfo(s, rootMID, oi); err != nil {
+			return Result{}, fmt.Errorf("ingest: set objectinfo: %w", err)
 		}
 		if opts.Seal {
-			_ = s.Seal(rootMID, true)
+			if err := s.Seal(rootMID, true); err != nil {
+				return Result{}, fmt.Errorf("ingest: seal: %w", err)
+			}
 		}
 
 		return Result{
@@ -136,13 +142,19 @@ func IngestFile(ctx context.Context, s store.Store, r io.Reader, opts Options) (
 		finalBlocks = dirRes.Block
 	}
 
-	if oi, oerr := store.GetObjectInfo(s, finalMID); oerr == nil {
-		oi.IsRoot = true
-		_ = store.SetObjectInfo(s, finalMID, oi)
+	oi, oerr := store.GetObjectInfo(s, finalMID)
+	if oerr != nil {
+		oi = store.ObjectInfo{Name: opts.Name, MimeType: opts.MimeType, Size: finalSize}
+	}
+	oi.IsRoot = true
+	if err := store.SetObjectInfo(s, finalMID, oi); err != nil {
+		return Result{}, fmt.Errorf("ingest: set objectinfo: %w", err)
 	}
 
 	if opts.Seal {
-		_ = s.Seal(finalMID, true)
+		if err := s.Seal(finalMID, true); err != nil {
+			return Result{}, fmt.Errorf("ingest: seal: %w", err)
+		}
 	}
 
 	return Result{
@@ -176,13 +188,19 @@ func IngestDirectoryStream(ctx context.Context, s store.Store, entries []memfs.S
 		return Result{}, fmt.Errorf("ingest: dir stream: %w", err)
 	}
 
-	if oi, oerr := store.GetObjectInfo(s, res.MID); oerr == nil {
-		oi.IsRoot = true
-		_ = store.SetObjectInfo(s, res.MID, oi)
+	oi, oerr := store.GetObjectInfo(s, res.MID)
+	if oerr != nil {
+		oi = store.ObjectInfo{Name: opts.Name, MimeType: "inode/directory", Size: res.Size}
+	}
+	oi.IsRoot = true
+	if err := store.SetObjectInfo(s, res.MID, oi); err != nil {
+		return Result{}, fmt.Errorf("ingest: set objectinfo: %w", err)
 	}
 
 	if opts.Seal {
-		_ = s.Seal(res.MID, true)
+		if err := s.Seal(res.MID, true); err != nil {
+			return Result{}, fmt.Errorf("ingest: seal: %w", err)
+		}
 	}
 
 	return Result{

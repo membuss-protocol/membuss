@@ -215,11 +215,13 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 		return AddResult{}, fmt.Errorf("memfs: store file node: %w", err)
 	}
 	if name != "" {
-		_ = store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
+		if err := store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
 			Name:     name,
 			MimeType: mime,
 			Size:     totalSize,
-		})
+		}); err != nil {
+			return AddResult{}, fmt.Errorf("memfs: set objectinfo: %w", err)
+		}
 	}
 	return AddResult{
 		MID:   rootMID,
@@ -277,11 +279,13 @@ func (b *Builder) AddDir(name string, entries []DirEntry, mode fs.FileMode, mtim
 		return AddResult{}, fmt.Errorf("memfs: store dir: %w", err)
 	}
 	if name != "" {
-		_ = store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
+		if err := store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
 			Name:     name,
 			MimeType: "inode/directory",
 			Size:     total,
-		})
+		}); err != nil {
+			return AddResult{}, fmt.Errorf("memfs: set objectinfo: %w", err)
+		}
 	}
 	return AddResult{
 		MID:   rootMID,

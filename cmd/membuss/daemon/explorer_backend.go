@@ -822,12 +822,14 @@ func (a *explorerAdapter) TrackRootWithMetadata(m mid.MID, name string, mime str
 	if b == nil || b.store == nil {
 		return errors.New("explorer: no backend")
 	}
-	_ = store.SetObjectInfo(b.store, m, store.ObjectInfo{
+	if err := store.SetObjectInfo(b.store, m, store.ObjectInfo{
 		Name:     name,
 		MimeType: mime,
 		Size:     size,
 		IsRoot:   true,
-	})
+	}); err != nil {
+		return fmt.Errorf("explorer: track metadata: %w", err)
+	}
 	a.allRoots[m.String()] = struct{}{}
 	return nil
 }
