@@ -3,9 +3,11 @@ package erasure
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"io"
 	"testing"
 
+	"github.com/multiformats/go-multihash"
 	"github.com/nnlgsakib/membuss/core/mid"
 )
 
@@ -383,5 +385,121 @@ func TestEncodeDecodeStreamRoundTrip(t *testing.T) {
 
 	if !bytes.Equal(decodedBuf.Bytes(), originalData) {
 		t.Fatal("decoded stream does not match original stream data")
+	}
+}
+
+func TestEncodeStreamCorrectMultihash(t *testing.T) {
+	algs := []struct {
+		name string
+		code uint64
+	}{
+		{"blake3", multihash.BLAKE3},
+		{"sha256", multihash.SHA2_256},
+		{"sha512", multihash.SHA2_512},
+	}
+
+	origAlg := mid.GetDefaultHash()
+	defer func() { _ = mid.SetDefaultHash(origAlg) }()
+
+	for _, tc := range algs {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := mid.SetDefaultHash(tc.code); err != nil {
+				t.Fatalf("SetDefaultHash(%s): %v", tc.name, err)
+			}
+
+			cfg := Config{DataShards: 4, ParityShards: 2}
+			enc, err := NewEncoder(cfg)
+			if err != nil {
+				t.Fatalf("NewEncoder: %v", err)
+			}
+
+			content := []byte("streaming multihash validation payload for algorithm test")
+			var shardBuffers [6]bytes.Buffer
+			writers := make([]io.Writer, 6)
+			for i := range shardBuffers {
+				writers[i] = &shardBuffers[i]
+			}
+
+			manifest, err := enc.EncodeStream(bytes.NewReader(content), writers)
+			if err != nil {
+				t.Fatalf("EncodeStream: %v", err)
+			}
+
+			// Verify original MID multihash code
+			origMID, err := mid.Parse(manifest.OriginalMid)
+			if err != nil {
+				t.Fatalf("Parse OriginalMid: %v", err)
+			}
+
+			decodedOrig, err := multihash.Decode(origMID.Hash)
+			if err != nil {
+				t.Fatalf("multihash.Decode OriginalMid: %v", err)
+			}
+			if decodedOrig.Code != tc.code {
+				t.Fatalf("OriginalMID multihash code = %#x, want %#x (%s)", decodedOrig.Code, tc.code, tc.name)
+			}
+
+			// Cross check: independent hash of stream content matches manifest.OriginalMid
+			expectedMID := mid.FromBytes(content)
+			if !origMID.Equal(expectedMID) {
+				t.Fatalf("OriginalMID %s does not match independent mid.FromBytes %s", origMID.String(), expectedMID.String())
+			}
+
+			// Verify shard MIDs multihash codes
+			for i, smidStr := range manifest.ShardMids {
+				sMID, err := mid.Parse(smidStr)
+				if err != nil {
+					t.Fatalf("Parse shard %d MID: %v", i, err)
+				}
+				decodedShard, err := multihash.Decode(sMID.Hash)
+				if err != nil {
+					t.Fatalf("multihash.Decode shard %d MID: %v", i, err)
+				}
+				if decodedShard.Code != tc.code {
+					t.Fatalf("Shard %d multihash code = %#x, want %#x (%s)", i, decodedShard.Code, tc.code, tc.name)
+				}
+			}
+		})
+	}
+}
+
+func TestDecodeStreamRejectsMislabeledHashes(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2}
+	enc, err := NewEncoder(cfg)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	content := []byte("payload to test mislabeled multihash rejection")
+	var shardBuffers [6]bytes.Buffer
+	writers := make([]io.Writer, 6)
+	for i := range shardBuffers {
+		writers[i] = &shardBuffers[i]
+	}
+
+	manifest, err := enc.EncodeStream(bytes.NewReader(content), writers)
+	if err != nil {
+		t.Fatalf("EncodeStream: %v", err)
+	}
+
+	// Deliberately mislabel the OriginalMid hash: compute SHA-256 digest but wrap with BLAKE3 multihash code
+	sum := sha256.Sum256(content)
+	mislabeledMH, err := multihash.Encode(sum[:], multihash.BLAKE3)
+	if err != nil {
+		t.Fatalf("multihash.Encode: %v", err)
+	}
+	mislabeledMID := mid.FromCodecAndHash(1, mid.CodecRaw, mislabeledMH)
+	manifest.OriginalMid = mislabeledMID.String()
+
+	// Try decoding with the mislabeled manifest
+	readers := make([]io.Reader, 6)
+	for i := range shardBuffers {
+		readers[i] = bytes.NewReader(shardBuffers[i].Bytes())
+	}
+
+	var decodedBuf bytes.Buffer
+	err = enc.DecodeStream(readers, &decodedBuf, manifest)
+	if err == nil {
+		t.Fatal("DecodeStream MUST fail when manifest contains mislabeled multihash")
 	}
 }

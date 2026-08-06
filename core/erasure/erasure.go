@@ -111,22 +111,31 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// sha256Hasher wraps crypto/sha256 to compute mid.MID.
-type sha256Hasher struct {
-	h hash.Hash
+// streamHasher wraps a multihash hasher matching a specific algorithm.
+type streamHasher struct {
+	alg uint64
+	h   hash.Hash
 }
 
-func newSHA256Hasher() *sha256Hasher {
-	return &sha256Hasher{h: sha256.New()}
+func newStreamHasher(alg uint64) (*streamHasher, error) {
+	if alg == 0 {
+		alg = mid.GetDefaultHash()
+	}
+	h, err := multihash.GetHasher(alg)
+	if err != nil {
+		alg = multihash.SHA2_256
+		h = sha256.New()
+	}
+	return &streamHasher{alg: alg, h: h}, nil
 }
 
-func (s *sha256Hasher) Write(p []byte) (n int, err error) {
+func (s *streamHasher) Write(p []byte) (n int, err error) {
 	return s.h.Write(p)
 }
 
-func (s *sha256Hasher) SumMID(codec uint64) (mid.MID, error) {
+func (s *streamHasher) SumMID(codec uint64) (mid.MID, error) {
 	sum := s.h.Sum(nil)
-	mh, err := multihash.Encode(sum, mid.DefaultHash)
+	mh, err := multihash.Encode(sum, s.alg)
 	if err != nil {
 		return mid.MID{}, err
 	}
@@ -304,14 +313,22 @@ func (e *Encoder) EncodeStream(r io.Reader, writers []io.Writer) (*membusspb.Era
 	buf := make([]byte, chunkSize)
 	
 	// Create multi-hash for the original stream to compute original MID
-	hasher := newSHA256Hasher()
+	defaultAlg := mid.GetDefaultHash()
+	hasher, err := newStreamHasher(defaultAlg)
+	if err != nil {
+		return nil, fmt.Errorf("erasure: stream hasher: %w", err)
+	}
 	var originalSize uint64
 	var shardMids []string
 
 	// Initialize individual shard hashers to compute shard MIDs over the entire stream
-	shardHashers := make([]*sha256Hasher, total)
+	shardHashers := make([]*streamHasher, total)
 	for i := range shardHashers {
-		shardHashers[i] = newSHA256Hasher()
+		sHasher, shErr := newStreamHasher(defaultAlg)
+		if shErr != nil {
+			return nil, fmt.Errorf("erasure: shard hasher %d: %w", i, shErr)
+		}
+		shardHashers[i] = sHasher
 	}
 
 	for {
@@ -393,8 +410,22 @@ func (e *Encoder) DecodeStream(readers []io.Reader, w io.Writer, manifest *membu
 		shards[i] = make([]byte, shardSize)
 	}
 
+	wantMID, err := mid.Parse(manifest.OriginalMid)
+	if err != nil {
+		return fmt.Errorf("erasure: parse expected original MID: %w", err)
+	}
+
+	decodedMh, err := multihash.Decode(wantMID.Hash)
+	if err != nil {
+		return fmt.Errorf("erasure: decode manifest multihash: %w", err)
+	}
+
+	hasher, err := newStreamHasher(decodedMh.Code)
+	if err != nil {
+		return fmt.Errorf("erasure: stream hasher: %w", err)
+	}
+
 	var remainingBytes = manifest.OriginalSize
-	hasher := newSHA256Hasher()
 
 	for remainingBytes > 0 {
 		// Read one chunk's worth of shards
@@ -439,10 +470,6 @@ func (e *Encoder) DecodeStream(readers []io.Reader, w io.Writer, manifest *membu
 	gotMID, err := hasher.SumMID(mid.CodecRaw)
 	if err != nil {
 		return fmt.Errorf("erasure: stream sum original: %w", err)
-	}
-	wantMID, err := mid.Parse(manifest.OriginalMid)
-	if err != nil {
-		return fmt.Errorf("erasure: parse expected original MID: %w", err)
 	}
 	if !gotMID.Equal(wantMID) {
 		return errors.New("erasure: stream recovered bytes do not match expected MID")
