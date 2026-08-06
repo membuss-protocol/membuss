@@ -45,11 +45,12 @@ import (
 	explorerPkg "github.com/nnlgsakib/membuss/gateway/explorer"
 	memgate "github.com/nnlgsakib/membuss/gateway/memgate_v2"
 
-	"github.com/nnlgsakib/membuss/core/db"
-	"github.com/nnlgsakib/membuss/core/ipc"
+	datastore "github.com/ipfs/go-datastore"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/nnlgsakib/membuss/core/db"
+	"github.com/nnlgsakib/membuss/core/ipc"
 
 	"github.com/nnlgsakib/membuss/anchor"
 	"github.com/nnlgsakib/membuss/config"
@@ -57,6 +58,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/core/shard"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/dht"
@@ -402,11 +404,44 @@ func Run(args []string) error {
 	})
 	memnsRes.SetDNSResolver(dnsRes)
 
-	// 6) Mem-Herald.
+	// 6) Mem-Herald & Shard Ring.
+	var heraldStrat herald.Strategy
+	switch strings.ToLower(strings.TrimSpace(cfg.ReprovideStrategy)) {
+	case "all":
+		heraldStrat = herald.StrategyAll
+	case "shards":
+		heraldStrat = herald.StrategyShards
+	default:
+		heraldStrat = herald.StrategyRoots
+	}
+
+	shardStore := dhtStoreWrapper{ds: dhtDS}
+	shardRing := shard.NewHashRing()
+	shardRing.AddPeer(h.ID().String())
+	_ = shard.LoadPeers(shardStore, shardRing)
+
+	h.Network().Notify(&network.NotifyBundle{
+		ConnectedF: func(n network.Network, c network.Conn) {
+			pID := c.RemotePeer().String()
+			shardRing.AddPeer(pID)
+			_ = shard.PersistPeers(shardStore, shardRing.Peers())
+		},
+		DisconnectedF: func(n network.Network, c network.Conn) {
+			pID := c.RemotePeer()
+			if len(n.ConnsToPeer(pID)) == 0 {
+				shardRing.RemovePeer(pID.String())
+				_ = shard.PersistPeers(shardStore, shardRing.Peers())
+			}
+		},
+	})
+
 	hd, err := herald.New(herald.Config{
 		Store:           heraldStoreWrapper{bs},
 		DHT:             mdht,
-		Strategy:        herald.StrategyRoots,
+		Strategy:        heraldStrat,
+		ShardRing:       shardRing,
+		PeerID:          h.ID().String(),
+		Replicas:        cfg.ShardReplicas,
 		Interval:        cfg.ReprovideInterval,
 		Rate:            100,
 		Burst:           8,
@@ -1375,4 +1410,29 @@ func (h heraldStoreWrapper) IterateSealed(fn func(mid.MID) error) error {
 		}
 	}
 	return nil
+}
+
+type dhtStoreWrapper struct {
+	ds *db.PebbleDatastore
+}
+
+func (w dhtStoreWrapper) Get(key []byte) ([]byte, error) {
+	if w.ds == nil {
+		return nil, db.ErrNotFound
+	}
+	val, err := w.ds.Get(context.Background(), datastore.NewKey(string(key)))
+	if err != nil {
+		if errors.Is(err, datastore.ErrNotFound) {
+			return nil, db.ErrNotFound
+		}
+		return nil, err
+	}
+	return val, nil
+}
+
+func (w dhtStoreWrapper) Set(key, value []byte) error {
+	if w.ds == nil {
+		return nil
+	}
+	return w.ds.Put(context.Background(), datastore.NewKey(string(key)), value)
 }

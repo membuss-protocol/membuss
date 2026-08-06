@@ -130,7 +130,8 @@ reprovide_groups: <<REPROVIDE_GROUPS>>
 #            that mirror the whole network.
 #   shards - announce only the erasure shards this node owns.
 # Allowed: roots | all | shards
-reprovide_strategy: roots
+reprovide_strategy: <<REPROVIDE_STRATEGY>>
+shard_replicas:     <<SHARD_REPLICAS>>
 
 # -----------------------------------------------------------------------------
 # Erasure coding
@@ -283,6 +284,8 @@ func writeTemplate(cfg *Config) (string, error) {
 		"<<NAT_WAIT_SECONDS>>",             intString(cfg.NATWaitSeconds),
 		"<<REPROVIDE_INTERVAL>>",           durationString(cfg.ReprovideInterval),
 		"<<REPROVIDE_GROUPS>>",             intString(cfg.ReprovideGroups),
+		"<<REPROVIDE_STRATEGY>>",           reprovideStratString(cfg.ReprovideStrategy),
+		"<<SHARD_REPLICAS>>",               intString(cfg.ShardReplicas),
 		"<<BLOOM_CAPACITY>>",               uintString(cfg.BloomCapacity),
 		"<<BLOOM_FP_RATE>>",                fpFormatter(cfg.BloomFPRate),
 		"<<BLOOM_DISABLED>>",               boolString(cfg.BloomDisabled),
@@ -369,4 +372,12 @@ func durationString(d time.Duration) string {
 		return "0s"
 	}
 	return d.String()
+}
+
+func reprovideStratString(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "roots"
+	}
+	return s
 }

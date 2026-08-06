@@ -245,20 +245,17 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 		}
 	}
 	if !has && b.dht != nil && b.memex != nil {
-		provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		provs, perr := b.dht.FindProviders(provCtx, m)
+		provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		provs, _ := b.dht.FindProviders(provCtx, m)
 		cancel()
-		if perr != nil || len(provs) == 0 {
-			// Fallback: use currently connected swarm peers
+		if len(provs) == 0 && b.dht == nil {
+			// Fallback: use currently connected swarm peers only if DHT is disabled
 			for _, pid := range b.host.Network().Peers() {
 				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
 			}
 		}
 		if len(provs) == 0 {
-			// No DHT providers and no connected swarm peers -> explorer will render
-			// "not found". Returning a typed error
-			// keeps the explorer template free of
-			// string matching on transport errors.
+			// No DHT providers hold this MID -> return ErrNotFound immediately
 			return nil, explorer.ContentInfo{}, explorer.ErrNotFound
 		}
 		sess, serr := memex.NewSession(memex.SessionConfig{

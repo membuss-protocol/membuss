@@ -157,11 +157,11 @@ func (a *memgateAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pro
 		}
 	}
 	if !has && b.memex != nil && b.dht != nil {
-		provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		provs, perr := b.dht.FindProviders(provCtx, m)
+		provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		provs, _ := b.dht.FindProviders(provCtx, m)
 		cancel()
-		if perr != nil || len(provs) == 0 {
-			// Fallback: use currently connected swarm peers
+		if len(provs) == 0 && b.dht == nil {
+			// Fallback: use currently connected swarm peers only if DHT is disabled
 			for _, pid := range b.host.Network().Peers() {
 				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
 			}

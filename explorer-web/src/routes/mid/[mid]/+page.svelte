@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
-	import { apiFetch, formatBytes } from '$lib/api';
+	import { apiFetch, formatBytes, validateMIDFormat } from '$lib/api';
 	import { toast } from '$lib/toast';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import ActionMenu from '$lib/components/ActionMenu.svelte';
@@ -96,6 +96,30 @@
 	let copiedDescriptor = $state(false);
 
 	let showDeleteMIDModal = $state(false);
+	let isRetrying = $state(false);
+	let retryNotice = $state('');
+
+	async function retrySearch() {
+		if (isRetrying) return;
+		isRetrying = true;
+		retryNotice = 'Searching DHT network...';
+		try {
+			const res = await apiFetch(`/mid/${midVal}`);
+			if (res && !res.NotFound) {
+				data = res;
+				error = null;
+			} else {
+				await new Promise(r => setTimeout(r, 600));
+				retryNotice = 'Search completed — 0 active providers found';
+				setTimeout(() => { retryNotice = ''; }, 3000);
+			}
+		} catch (err) {
+			retryNotice = 'Search completed — 0 active providers found';
+			setTimeout(() => { retryNotice = ''; }, 3000);
+		} finally {
+			isRetrying = false;
+		}
+	}
 	let resolverActive = $state(false);
 	let statusBadgeText = $state('Connecting');
 	let statStatusText = $state('Connecting to network DHT...');
@@ -134,25 +158,35 @@
 		eventSource = es;
 
 		let hasStartedScan = false;
-		let checkComplete = false;
-		let checkTimer: number;
+		let notFoundTimer: number;
+
+		// 10-second timeout for DHT provider discovery
+		notFoundTimer = setTimeout(() => {
+			if (activeProviders.length === 0 && statBlocksResolved === 0) {
+				statStatusText = 'Content Not Available on Network (0 Active Providers)';
+				statusBadgeText = 'Not Found';
+				statAvailability = '0% (Unavailable)';
+			}
+		}, 10000) as unknown as number;
 
 		es.onmessage = (ev) => {
 			const d = JSON.parse(ev.data);
 			if (d.error) {
-				statStatusText = 'Error: ' + d.error;
-				statusBadgeText = 'Failed';
 				es.close();
-				clearInterval(checkTimer);
+				clearTimeout(notFoundTimer);
+				error = d.error;
+				resolverActive = false;
+				loading = false;
 				return;
 			}
 			if (d.done) {
 				es.close();
-				clearInterval(checkTimer);
+				clearTimeout(notFoundTimer);
 				eventSource = null;
 				pieceGrid = Array(pieceGrid.length).fill('finished');
 				statusBadgeText = 'Complete';
 				statStatusText = 'Assembly Complete!';
+				statAvailability = '100% (Complete)';
 
 				setTimeout(async () => {
 					await fetchMIDData(mid, true);
@@ -164,11 +198,19 @@
 			if (d.providers) {
 				activeProviders = d.providers;
 				statPeers = d.providers.length;
+				if (d.providers.length > 0) {
+					clearTimeout(notFoundTimer);
+					if (statusBadgeText === 'Connecting' || statusBadgeText === 'Not Found') {
+						statusBadgeText = 'Downloading';
+						statStatusText = `Connected to ${d.providers.length} provider peer(s)...`;
+					}
+				}
 			}
 
 			if (d.state === 'connecting') {
-				statStatusText = 'Connecting to network DHT...';
-				statusBadgeText = 'Connecting';
+				statStatusText = 'Querying network DHT for providers...';
+				statusBadgeText = 'Searching';
+				statAvailability = '0% (Searching DHT)';
 			}
 
 			if (d.total > 0) {
@@ -178,43 +220,30 @@
 				if (!hasStartedScan) {
 					hasStartedScan = true;
 					initPieceGrid(d.total);
-					statusBadgeText = 'Verifying';
-					statStatusText = 'Checking network piece availability...';
+				}
+				updateGridState(d.total, d.blocks, true);
 
-					let currentIndex = 0;
-					const displayCount = pieceGrid.length;
-					const delay = Math.max(5, Math.min(40, Math.floor(600 / displayCount)));
-
-					checkTimer = setInterval(() => {
-						if (currentIndex >= displayCount) {
-							clearInterval(checkTimer);
-							checkComplete = true;
-							statAvailability = '100% available';
-							statStatusText = 'Downloading pieces...';
-							statusBadgeText = 'Downloading';
-							updateGridState(d.total, d.blocks, checkComplete);
-							return;
-						}
-						pieceGrid[currentIndex] = 'scanning';
-						const capturedIndex = currentIndex;
-						setTimeout(() => {
-							if (pieceGrid[capturedIndex] === 'scanning') {
-								pieceGrid[capturedIndex] = 'checked';
-							}
-						}, delay * 2);
-						currentIndex++;
-						statAvailability = `${Math.round(currentIndex * 100 / displayCount)}%`;
-					}, delay) as unknown as number;
-				} else {
-					updateGridState(d.total, d.blocks, checkComplete);
+				if (d.blocks > 0) {
+					const pct = Math.round((d.blocks / d.total) * 100);
+					statAvailability = `${pct}% fetched`;
+					statStatusText = `Downloading blocks (${d.blocks}/${d.total})...`;
+					statusBadgeText = 'Downloading';
+				} else if (activeProviders.length === 0) {
+					statAvailability = '0% (0 Providers Found)';
+					statStatusText = 'Searching DHT for providers...';
 				}
 			}
 		};
 
 		es.onerror = () => {
-			statStatusText = 'Connection lost. Retrying...';
+			if (activeProviders.length === 0 && statBlocksResolved === 0) {
+				statStatusText = 'No provider peers holding this MID were found on the network.';
+				statusBadgeText = 'Not Found';
+				statAvailability = '0% (Unavailable)';
+			}
 			if (es.readyState === EventSource.CLOSED) {
 				resolverActive = false;
+				clearTimeout(notFoundTimer);
 			}
 		};
 	}
@@ -240,6 +269,16 @@
 			loading = true;
 			error = null;
 			closeResolver();
+		}
+
+		// Terminate unnatural or malformed queries on the frontend before hitting the backend
+		const check = validateMIDFormat(mid);
+		if (!check.valid) {
+			if (!silent) {
+				error = check.reason || 'bad mid: invalid multihash format';
+				loading = false;
+			}
+			return;
 		}
 
 		try {
@@ -315,6 +354,17 @@
 			m.includes('invalid character')
 		);
 	}
+
+	function isNotFoundMID(errStr: string): boolean {
+		const m = errStr.toLowerCase();
+		return (
+			m.includes('not found') ||
+			m.includes('no provider') ||
+			m.includes('unreachable') ||
+			m.includes('404') ||
+			m.includes('not available')
+		);
+	}
 </script>
 
 <div class="flex flex-col gap-5">
@@ -334,16 +384,17 @@
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2">
-
-			<ActionMenu
-				target={midVal ?? ''}
-				isDir={data?.MemFSType === 'dir'}
-				sealed={data?.Sealed}
-				inspectHref={`${base}/explore?mid=${midVal}`}
-				onToggleSeal={() => runAction(data?.Sealed ? 'unseal' : 'seal')}
-				onDelete={() => (showDeleteMIDModal = true)}
-				compact={false}
-			/>
+			{#if data && !data.NotFound && !error}
+				<ActionMenu
+					target={midVal ?? ''}
+					isDir={data?.MemFSType === 'dir'}
+					sealed={data?.Sealed}
+					inspectHref={`${base}/explore?mid=${midVal}`}
+					onToggleSeal={() => runAction(data?.Sealed ? 'unseal' : 'seal')}
+					onDelete={() => (showDeleteMIDModal = true)}
+					compact={false}
+				/>
+			{/if}
 		</div>
 	</div>
 
@@ -437,13 +488,59 @@
 						href={`${base}/files`}
 						class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-750 text-xs font-bold transition-all active:scale-[0.98]"
 					>
-						View Pinned Files
+						Browse All Files
 					</a>
 					<a
-						href={`${base}/explore`}
+						href={`${base}/`}
 						class="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold text-xs transition-all active:scale-[0.98]"
 					>
-						Go to DAG Visualizer
+						Back to Dashboard
+					</a>
+				</div>
+			</div>
+		{:else if isNotFoundMID(error)}
+			<div class="bg-slate-900 border border-slate-800 rounded-xl p-8 flex flex-col items-center text-center gap-4 shadow-xl">
+				<div class="flex h-14 w-14 items-center justify-center rounded-full bg-slate-800/80 border border-slate-700/60">
+					<Icon icon="ph:cloud-slash" class="text-3xl text-cyan-400" />
+				</div>
+				<div class="flex flex-col gap-1.5 max-w-lg">
+					<span class="px-2.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] text-cyan-400 font-mono tracking-wider uppercase mx-auto">
+						0 Active Providers
+					</span>
+					<h2 class="text-slate-100 font-bold text-lg">Content Not Found on Network</h2>
+					<p class="text-slate-400 text-xs leading-relaxed">
+						This Content Identifier (MID) is valid, but no providers hosting this data were found on the local store or the Membuss DHT network.
+					</p>
+				</div>
+				<div class="w-full max-w-lg bg-slate-950 border border-slate-850 rounded-lg p-3 text-left">
+					<span class="block text-[9px] font-mono text-slate-500 uppercase tracking-wide">Queried Content ID (MID)</span>
+					<code class="font-mono text-xs text-slate-300 break-all select-all block mt-1 leading-relaxed">
+						{midVal}
+					</code>
+				</div>
+				{#if retryNotice}
+					<div class="px-3 py-1 rounded bg-slate-950 border border-slate-800 text-[11px] font-mono text-cyan-400">
+						{retryNotice}
+					</div>
+				{/if}
+				<div class="flex flex-wrap items-center justify-center gap-3 mt-2">
+					<button
+						onclick={retrySearch}
+						disabled={isRetrying}
+						class="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 disabled:bg-cyan-950 disabled:border disabled:border-cyan-800/40 text-slate-950 disabled:text-cyan-400 font-bold text-xs transition-all active:scale-[0.98] inline-flex items-center gap-2"
+					>
+						{#if isRetrying}
+							<Icon icon="ph:spinner-gap-bold" class="animate-spin text-sm" />
+							<span>Searching DHT...</span>
+						{:else}
+							<span>Retry Network Search</span>
+						{/if}
+					</button>
+					<a
+						href={`${base}/files`}
+						class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-750 text-xs font-bold transition-all active:scale-[0.98]"
+					>
+						Browse All Files
 					</a>
 					<a
 						href={`${base}/`}

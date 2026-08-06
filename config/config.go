@@ -80,6 +80,14 @@ type Config struct {
 	// only 1/N of the total keys are announced, reducing DHT load.
 	ReprovideGroups int `yaml:"reprovide_groups"`
 
+	// ReprovideStrategy controls which content MIDs Mem-Herald announces to the DHT.
+	// Allowed values: "roots" (default), "all", "shards".
+	ReprovideStrategy string `yaml:"reprovide_strategy"`
+
+	// ShardReplicas is the number of replicas per MID when using rendezvous shard placement.
+	// Default is 3. Bounded between 1 and 64.
+	ShardReplicas int `yaml:"shard_replicas"`
+
 	LogLevel string `yaml:"log_level"`
 	GatewayTLS TLSConfig `yaml:"gateway_tls"`
 	APITLS TLSConfig `yaml:"api_tls"`
@@ -323,6 +331,8 @@ func Default() *Config {
 		GCMinAge:          24 * time.Hour,
 		ReprovideInterval: 12 * time.Hour,
 		ReprovideGroups:   6,
+		ReprovideStrategy: "roots",
+		ShardReplicas:     3,
 		LogLevel:               "info",
 		GatewayTLS:             TLSConfig{},
 		APITLS:                 TLSConfig{},
@@ -423,6 +433,14 @@ func (c *Config) Validate() error {
 	}
 	if c.ReprovideGroups < 1 {
 		return errors.New("reprovide_groups must be >= 1")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.ReprovideStrategy)) {
+	case "", "roots", "all", "shards":
+	default:
+		return fmt.Errorf("invalid reprovide_strategy %q: must be one of 'roots', 'all', 'shards'", c.ReprovideStrategy)
+	}
+	if c.ShardReplicas < 1 || c.ShardReplicas > 64 {
+		return fmt.Errorf("shard_replicas must be between 1 and 64, got %d", c.ShardReplicas)
 	}
 	if c.GatewayRateLimitPerMin < 0 {
 		return errors.New("gateway_rate_limit_per_min must be >= 0")
