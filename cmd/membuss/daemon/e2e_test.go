@@ -10,8 +10,9 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -153,13 +154,22 @@ enable_geolocation: false
 	apiAddr := parseBannerAddr(t, stdout.String(), "api_addr")
 
 	apiURL := "http://" + apiAddr
+	var apiHresp *http.Response
+	for i := 0; i < 30; i++ {
+		apiHresp, err = http.Get(apiURL + "/api/v1/healthz")
+		if err == nil && apiHresp.StatusCode == http.StatusOK {
+			break
+		}
+		if apiHresp != nil {
+			_ = apiHresp.Body.Close()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
-	// /api/v1/healthz
-	apiHresp, err := http.Get(apiURL + "/api/v1/healthz")
 	if err != nil {
 		t.Fatalf("api healthz: %v", err)
 	}
-	apiHresp.Body.Close()
+	defer apiHresp.Body.Close()
 	if apiHresp.StatusCode != http.StatusOK {
 		t.Fatalf("api healthz status: %d", apiHresp.StatusCode)
 	}
@@ -447,7 +457,7 @@ func parseBannerAddr(t *testing.T, stdout, key string) string {
 			continue
 		}
 		rest := strings.TrimSpace(line[idx+len(key)+1:])
-		if rest != "" {
+		if rest != "" && !strings.HasSuffix(rest, ":0") {
 			return rest
 		}
 	}
@@ -458,8 +468,20 @@ func parseBannerAddr(t *testing.T, stdout, key string) string {
 // httpGetJSON GETs url and decodes the JSON envelope
 // into a map. It returns a non-nil error on any non-200
 // status or decode error.
-func httpGetJSON(url string) (map[string]any, error) {
-	resp, err := http.Get(url)
+func httpGetJSON(urlStr string) (map[string]any, error) {
+	u, _ := url.Parse(urlStr)
+	host := "127.0.0.1"
+	if u != nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: host},
+	}
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get(urlStr)
+	if err != nil && strings.HasPrefix(urlStr, "http://") {
+		resp, err = client.Get("https://" + strings.TrimPrefix(urlStr, "http://"))
+	}
 	if err != nil {
 		return nil, err
 	}

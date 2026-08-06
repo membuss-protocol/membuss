@@ -31,11 +31,22 @@
 		Sealed: boolean;
 		Codec: number;
 		ContentType: string;
-		DataShards: number;
-		ParityShards: number;
-		TotalShards: number;
-		Health: string;
-		HealthLabel: string;
+		DataShards?: number;
+		ParityShards?: number;
+		TotalShards?: number;
+		ShardsAvailable?: number;
+		Degraded?: boolean;
+		ShardMIDs?: string[] | null;
+		data_shards?: number;
+		parity_shards?: number;
+		total_shards?: number;
+		shards_available?: number;
+		degraded?: boolean;
+		shard_mids?: string[] | null;
+		Health?: string;
+		HealthLabel?: string;
+		health?: string;
+		health_label?: string;
 		MemFSType: string;
 		MemFSEntries: MemFSEntry[] | null;
 		SymlinkTarget: string;
@@ -48,6 +59,15 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let copiedMID = $state(false);
+
+	let dataShards = $derived(data?.DataShards ?? data?.data_shards ?? 10);
+	let parityShards = $derived(data?.ParityShards ?? data?.parity_shards ?? 4);
+	let totalShards = $derived(data?.TotalShards ?? data?.total_shards ?? (dataShards + parityShards));
+	let shardsAvailable = $derived(data?.ShardsAvailable ?? data?.shards_available ?? totalShards);
+	let isDegraded = $derived(data?.Degraded ?? data?.degraded ?? false);
+	let shardMIDs = $derived(data?.ShardMIDs ?? data?.shard_mids ?? []);
+	let healthLabel = $derived(data?.HealthLabel ?? data?.health_label ?? (isDegraded ? 'DEGRADED' : 'HEALTHY'));
+	let healthText = $derived(data?.Health ?? data?.health ?? `${shardsAvailable}/${totalShards} shards available (${isDegraded ? 'Degraded' : 'Healthy'})`);
 
 	function parseProvider(prov: string) {
 		const raw = prov.trim();
@@ -346,7 +366,10 @@
 				{data.Blocks} blocks
 			</span>
 			<span class="px-2 py-1 rounded bg-slate-900 border border-slate-800 text-slate-400">
-				{data.DataShards}+{data.ParityShards} erasure
+				{dataShards}+{parityShards} erasure
+			</span>
+			<span class={`px-2 py-1 rounded border font-bold uppercase ${isDegraded ? 'bg-amber-950/50 border-amber-800/40 text-amber-300' : 'bg-indigo-950/50 border-indigo-800/40 text-indigo-300'}`}>
+				{shardsAvailable}/{totalShards} Shards {isDegraded ? '(Degraded)' : '(Healthy)'}
 			</span>
 			<span class={`px-2 py-1 rounded border font-bold uppercase ${data.Sealed ? 'bg-emerald-950/40 border-emerald-800/30 text-emerald-400' : 'bg-amber-950/40 border-amber-800/30 text-amber-400'}`}>
 				{data.Sealed ? 'Sealed' : 'Unsealed'}
@@ -660,26 +683,30 @@
 
 				<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col justify-between">
 					<div>
-						<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2">
-							Erasure Coding
+						<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2 flex items-center justify-between">
+							<span>Erasure Coding</span>
+							<span class="text-[10px] uppercase px-1.5 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/40">Reed-Solomon</span>
 						</h3>
 
 						<dl class="grid grid-cols-2 gap-y-3.5 text-xs font-mono mt-4">
 							<dt class="text-slate-500">Shard Layout</dt>
-							<dd class="text-slate-200 font-bold text-right">{data.DataShards} data + {data.ParityShards} parity</dd>
+							<dd class="text-slate-200 font-bold text-right">{dataShards} data + {parityShards} parity</dd>
 
 							<dt class="text-slate-500">Total Shards</dt>
-							<dd class="text-slate-200 font-bold text-right">{data.TotalShards} blocks</dd>
+							<dd class="text-slate-200 font-bold text-right">{totalShards} shards</dd>
 
 							<dt class="text-slate-500">Node Failure Max</dt>
-							<dd class="text-slate-200 font-bold text-right">{data.ParityShards} hosts offline</dd>
+							<dd class="text-slate-200 font-bold text-right">{parityShards} hosts offline</dd>
+
+							<dt class="text-slate-500">Available Shards</dt>
+							<dd class="text-slate-200 font-bold text-right">{shardsAvailable}/{totalShards}</dd>
 						</dl>
 					</div>
 
 					<div class="mt-6 border-t border-slate-800/80 pt-4 flex items-center justify-between text-xs">
 						<span class="text-slate-500 font-mono">Redundancy Status</span>
-						<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-800/30">
-							{data.HealthLabel} ({data.Health})
+						<span class={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-bold border ${isDegraded ? 'bg-amber-950/40 text-amber-400 border-amber-800/30' : 'bg-emerald-950/40 text-emerald-400 border-emerald-800/30'}`}>
+							{healthLabel} ({healthText})
 						</span>
 					</div>
 				</div>

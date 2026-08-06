@@ -82,18 +82,24 @@ const (
 // headers the public Mem-Gate gateway returns, so a single
 // struct drives both the gateway and the explorer.
 type ContentInfo struct {
-	MID         string
-	Size        uint64
-	Blocks      uint64
-	ContentType string
-	Sealed      bool
-	Present bool
-	Codec       uint64
+	MID             string
+	Size            uint64
+	Blocks          uint64
+	ContentType     string
+	Sealed          bool
+	Present         bool
+	Codec           uint64
+	DataShards      int
+	ParityShards    int
+	TotalShards     int
+	ShardsAvailable int
+	Degraded        bool
+	ShardMIDs       []string
 	// Phase 19: human-friendly metadata captured at Add
 	// time. Empty when the content was added by an
 	// older daemon.
-	Name     string
-	MimeType string
+	Name          string
+	MimeType      string
 	Sealers       int
 	AnchorSealers int
 }
@@ -742,12 +748,15 @@ type midData struct {
 	Blocks        uint64
 	Sealed        bool
 	Codec         uint64
-	ContentType   string
-	DataShards    int
-	ParityShards  int
-	TotalShards   int
-	Health        string
-	HealthLabel   string
+	ContentType     string
+	DataShards      int
+	ParityShards    int
+	TotalShards     int
+	ShardsAvailable int
+	Degraded        bool
+	ShardMIDs       []string
+	Health          string
+	HealthLabel     string
 	Providers     []string
 	Name          string
 	MimeType      string
@@ -828,11 +837,25 @@ func (e *Explorer) handleMID(w http.ResponseWriter, r *http.Request) {
 		data.Sealed = sealed
 		data.Codec = codec
 		data.ContentType = data.MimeType
-		data.DataShards = 10
-		data.ParityShards = 4
-		data.TotalShards = data.DataShards + data.ParityShards
-		data.Health = fmt.Sprintf("%d/%d shards needed", data.DataShards, data.TotalShards)
-		data.HealthLabel = "OK"
+		data.DataShards = info.DataShards
+		data.ParityShards = info.ParityShards
+		data.TotalShards = info.TotalShards
+		data.ShardsAvailable = info.ShardsAvailable
+		data.Degraded = info.Degraded
+		data.ShardMIDs = info.ShardMIDs
+		if data.DataShards == 0 {
+			data.DataShards = 10
+			data.ParityShards = 4
+			data.TotalShards = 14
+			data.ShardsAvailable = 14
+		}
+		if data.Degraded {
+			data.Health = fmt.Sprintf("%d/%d shards available (Degraded)", data.ShardsAvailable, data.TotalShards)
+			data.HealthLabel = "DEGRADED"
+		} else {
+			data.Health = fmt.Sprintf("%d/%d shards available (Healthy)", data.ShardsAvailable, data.TotalShards)
+			data.HealthLabel = "HEALTHY"
+		}
 		// Phase 17: probe for MemFS metadata so the
 		// template can switch on type (file / dir /
 		// symlink / metadata / raw).

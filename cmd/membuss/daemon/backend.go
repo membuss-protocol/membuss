@@ -24,6 +24,7 @@ import (
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/chunk"
 	"github.com/nnlgsakib/membuss/core/dag"
+	"github.com/nnlgsakib/membuss/core/erasure"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -32,6 +33,7 @@ import (
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	"github.com/nnlgsakib/membuss/net/pex"
 	"github.com/nnlgsakib/membuss/obs/metrics"
+	membusspb "github.com/nnlgsakib/membuss/proto"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
 )
 
@@ -201,17 +203,55 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		return serverpkg.AddResult{}, fmt.Errorf("add: objectinfo: %w", err)
 	}
 
+	// Wire Reed-Solomon Erasure Coding (10+4 shards)
+	erasureCfg := erasure.AdaptiveConfig(int64(size))
+	enc, eerr := erasure.NewEncoder(erasureCfg)
+	var allShardMIDs []string
+	if eerr == nil {
+		_ = store.Walk(b.store, root, func(m mid.MID, leaf bool) error {
+			if !leaf {
+				return nil
+			}
+			blockData, gerr := b.store.Get(m)
+			if gerr == nil && len(blockData) > 0 {
+				encoded, encErr := enc.Encode(blockData)
+				if encErr == nil && encoded != nil {
+					for _, shard := range encoded.Shards {
+						_ = b.store.Put(shard.ShardMID, shard.Data)
+						allShardMIDs = append(allShardMIDs, shard.ShardMID.String())
+					}
+					_ = erasure.SetManifest(b.store, m, encoded.Manifest)
+				}
+			}
+			return nil
+		})
+
+		rootManifest := &membusspb.ErasureManifest{
+			OriginalMid:  root.String(),
+			DataShards:   uint32(erasureCfg.DataShards),
+			ParityShards: uint32(erasureCfg.ParityShards),
+			OriginalSize: uint64(size),
+			ShardMids:    allShardMIDs,
+		}
+		_ = erasure.SetManifest(b.store, root, rootManifest)
+	}
+
 	if sealRoot {
 		if err := b.store.Seal(root, true); err != nil {
 			return serverpkg.AddResult{}, fmt.Errorf("add: seal: %w", err)
 		}
-		// Announce to the DHT so other nodes can find this MID.
+		// Announce root and all erasure shards to the DHT
 		if b.dht != nil {
-			go func(r mid.MID) {
+			go func(r mid.MID, shards []string) {
 				announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				provideRecursive(announceCtx, b.dht, b.store, r)
-			}(root)
+				for _, smStr := range shards {
+					if sm, perr := mid.Parse(smStr); perr == nil {
+						_ = b.dht.Provide(announceCtx, sm)
+					}
+				}
+			}(root, allShardMIDs)
 		}
 	}
 
@@ -585,6 +625,26 @@ func (b *daemonBackend) Stat(ctx context.Context, midStr string) (serverpkg.Stat
 		Codec:    root.Codec(),
 		Name:     oi.Name,
 		MimeType: oi.MimeType,
+	}
+
+	manifest, _ := erasure.GetManifest(b.store, root)
+	if manifest != nil {
+		available := uint32(0)
+		for _, smStr := range manifest.ShardMids {
+			if sm, perr := mid.Parse(smStr); perr == nil {
+				if has, _ := b.store.Has(sm); has {
+					available++
+				}
+			}
+		}
+		total := manifest.DataShards + manifest.ParityShards
+		info.Erasure = &serverpkg.ErasureInfo{
+			DataShards:      manifest.DataShards,
+			ParityShards:    manifest.ParityShards,
+			ShardMIDs:       manifest.ShardMids,
+			ShardsAvailable: available,
+			Degraded:        available < total,
+		}
 	}
 
 	if b.dht != nil {

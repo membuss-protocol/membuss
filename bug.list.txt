@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] TASK-P2-ARCH-001: Reed-Solomon Erasure Coding un-wired in production add/get/repair paths
+  Fixed: 2026-08-06 — Wire Reed-Solomon 10+4 encoding into daemon AddWithProgress, transparent shard fetch and reconstruction in fetchingBlockstore, manifest persistence in core/erasure/manifest_store.go, and background repair worker in core/erasure/repair.go.
+
 [FIXED] BUG-035: Memory allocation spikes during high-volume file chunking and DAG building
   Fixed: 2026-07-30 — Implement thread-safe sync.Pool block buffer recycling (GetBlockBuffer / PutBlockBuffer) for 256 KiB chunk buffers in core/chunk and core/dag.
 

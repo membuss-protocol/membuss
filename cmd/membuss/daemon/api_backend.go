@@ -483,8 +483,10 @@ func (a *apiAdapter) DescriptorMeta(ctx context.Context, midStr string) (map[str
 	}
 	if d.Erasure != nil {
 		meta["erasure"] = map[string]interface{}{
-			"data_shards":   d.Erasure.DataShards,
-			"parity_shards": d.Erasure.ParityShards,
+			"data_shards":      d.Erasure.DataShards,
+			"parity_shards":    d.Erasure.ParityShards,
+			"shard_mids":       d.Erasure.ShardMIDs,
+			"shards_available": len(d.Erasure.ShardMIDs),
 		}
 	}
 	if len(d.BootstrapPeers) > 0 {

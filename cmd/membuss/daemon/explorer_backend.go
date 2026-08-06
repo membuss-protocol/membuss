@@ -86,7 +86,7 @@ func (a *explorerAdapter) Stat(ctx context.Context, m mid.MID) (explorer.Content
 	if err != nil {
 		return explorer.ContentInfo{}, err
 	}
-	return explorer.ContentInfo{
+	info := explorer.ContentInfo{
 		MID:           m.String(),
 		Size:          st.Size,
 		Blocks:        st.Blocks,
@@ -97,7 +97,16 @@ func (a *explorerAdapter) Stat(ctx context.Context, m mid.MID) (explorer.Content
 		MimeType:      st.MimeType,
 		Sealers:       st.Sealers,
 		AnchorSealers: st.AnchorSealers,
-	}, nil
+	}
+	if st.Erasure != nil {
+		info.DataShards = int(st.Erasure.DataShards)
+		info.ParityShards = int(st.Erasure.ParityShards)
+		info.TotalShards = info.DataShards + info.ParityShards
+		info.ShardsAvailable = int(st.Erasure.ShardsAvailable)
+		info.Degraded = st.Erasure.Degraded
+		info.ShardMIDs = st.Erasure.ShardMIDs
+	}
+	return info, nil
 }
 
 // Seal pins m recursively. We delegate to daemonBackend.
@@ -1180,8 +1189,10 @@ func (a *explorerAdapter) DescriptorMeta(ctx context.Context, midStr string) (ma
 	}
 	if d.Erasure != nil {
 		meta["erasure"] = map[string]interface{}{
-			"data_shards":   d.Erasure.DataShards,
-			"parity_shards": d.Erasure.ParityShards,
+			"data_shards":      d.Erasure.DataShards,
+			"parity_shards":    d.Erasure.ParityShards,
+			"shard_mids":       d.Erasure.ShardMIDs,
+			"shards_available": len(d.Erasure.ShardMIDs),
 		}
 	}
 	if len(d.BootstrapPeers) > 0 {

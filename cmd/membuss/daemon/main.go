@@ -1092,24 +1092,30 @@ func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataD
 			srv.TLSConfig.Certificates = []cryptoTLS.Certificate{cert}
 		}
 
-		if certManager != nil {
-			srv.TLSConfig.GetCertificate = func(hello *cryptoTLS.ClientHelloInfo) (*cryptoTLS.Certificate, error) {
+		srv.TLSConfig.GetCertificate = func(hello *cryptoTLS.ClientHelloInfo) (*cryptoTLS.Certificate, error) {
+			if certManager != nil {
 				cert, err := certManager.GetCertificate(hello)
 				if err == nil && cert != nil {
 					return cert, nil
 				}
-				if len(srv.TLSConfig.Certificates) > 0 {
-					return &srv.TLSConfig.Certificates[0], nil
-				}
-				return nil, err
 			}
+			if len(srv.TLSConfig.Certificates) > 0 {
+				return &srv.TLSConfig.Certificates[0], nil
+			}
+			return nil, nil
 		}
 	}
 
 	for _, extra := range extraLis {
 		if extra != nil {
 			go func(l net.Listener) {
-				if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				var err error
+				if srv.TLSConfig != nil {
+					err = srv.Serve(cryptoTLS.NewListener(l, srv.TLSConfig))
+				} else {
+					err = srv.Serve(l)
+				}
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
 					slog.Error("http serve extra listener", "name", name, "err", err.Error())
 				}
 			}(extra)

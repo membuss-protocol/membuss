@@ -147,17 +147,23 @@ type SealResult struct {
 
 // StatInfo is the return value of Backend.Stat.
 type StatInfo struct {
-	Present bool
-	Size    uint64
-	Blocks  uint64
-	Sealed  bool
-	// Name and MimeType are the per-MID ObjectInfo
-	// captured at Add time, or empty for content
-	// added by an older daemon.
-	Name          string
-	MimeType      string
-	Sealers       int
-	AnchorSealers int
+	Present       bool         `json:"present"`
+	Size          uint64       `json:"size"`
+	Blocks        uint64       `json:"blocks"`
+	Sealed        bool         `json:"sealed"`
+	Name          string       `json:"name,omitempty"`
+	MimeType      string       `json:"mime_type,omitempty"`
+	Sealers       int          `json:"sealers"`
+	AnchorSealers int          `json:"anchor_sealers"`
+	Erasure       *ErasureInfo `json:"erasure,omitempty"`
+}
+
+type ErasureInfo struct {
+	DataShards      uint32   `json:"data_shards"`
+	ParityShards    uint32   `json:"parity_shards"`
+	ShardMIDs       []string `json:"shard_mids,omitempty"`
+	ShardsAvailable uint32   `json:"shards_available"`
+	Degraded        bool     `json:"degraded"`
 }
 
 // PeerInfo is one row of the local peer table.
@@ -271,6 +277,9 @@ func (a *NodeAPI) buildRouter() chi.Router {
 	// outer http.TimeoutHandler in Handler() remains the hard
 	// response-writing safety net.
 	r.Use(ctxTimeout(a.cfg.ReadTimeout))
+
+	r.Get("/healthz", a.handleHealthz)
+	r.Get("/api/v1/healthz", a.handleHealthz)
 
 	// Prometheus scrape endpoint, exempt from API-key auth.
 	if a.cfg.Metrics != nil {

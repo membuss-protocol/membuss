@@ -85,7 +85,8 @@
 		rev++;
 		try {
 			const res = await fetch(
-				`${gatewayBase()}/mem/${encodeURIComponent(node.id)}?format=dag-json`
+				`${gatewayBase()}/mem/${encodeURIComponent(node.id)}?format=dag-json`,
+				{ headers: { 'X-Explorer-Request': 'true' } }
 			);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = (await res.json()) as { size: number | null; links: string[] | null };
@@ -141,8 +142,66 @@
 		graph?.zoomToFit(600, 60);
 	}
 
-	function reset() {
+	async function loadBulkTree(): Promise<boolean> {
+		try {
+			const res = await fetch(
+				`${gatewayBase()}/mem/${encodeURIComponent(mid)}?format=dag-json&recursive=true`,
+				{ headers: { 'X-Explorer-Request': 'true' } }
+			);
+			if (!res.ok) return false;
+			const data = (await res.json()) as {
+				root?: string;
+				nodes?: Record<string, { size: number | null; links: string[] | null }>;
+			};
+
+			if (!data.nodes || !data.root) return false;
+
+			nodeById.clear();
+			const newNodes: DagNodeT[] = [];
+			const newLinks: DagLinkT[] = [];
+
+			const rootNode = makeNode(mid, 0);
+			nodeById.set(mid, rootNode);
+			newNodes.push(rootNode);
+
+			for (const [nodeId, nData] of Object.entries(data.nodes)) {
+				let node = nodeById.get(nodeId);
+				if (!node) {
+					node = makeNode(nodeId, nodeId === mid ? 0 : 1);
+					nodeById.set(nodeId, node);
+					newNodes.push(node);
+				}
+				node.size = nData.size ?? null;
+				node.links = nData.links ?? [];
+				node.loaded = true;
+
+				for (const childId of node.links) {
+					let child = nodeById.get(childId);
+					if (!child) {
+						child = makeNode(childId, node.depth + 1);
+						nodeById.set(childId, child);
+						newNodes.push(child);
+					}
+					newLinks.push({ source: node.id, target: childId });
+				}
+			}
+
+			nodes = newNodes;
+			links = newLinks;
+			selected = rootNode;
+			commit();
+			setTimeout(fit, 400);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async function reset() {
 		if (!graph) return;
+		const ok = await loadBulkTree();
+		if (ok) return;
+
 		nodeById.clear();
 		const root = makeNode(mid, 0);
 		nodeById.set(mid, root);
@@ -216,9 +275,9 @@
 				.nodeId('id')
 				.nodeRelSize(1)
 				.dagMode(orientation as any)
-				.dagLevelDistance(60)
-				.d3AlphaDecay(0.028)
-				.d3VelocityDecay(0.32)
+				.dagLevelDistance(90)
+				.d3AlphaDecay(0.025)
+				.d3VelocityDecay(0.3)
 				.cooldownTime(6000)
 				.linkColor(() => HAIR)
 				.linkWidth(1)
@@ -285,18 +344,27 @@
 						ctx.stroke();
 					}
 
-					// label only for root, selected, hovered, or when zoomed in
-					if (isSel || isHov || role === 'root' || scale > 3) {
+					// Smart label display: draw label for selected, hovered, root, or small tree
+					const isDense = nodes.length > 15;
+					const showLabel = isSel || isHov || role === 'root' || (!isDense && scale > 1.8);
+					if (showLabel) {
 						const label = node.id.slice(0, 10) + '…';
-						const fs = Math.max(9, 11 / scale);
+						const fs = Math.min(12, Math.max(8, 10 / scale));
 						ctx.font = `${fs}px 'IBM Plex Mono', monospace`;
 						ctx.textAlign = 'center';
 						ctx.textBaseline = 'top';
 						const tw = ctx.measureText(label).width;
-						ctx.fillStyle = 'rgba(12,20,22,0.82)';
-						ctx.fillRect(x - tw / 2 - 3, y + r + 2, tw + 6, fs + 3);
-						ctx.fillStyle = isSel || role === 'root' ? OCHRE : BONE;
-						ctx.fillText(label, x, y + r + 3.5);
+
+						if (isSel || isHov || role === 'root') {
+							ctx.fillStyle = 'rgba(12,20,22,0.88)';
+							ctx.fillRect(x - tw / 2 - 4, y + r + 2, tw + 8, fs + 4);
+							ctx.strokeStyle = isSel ? 'rgba(232,163,61,0.6)' : isHov ? 'rgba(87,183,158,0.5)' : 'rgba(233,226,210,0.2)';
+							ctx.lineWidth = 1 / scale;
+							ctx.strokeRect(x - tw / 2 - 4, y + r + 2, tw + 8, fs + 4);
+						}
+
+						ctx.fillStyle = isSel || role === 'root' ? OCHRE : isHov ? VERDIGRIS : 'rgba(233,226,210,0.7)';
+						ctx.fillText(label, x, y + r + 4);
 					}
 				})
 				.nodePointerAreaPaint((node: any, color: string, ctx: CanvasRenderingContext2D) => {
