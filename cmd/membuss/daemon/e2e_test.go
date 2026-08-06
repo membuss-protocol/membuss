@@ -171,7 +171,8 @@ enable_geolocation: false
 	}
 	defer apiHresp.Body.Close()
 	if apiHresp.StatusCode != http.StatusOK {
-		t.Fatalf("api healthz status: %d", apiHresp.StatusCode)
+		b, _ := io.ReadAll(apiHresp.Body)
+		t.Fatalf("api healthz status: %d body: %s", apiHresp.StatusCode, string(b))
 	}
 
 	// /api/v1/node/info

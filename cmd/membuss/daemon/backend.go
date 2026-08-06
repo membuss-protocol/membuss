@@ -22,9 +22,9 @@ import (
 
 	"github.com/nnlgsakib/membuss/anchor"
 	"github.com/nnlgsakib/membuss/config"
-	"github.com/nnlgsakib/membuss/core/chunk"
 	"github.com/nnlgsakib/membuss/core/dag"
 	"github.com/nnlgsakib/membuss/core/erasure"
+	"github.com/nnlgsakib/membuss/core/ingest"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -133,45 +133,27 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		totalBytes = uint64(fi.Size())
 	}
 
-	// Wrap the source so the chunker's reads drive progress.
-	// The DAG builder pulls the whole file through this reader,
-	// so the byte counter tracks ingest faithfully regardless
-	// of chunker choice.
-	var src io.Reader = f
-	if progressFn != nil {
-		src = &countingReader{r: f, total: totalBytes, fn: progressFn}
+
+
+	if name == "" {
+		name = filepath.Base(path)
 	}
 
-	// Pick a chunker. Default is fixed 256 KiB.
-	var factory chunk.ChunkerFactory
-	switch chunker {
-	case "rabin":
-		factory = chunk.NewRabin()
-	case "fastcdc":
-		factory = chunk.NewFastCDC()
-	default:
-		size := int(chunkSize)
-		if size <= 0 {
-			size = 256 * 1024
-		}
-		factory = chunk.NewFixed(size)
-	}
-	c, err := factory(src)
+	ingestRes, err := ingest.IngestFile(ctx, b.store, f, ingest.Options{
+		Name:       name,
+		MimeType:   mimeType,
+		Chunker:    chunker,
+		ChunkSize:  int(chunkSize),
+		Seal:       sealRoot,
+		ProgressFn: progressFn,
+	})
 	if err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: chunker: %w", err)
+		return serverpkg.AddResult{}, fmt.Errorf("add: %w", err)
 	}
 
-	// Build DAG.
-	root, err := dag.NewBuilder(b.store).Build(c)
-	if err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: dag: %w", err)
-	}
-
-	// Count leaves by re-walking the DAG (cheap).
-	blocks, size, err := countDAG(b.store, root)
-	if err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: count: %w", err)
-	}
+	root := ingestRes.MID
+	size := ingestRes.Size
+	blocks := ingestRes.Blocks
 
 	// Emit a terminal 100% so a fast ingest that never
 	// tripped the throttle still lands on a full bar.
@@ -181,26 +163,6 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 			final = size
 		}
 		progressFn(final, final)
-	}
-
-	// Phase 19: persist the per-MID ObjectInfo so the
-	// gateway can reproduce the user-facing metadata
-	// on download. Name defaults to the file's
-	// basename; MimeType defaults to an extension
-	// sniff (see core/store.SniffMime).
-	if name == "" {
-		name = filepath.Base(path)
-	}
-	if mimeType == "" {
-		mimeType = store.SniffMime(name)
-	}
-	if err := store.SetObjectInfo(b.store, root, store.ObjectInfo{
-		Name:     name,
-		MimeType: mimeType,
-		Size:     size,
-		IsRoot:   true,
-	}); err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: objectinfo: %w", err)
 	}
 
 	// Wire Reed-Solomon Erasure Coding (10+4 shards)

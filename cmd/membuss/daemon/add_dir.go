@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nnlgsakib/membuss/core/ingest"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -108,15 +109,13 @@ func (b *daemonBackend) AddDirWithProgress(ctx context.Context, path, chunker st
 		}
 	}
 
-	builder := memfs.NewBuilder(b.store)
-	if chunker != "" {
-		builder = builder.WithChunker(chunker)
-	}
-	if chunkSize > 0 {
-		builder = builder.WithBlockSize(int(chunkSize))
-	}
-
-	res, err := builder.AddDirectoryStream(entries)
+	res, err := ingest.IngestDirectoryStream(ctx, b.store, entries, ingest.Options{
+		Name:       name,
+		Chunker:    chunker,
+		ChunkSize:  int(chunkSize),
+		Seal:       sealRoot,
+		ProgressFn: progressFn,
+	})
 	if err != nil {
 		return serverpkg.AddResult{}, fmt.Errorf("add-dir: %w", err)
 	}
@@ -165,7 +164,7 @@ func (b *daemonBackend) AddDirWithProgress(ctx context.Context, path, chunker st
 	return serverpkg.AddResult{
 		MID:      res.MID.String(),
 		Size:     res.Size,
-		Blocks:   res.Block,
+		Blocks:   res.Blocks,
 		Sealed:   sealRoot,
 		Name:     dirName,
 		MimeType: "inode/directory",

@@ -18,6 +18,7 @@ import (
 
 	"github.com/nnlgsakib/membuss/api"
 	"github.com/nnlgsakib/membuss/core/descriptor"
+	"github.com/nnlgsakib/membuss/core/ingest"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -228,25 +229,16 @@ func (a *apiAdapter) AddFile(ctx context.Context, name string, r io.Reader, wrap
 	if r == nil {
 		return api.AddResult{}, errors.New("api: nil reader")
 	}
-	b := a.memFSBuilder()
-	if chunker, ok := ctx.Value(api.ChunkerKey).(string); ok && chunker != "" {
-		b = b.WithChunker(chunker)
-	}
-	res, err := b.AddFile(name, r, 0o644, time.Time{}, "")
+	chunker, _ := ctx.Value(api.ChunkerKey).(string)
+	res, err := ingest.IngestFile(ctx, a.b.store, r, ingest.Options{
+		Name:    name,
+		Chunker: chunker,
+		WrapDir: wrapDir,
+		Seal:    true,
+	})
 	if err != nil {
 		return api.AddResult{}, err
 	}
-	if wrapDir {
-		dirRes, err := b.AddDir(name, []memfs.DirEntry{
-			{Name: name, Mid: res.MID, Type: memfs.TypeFile, Size: res.Size},
-		}, 0o755, time.Time{})
-		if err != nil {
-			return api.AddResult{}, err
-		}
-		res = dirRes
-	}
-	// Seal and announce, mirroring the legacy Add path.
-	_ = a.b.store.Seal(res.MID, true)
 	if a.b.dht != nil {
 		go func(r mid.MID) {
 			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -254,15 +246,10 @@ func (a *apiAdapter) AddFile(ctx context.Context, name string, r io.Reader, wrap
 			provideRecursive(announceCtx, a.b.dht, a.b.store, r)
 		}(res.MID)
 	}
-	// Update ObjectInfo for the root MID to set IsRoot: true.
-	if oi, err := store.GetObjectInfo(a.b.store, res.MID); err == nil {
-		oi.IsRoot = true
-		_ = store.SetObjectInfo(a.b.store, res.MID, oi)
-	}
 	return api.AddResult{
 		MID:    res.MID.String(),
 		Size:   res.Size,
-		Blocks: res.Block,
+		Blocks: res.Blocks,
 		Name:   name,
 	}, nil
 }

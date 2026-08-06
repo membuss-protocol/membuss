@@ -256,7 +256,7 @@ func (a *NodeAPI) buildRouter() chi.Router {
 	r.Use(middleware.RealIP)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/v1/node/info" || r.URL.Path == "/healthz" {
+			if r.URL.Path == "/api/v1/node/info" || strings.HasSuffix(r.URL.Path, "/healthz") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -268,18 +268,11 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		})
 	})
 	r.Use(middleware.Recoverer)
-	// Propagate a per-request deadline to handlers (so slow DHT /
-	// store lookups cancel on time) WITHOUT writing a response
-	// ourselves. chi's middleware.Timeout writes a 504 in a defer,
-	// which double-writes when a handler has already emitted its
-	// own error envelope for the same deadline — surfacing as
-	// "superfluous response.WriteHeader" noise in the log. The
 	// outer http.TimeoutHandler in Handler() remains the hard
 	// response-writing safety net.
 	r.Use(ctxTimeout(a.cfg.ReadTimeout))
 
 	r.Get("/healthz", a.handleHealthz)
-	r.Get("/api/v1/healthz", a.handleHealthz)
 
 	// Prometheus scrape endpoint, exempt from API-key auth.
 	if a.cfg.Metrics != nil {

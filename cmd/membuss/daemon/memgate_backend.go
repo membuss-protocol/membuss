@@ -11,6 +11,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/dag"
@@ -156,17 +158,27 @@ func (a *memgateAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pro
 			has = false
 		}
 	}
-	if !has && b.memex != nil && b.dht != nil {
-		provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		provs, _ := b.dht.FindProviders(provCtx, m)
-		cancel()
-		if len(provs) == 0 && b.dht == nil {
-			// Fallback: use currently connected swarm peers only if DHT is disabled
+	if !has && b.memex != nil {
+		var provs []peer.AddrInfo
+		if b.dht != nil {
+			provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			provs, _ = b.dht.FindProviders(provCtx, m)
+			cancel()
+		}
+		if len(provs) == 0 && b.host != nil {
+			// Fallback: use currently connected swarm peers
 			for _, pid := range b.host.Network().Peers() {
 				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
 			}
 		}
 		if len(provs) > 0 {
+			if b.host != nil {
+				for _, p := range provs {
+					if p.ID != "" && len(p.Addrs) > 0 {
+						b.host.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.TempAddrTTL)
+					}
+				}
+			}
 			sess, serr := memex.NewSession(memex.SessionConfig{
 				Engine:         b.memex,
 				Root:           m,
@@ -191,6 +203,12 @@ func (a *memgateAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pro
 					has = true
 					if c, ok := rc.(io.Closer); ok {
 						_ = c.Close()
+					}
+					if oi, err := store.GetObjectInfo(b.store, m); err == nil {
+						oi.IsRoot = true
+						_ = store.SetObjectInfo(b.store, m, oi)
+					} else {
+						_ = store.SetObjectInfo(b.store, m, store.ObjectInfo{IsRoot: true})
 					}
 				}
 			}

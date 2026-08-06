@@ -1144,11 +1144,15 @@ func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataD
 	for _, extra := range extraLis {
 		if extra != nil {
 			go func(l net.Listener) {
+				extraSrv := &http.Server{
+					Handler:     h,
+					ReadTimeout: 30 * time.Second,
+				}
 				var err error
 				if srv.TLSConfig != nil {
-					err = srv.Serve(cryptoTLS.NewListener(l, srv.TLSConfig))
+					err = extraSrv.Serve(cryptoTLS.NewListener(l, srv.TLSConfig))
 				} else {
-					err = srv.Serve(l)
+					err = extraSrv.Serve(l)
 				}
 				if err != nil && !errors.Is(err, http.ErrServerClosed) {
 					slog.Error("http serve extra listener", "name", name, "err", err.Error())

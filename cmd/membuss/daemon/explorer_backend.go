@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 
 	"github.com/nnlgsakib/membuss/anchor"
 	"github.com/nnlgsakib/membuss/core/descriptor"
+	"github.com/nnlgsakib/membuss/core/ingest"
 	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/memlink"
@@ -244,19 +246,28 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 			has = false
 		}
 	}
-	if !has && b.dht != nil && b.memex != nil {
-		provCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		provs, _ := b.dht.FindProviders(provCtx, m)
-		cancel()
-		if len(provs) == 0 && b.dht == nil {
-			// Fallback: use currently connected swarm peers only if DHT is disabled
+	if !has && b.memex != nil {
+		var provs []peer.AddrInfo
+		if b.dht != nil {
+			provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			provs, _ = b.dht.FindProviders(provCtx, m)
+			cancel()
+		}
+		if len(provs) == 0 && b.host != nil {
+			// Fallback: query all currently connected swarm peers if DHT returned 0 providers
 			for _, pid := range b.host.Network().Peers() {
 				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
 			}
 		}
 		if len(provs) == 0 {
-			// No DHT providers hold this MID -> return ErrNotFound immediately
 			return nil, explorer.ContentInfo{}, explorer.ErrNotFound
+		}
+		if b.host != nil {
+			for _, p := range provs {
+				if p.ID != "" && len(p.Addrs) > 0 {
+					b.host.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.TempAddrTTL)
+				}
+			}
 		}
 		sess, serr := memex.NewSession(memex.SessionConfig{
 			Engine:         b.memex,
@@ -279,6 +290,12 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 				_, _ = io.Copy(io.Discard, rc)
 				if c, ok := rc.(io.Closer); ok {
 					_ = c.Close()
+				}
+				if oi, err := store.GetObjectInfo(b.store, m); err == nil {
+					oi.IsRoot = true
+					_ = store.SetObjectInfo(b.store, m, oi)
+				} else {
+					_ = store.SetObjectInfo(b.store, m, store.ObjectInfo{IsRoot: true})
 				}
 			} else {
 				// The Memex session reported progress (blocks
@@ -676,20 +693,14 @@ func (a *explorerAdapter) Add(ctx context.Context, name string, r io.Reader) (ex
 		return explorer.ContentInfo{}, errors.New("explorer: nil reader")
 	}
 
-	memBuilder := memfs.NewBuilder(b.store)
-	mime := store.SniffMime(name)
-	res, err := memBuilder.AddFile(name, r, 0o644, time.Time{}, mime)
+	res, err := ingest.IngestFile(ctx, b.store, r, ingest.Options{
+		Name: name,
+		Seal: true,
+	})
 	if err != nil {
 		return explorer.ContentInfo{}, err
 	}
 
-	// Update ObjectInfo for the root MID to set IsRoot: true.
-	if oi, err := store.GetObjectInfo(b.store, res.MID); err == nil {
-		oi.IsRoot = true
-		_ = store.SetObjectInfo(b.store, res.MID, oi)
-	}
-
-	_ = b.store.Seal(res.MID, true)
 	if b.dht != nil {
 		go func(r mid.MID) {
 			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -702,10 +713,10 @@ func (a *explorerAdapter) Add(ctx context.Context, name string, r io.Reader) (ex
 	return explorer.ContentInfo{
 		MID:      res.MID.String(),
 		Size:     res.Size,
-		Blocks:   res.Block,
+		Blocks:   res.Blocks,
 		Sealed:   true,
 		Name:     name,
-		MimeType: mime,
+		MimeType: res.MimeType,
 		Present:  true,
 	}, nil
 }
@@ -753,13 +764,14 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 		})
 	}
 
-	memBuilder := memfs.NewBuilder(b.store)
-	res, err := memBuilder.AddDirectoryStream(streamEntries)
+	res, err := ingest.IngestDirectoryStream(ctx, b.store, streamEntries, ingest.Options{
+		Name: name,
+		Seal: true,
+	})
 	if err != nil {
 		return explorer.ContentInfo{}, err
 	}
 
-	_ = b.store.Seal(res.MID, true)
 	if b.dht != nil {
 		go func(r mid.MID) {
 			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -796,7 +808,7 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 	return explorer.ContentInfo{
 		MID:      res.MID.String(),
 		Size:     res.Size,
-		Blocks:   res.Block,
+		Blocks:   res.Blocks,
 		Sealed:   true,
 		Present:  true,
 		Name:     dirName,

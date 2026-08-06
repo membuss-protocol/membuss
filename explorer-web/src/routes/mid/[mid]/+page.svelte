@@ -195,22 +195,23 @@
 				return;
 			}
 
+			if (d.state === 'connecting') {
+				if (activeProviders.length === 0) {
+					statStatusText = 'Querying network DHT for providers...';
+					statusBadgeText = 'Searching';
+					statAvailability = '0% (Searching DHT)';
+				}
+			}
+
 			if (d.providers) {
 				activeProviders = d.providers;
 				statPeers = d.providers.length;
 				if (d.providers.length > 0) {
 					clearTimeout(notFoundTimer);
-					if (statusBadgeText === 'Connecting' || statusBadgeText === 'Not Found') {
-						statusBadgeText = 'Downloading';
-						statStatusText = `Connected to ${d.providers.length} provider peer(s)...`;
-					}
+					statusBadgeText = 'Downloading';
+					statStatusText = `Connected to ${d.providers.length} provider peer(s)...`;
+					statAvailability = `Connected (${d.providers.length} Peers)`;
 				}
-			}
-
-			if (d.state === 'connecting') {
-				statStatusText = 'Querying network DHT for providers...';
-				statusBadgeText = 'Searching';
-				statAvailability = '0% (Searching DHT)';
 			}
 
 			if (d.total > 0) {
