@@ -10,16 +10,16 @@ Membuss integrates protocol-level **Reed-Solomon erasure coding** (`klauspost/re
 
 ---
 
-## 1. Adaptive Galois Field Matrix Sharding ($GF(2^8)$)
+## 1. Adaptive Galois Field Matrix Sharding (`GF(2^8)`)
 
-Membuss dynamically optimizes the data ($K$) and parity ($M$) shard configuration based on content size to maximize fault tolerance while minimizing storage overhead:
+Membuss dynamically optimizes the data (`K`) and parity (`M`) shard configuration based on content size to maximize fault tolerance while minimizing storage overhead:
 
-| Payload Size | Data Shards ($K$) | Parity Shards ($M$) | Overhead | Fault Tolerance |
+| Payload Size | Data Shards (`K`) | Parity Shards (`M`) | Overhead | Fault Tolerance |
 |---|---|---|---|---|
-| **$< 64 \text{ KB}$** | $2$ | $1$ | $+50\%$ | $1$ missing shard |
-| **$< 1 \text{ MB}$** | $4$ | $2$ | $+50\%$ | $2$ missing shards |
-| **$< 10 \text{ MB}$** | $8$ | $3$ | $+37.5\%$ | $3$ missing shards |
-| **$\ge 10 \text{ MB}$** *(Default)* | $10$ | $4$ | $+40\%$ | **$4$ missing shards** |
+| **`< 64 KB`** | `2` | `1` | `+50%` | `1` missing shard |
+| **`< 1 MB`** | `4` | `2` | `+50%` | `2` missing shards |
+| **`< 10 MB`** | `8` | `3` | `+37.5%` | `3` missing shards |
+| **`≥ 10 MB`** *(Default)* | `10` | `4` | `+40%` | **`4` missing shards** |
 
 ```text
 Original Block Payload (256 KiB)
@@ -45,7 +45,7 @@ When a client requests a MID via `fetchingBlockstore`:
 2. **Erasure Fallback**: If the primary block is missing or storing peers go offline:
    - Reads the `ErasureManifest` from store metadata.
    - Fetches available shards from connected swarm peers.
-   - As soon as at least $K = \text{DataShards}$ valid shards arrive, executes `encoder.Decode(shards, manifest)`.
+   - As soon as at least `K = DataShards` valid shards arrive, executes `encoder.Decode(shards, manifest)`.
    - Verifies reconstructed bytes match the expected BLAKE3 hash.
    - Restores the block locally and streams it seamlessly to the caller.
 
@@ -55,6 +55,6 @@ When a client requests a MID via `fetchingBlockstore`:
 
 The background repair worker (`core/erasure/repair.go`) continuously audits sealed MIDs:
 1. **Health Audit**: Checks presence of all 14 shards across the network.
-2. **Degraded Detection**: Identifies MIDs with $K \le \text{present} < N$ shards available.
+2. **Degraded Detection**: Identifies MIDs with `K ≤ present < N` shards available.
 3. **Shard Reconstruction**: Reconstructs missing data/parity shards via matrix inversion.
 4. **Re-distribution**: Writes missing shards back to disk/peers and re-announces them to restore full 10+4 redundancy.
