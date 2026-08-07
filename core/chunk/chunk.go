@@ -31,6 +31,24 @@ const MaxBlockSize = 4 * 1024 * 1024
 // inputs are emitted as a single block rather than being split.
 const MinBlockSize = 1024
 
+// AdaptiveBlockSize returns an optimal block size based on total content size,
+// matching BitTorrent piece-sizing strategies to eliminate DB write amplification on large files.
+func AdaptiveBlockSize(size int64) int {
+	if size <= 0 {
+		return DefaultBlockSize
+	}
+	if size < 64*1024*1024 { // < 64 MiB
+		return DefaultBlockSize // 256 KiB
+	}
+	if size < 512*1024*1024 { // < 512 MiB
+		return 1024 * 1024 // 1 MiB
+	}
+	if size < 2*1024*1024*1024 { // < 2 GiB
+		return 2 * 1024 * 1024 // 2 MiB
+	}
+	return MaxBlockSize // 4 MiB
+}
+
 var blockBufferPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, DefaultBlockSize)

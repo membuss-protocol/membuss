@@ -703,7 +703,7 @@ func (a *explorerAdapter) Add(ctx context.Context, name string, r io.Reader) (ex
 
 	if b.dht != nil {
 		go func(r mid.MID) {
-			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			announceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 			provideRecursive(announceCtx, b.dht, b.store, r)
 		}(res.MID)
@@ -774,7 +774,7 @@ func (a *explorerAdapter) AddDirectory(ctx context.Context, name string, files [
 
 	if b.dht != nil {
 		go func(r mid.MID) {
-			announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			announceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 			provideRecursive(announceCtx, b.dht, b.store, r)
 		}(res.MID)

@@ -17,16 +17,18 @@ import (
 
 // Options specifies canonical ingestion configuration.
 type Options struct {
-	Name       string
-	Mode       fs.FileMode
-	ModTime    time.Time
-	MimeType   string
-	Chunker    string
-	ChunkSize  int
-	WrapDir    bool
-	RawDAG     bool
-	Seal       bool
-	ProgressFn func(processed, total uint64)
+	Name          string
+	Mode          fs.FileMode
+	ModTime       time.Time
+	MimeType      string
+	Chunker       string
+	ChunkSize     int
+	ContentSize   int64
+	WrapDir       bool
+	RawDAG        bool
+	Seal          bool
+	EnableErasure bool
+	ProgressFn    func(processed, total uint64)
 }
 
 // Result describes the outcome of an ingestion operation.
@@ -52,7 +54,15 @@ func IngestFile(ctx context.Context, s store.Store, r io.Reader, opts Options) (
 		opts.Mode = 0o644
 	}
 	if opts.ChunkSize <= 0 {
-		opts.ChunkSize = chunk.DefaultBlockSize
+		if opts.ContentSize > 0 {
+			opts.ChunkSize = chunk.AdaptiveBlockSize(opts.ContentSize)
+		} else if sizer, ok := r.(interface{ Size() int64 }); ok && sizer.Size() > 0 {
+			opts.ChunkSize = chunk.AdaptiveBlockSize(sizer.Size())
+		} else if lener, ok := r.(interface{ Len() int }); ok && lener.Len() > 0 {
+			opts.ChunkSize = chunk.AdaptiveBlockSize(int64(lener.Len()))
+		} else {
+			opts.ChunkSize = chunk.DefaultBlockSize
+		}
 	}
 	if opts.MimeType == "" && opts.Name != "" {
 		opts.MimeType = store.SniffMime(opts.Name)
@@ -116,7 +126,7 @@ func IngestFile(ctx context.Context, s store.Store, r io.Reader, opts Options) (
 	}
 
 	// Canonical MemFS Ingestion
-	bld := memfs.NewBuilder(s).WithBlockSize(opts.ChunkSize)
+	bld := memfs.NewBuilder(s).WithBlockSize(opts.ChunkSize).WithErasure(opts.EnableErasure || opts.Seal)
 	if opts.Chunker != "" {
 		bld = bld.WithChunker(opts.Chunker)
 	}
@@ -178,7 +188,7 @@ func IngestDirectoryStream(ctx context.Context, s store.Store, entries []memfs.S
 		opts.ChunkSize = chunk.DefaultBlockSize
 	}
 
-	bld := memfs.NewBuilder(s).WithBlockSize(opts.ChunkSize)
+	bld := memfs.NewBuilder(s).WithBlockSize(opts.ChunkSize).WithErasure(opts.EnableErasure || opts.Seal)
 	if opts.Chunker != "" {
 		bld = bld.WithChunker(opts.Chunker)
 	}

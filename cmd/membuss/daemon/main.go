@@ -1090,11 +1090,12 @@ func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey stri
 // is non-empty, the server runs HTTPS with the supplied cert+key.
 func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataDir string, extraLis ...net.Listener) (*httpServer, error) {
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      h,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 5 * time.Minute,
-		IdleTimeout:  2 * time.Minute,
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      1 * time.Hour,
+		IdleTimeout:       10 * time.Minute,
 	}
 
 	var certManager *autocert.Manager
@@ -1145,8 +1146,9 @@ func startHTTP(addr, name string, h http.Handler, tlsCfg config.TLSConfig, dataD
 		if extra != nil {
 			go func(l net.Listener) {
 				extraSrv := &http.Server{
-					Handler:     h,
-					ReadTimeout: 30 * time.Second,
+					Handler:           h,
+					ReadHeaderTimeout: 30 * time.Second,
+					ReadTimeout:       0,
 				}
 				var err error
 				if srv.TLSConfig != nil {

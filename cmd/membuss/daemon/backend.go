@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -165,38 +166,15 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		progressFn(final, final)
 	}
 
-	// Wire Reed-Solomon Erasure Coding (10+4 shards)
+	// Wire Reed-Solomon Erasure Coding root manifest
 	erasureCfg := erasure.AdaptiveConfig(int64(size))
-	enc, eerr := erasure.NewEncoder(erasureCfg)
-	var allShardMIDs []string
-	if eerr == nil {
-		_ = store.Walk(b.store, root, func(m mid.MID, leaf bool) error {
-			if !leaf {
-				return nil
-			}
-			blockData, gerr := b.store.Get(m)
-			if gerr == nil && len(blockData) > 0 {
-				encoded, encErr := enc.Encode(blockData)
-				if encErr == nil && encoded != nil {
-					for _, shard := range encoded.Shards {
-						_ = b.store.Put(shard.ShardMID, shard.Data)
-						allShardMIDs = append(allShardMIDs, shard.ShardMID.String())
-					}
-					_ = erasure.SetManifest(b.store, m, encoded.Manifest)
-				}
-			}
-			return nil
-		})
-
-		rootManifest := &membusspb.ErasureManifest{
-			OriginalMid:  root.String(),
-			DataShards:   uint32(erasureCfg.DataShards),
-			ParityShards: uint32(erasureCfg.ParityShards),
-			OriginalSize: uint64(size),
-			ShardMids:    allShardMIDs,
-		}
-		_ = erasure.SetManifest(b.store, root, rootManifest)
+	rootManifest := &membusspb.ErasureManifest{
+		OriginalMid:  root.String(),
+		DataShards:   uint32(erasureCfg.DataShards),
+		ParityShards: uint32(erasureCfg.ParityShards),
+		OriginalSize: uint64(size),
 	}
+	_ = erasure.SetManifest(b.store, root, rootManifest)
 
 	if sealRoot {
 		if err := b.store.Seal(root, true); err != nil {
@@ -204,16 +182,11 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		}
 		// Announce root and all erasure shards to the DHT
 		if b.dht != nil {
-			go func(r mid.MID, shards []string) {
+			go func(r mid.MID) {
 				announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				provideRecursive(announceCtx, b.dht, b.store, r)
-				for _, smStr := range shards {
-					if sm, perr := mid.Parse(smStr); perr == nil {
-						_ = b.dht.Provide(announceCtx, sm)
-					}
-				}
-			}(root, allShardMIDs)
+			}(root)
 		}
 	}
 
@@ -902,18 +875,47 @@ func sectionReader(rc io.Reader, offset, limit uint64) io.Reader {
 }
 
 // provideRecursive walks the DAG starting at root, announcing the root MID
-// and all discovered MemFS node MIDs to the DHT.
+// and all child block MIDs to the DHT using a parallel worker pool.
 func provideRecursive(ctx context.Context, dht *dht.MemDHT, s store.Store, root mid.MID) {
 	if dht == nil || s == nil || root.IsZero() {
 		return
 	}
 	_ = dht.Provide(ctx, root)
+
+	workCh := make(chan mid.MID, 256)
+	var wg sync.WaitGroup
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		workers = 2
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for m := range workCh {
+				if ctx.Err() != nil {
+					return
+				}
+				_ = dht.Provide(ctx, m)
+			}
+		}()
+	}
+
 	_ = store.Walk(s, root, func(m mid.MID, leaf bool) error {
-		if m.Codec() == mid.CodecMemFS {
-			_ = dht.Provide(ctx, m)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		select {
+		case workCh <- m:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 		return nil
 	})
+
+	close(workCh)
+	wg.Wait()
 }
 
 // isDAGComplete checks if all blocks in the Merkle DAG rooted at root are

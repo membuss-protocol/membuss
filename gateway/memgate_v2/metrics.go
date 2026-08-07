@@ -103,6 +103,9 @@ func (w *statusResponseWriter) Write(b []byte) (int, error) {
 
 func (w *statusResponseWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		defer func() {
+			_ = recover()
+		}()
 		f.Flush()
 	}
 }
