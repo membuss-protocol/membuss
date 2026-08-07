@@ -9,6 +9,7 @@
 package explorer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"embed"
@@ -82,18 +83,24 @@ const (
 // headers the public Mem-Gate gateway returns, so a single
 // struct drives both the gateway and the explorer.
 type ContentInfo struct {
-	MID         string
-	Size        uint64
-	Blocks      uint64
-	ContentType string
-	Sealed      bool
-	Present bool
-	Codec       uint64
+	MID             string
+	Size            uint64
+	Blocks          uint64
+	ContentType     string
+	Sealed          bool
+	Present         bool
+	Codec           uint64
+	DataShards      int
+	ParityShards    int
+	TotalShards     int
+	ShardsAvailable int
+	Degraded        bool
+	ShardMIDs       []string
 	// Phase 19: human-friendly metadata captured at Add
 	// time. Empty when the content was added by an
 	// older daemon.
-	Name     string
-	MimeType string
+	Name          string
+	MimeType      string
 	Sealers       int
 	AnchorSealers int
 }
@@ -356,11 +363,8 @@ func New(cfg Config) (*Explorer, error) {
 	if cfg.Backend == nil {
 		return nil, errors.New("explorer: nil backend")
 	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = 30 * time.Second
-	}
 	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = 60 * time.Second
+		cfg.WriteTimeout = 1 * time.Hour
 	}
 	if cfg.ProviderLimit == 0 {
 		cfg.ProviderLimit = 32
@@ -742,12 +746,15 @@ type midData struct {
 	Blocks        uint64
 	Sealed        bool
 	Codec         uint64
-	ContentType   string
-	DataShards    int
-	ParityShards  int
-	TotalShards   int
-	Health        string
-	HealthLabel   string
+	ContentType     string
+	DataShards      int
+	ParityShards    int
+	TotalShards     int
+	ShardsAvailable int
+	Degraded        bool
+	ShardMIDs       []string
+	Health          string
+	HealthLabel     string
 	Providers     []string
 	Name          string
 	MimeType      string
@@ -828,11 +835,25 @@ func (e *Explorer) handleMID(w http.ResponseWriter, r *http.Request) {
 		data.Sealed = sealed
 		data.Codec = codec
 		data.ContentType = data.MimeType
-		data.DataShards = 10
-		data.ParityShards = 4
-		data.TotalShards = data.DataShards + data.ParityShards
-		data.Health = fmt.Sprintf("%d/%d shards needed", data.DataShards, data.TotalShards)
-		data.HealthLabel = "OK"
+		data.DataShards = info.DataShards
+		data.ParityShards = info.ParityShards
+		data.TotalShards = info.TotalShards
+		data.ShardsAvailable = info.ShardsAvailable
+		data.Degraded = info.Degraded
+		data.ShardMIDs = info.ShardMIDs
+		if data.DataShards == 0 {
+			data.DataShards = 10
+			data.ParityShards = 4
+			data.TotalShards = 14
+			data.ShardsAvailable = 14
+		}
+		if data.Degraded {
+			data.Health = fmt.Sprintf("%d/%d shards available (Degraded)", data.ShardsAvailable, data.TotalShards)
+			data.HealthLabel = "DEGRADED"
+		} else {
+			data.Health = fmt.Sprintf("%d/%d shards available (Healthy)", data.ShardsAvailable, data.TotalShards)
+			data.HealthLabel = "HEALTHY"
+		}
 		// Phase 17: probe for MemFS metadata so the
 		// template can switch on type (file / dir /
 		// symlink / metadata / raw).
@@ -946,9 +967,17 @@ func (e *Explorer) handleResolveStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendEvent := func(ev sseEvent) {
+		if r.Context().Err() != nil {
+			return
+		}
+		defer func() {
+			_ = recover()
+		}()
 		data, _ := json.Marshal(ev)
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		flusher.Flush()
+		_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+		if err == nil {
+			flusher.Flush()
+		}
 	}
 
 	// 1. Initial State: connecting to DHT
@@ -1224,15 +1253,77 @@ func (e *Explorer) handleUploadPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(1 << 30); err != nil {
+	ctx := r.Context()
+	b := e.cfg.Backend
+
+	mr, err := r.MultipartReader()
+	if err == nil {
+		var dirFiles []DirectoryFile
+		var folderName string
+		var singleRes *ContentInfo
+
+		for {
+			part, perr := mr.NextPart()
+			if errors.Is(perr, io.EOF) {
+				break
+			}
+			if perr != nil {
+				break
+			}
+
+			formName := part.FormName()
+			if formName == "folder_name" {
+				buf, _ := io.ReadAll(part)
+				folderName = string(buf)
+				part.Close()
+				continue
+			}
+
+			if formName == "file" {
+				fileName := part.FileName()
+				res, aerr := b.Add(ctx, fileName, bufio.NewReaderSize(part, 1<<20))
+				part.Close()
+				if aerr != nil {
+					http.Error(w, "add: "+aerr.Error(), http.StatusInternalServerError)
+					return
+				}
+				singleRes = &res
+				_, _ = io.Copy(io.Discard, r.Body)
+				break
+			}
+
+			if formName == "files" {
+				fileName := part.FileName()
+				dirFiles = append(dirFiles, DirectoryFile{
+					Path: fileName,
+					Size: 0,
+					R:    part,
+				})
+			}
+		}
+
+		if singleRes != nil {
+			http.Redirect(w, r, "/explorer/mid/"+singleRes.MID, http.StatusSeeOther)
+			return
+		}
+
+		if len(dirFiles) > 0 {
+			res, aerr := b.AddDirectory(ctx, folderName, dirFiles)
+			if aerr != nil {
+				http.Error(w, "add directory: "+aerr.Error(), http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, "/explorer/mid/"+res.MID, http.StatusSeeOther)
+			return
+		}
+	}
+
+	// Fallback to ParseMultipartForm
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	ctx := r.Context()
-	b := e.cfg.Backend
-
-	// Check if this is a folder upload (multiple files sent under "files")
 	if files, ok := r.MultipartForm.File["files"]; ok && len(files) > 0 {
 		paths := r.MultipartForm.Value["paths"]
 		var dirFiles []DirectoryFile
@@ -1266,7 +1357,6 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Otherwise, fall back to single file upload
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "no file: "+err.Error(), http.StatusBadRequest)

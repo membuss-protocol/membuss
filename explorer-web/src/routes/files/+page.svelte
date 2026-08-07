@@ -286,7 +286,7 @@
 		totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 		uploadFileList = files.map(f => ({ name: f.name, size: f.size }));
 		uploadPhase = 'uploading';
-		uploadStatusText = 'Uploading raw blocks...';
+		uploadStatusText = 'Streaming blocks, Erasure Coding & Indexing...';
 
 		const formData = new FormData();
 		if (activeUploadTab === 'file') {
@@ -313,15 +313,14 @@
 		});
 
 		xhr.upload.addEventListener('load', () => {
-			uploadPhase = 'sealing';
-			uploadStatusText = 'Erasure coding & sealing Merkle DAG...';
+			uploadPercent = 100;
 		});
 
 		xhr.addEventListener('load', () => {
 			if (xhr.status >= 200 && xhr.status < 300) {
 				uploadPercent = 100;
 				uploadPhase = 'done';
-				uploadStatusText = 'Ingest complete!';
+				uploadStatusText = 'Ingest Complete!';
 				
 				setTimeout(() => {
 					uploadActive = false;

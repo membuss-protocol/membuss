@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +23,9 @@ import (
 
 	"github.com/nnlgsakib/membuss/anchor"
 	"github.com/nnlgsakib/membuss/config"
-	"github.com/nnlgsakib/membuss/core/chunk"
 	"github.com/nnlgsakib/membuss/core/dag"
+	"github.com/nnlgsakib/membuss/core/erasure"
+	"github.com/nnlgsakib/membuss/core/ingest"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -32,6 +34,7 @@ import (
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
 	"github.com/nnlgsakib/membuss/net/pex"
 	"github.com/nnlgsakib/membuss/obs/metrics"
+	membusspb "github.com/nnlgsakib/membuss/proto"
 	serverpkg "github.com/nnlgsakib/membuss/rpc/server"
 )
 
@@ -131,45 +134,27 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		totalBytes = uint64(fi.Size())
 	}
 
-	// Wrap the source so the chunker's reads drive progress.
-	// The DAG builder pulls the whole file through this reader,
-	// so the byte counter tracks ingest faithfully regardless
-	// of chunker choice.
-	var src io.Reader = f
-	if progressFn != nil {
-		src = &countingReader{r: f, total: totalBytes, fn: progressFn}
+
+
+	if name == "" {
+		name = filepath.Base(path)
 	}
 
-	// Pick a chunker. Default is fixed 256 KiB.
-	var factory chunk.ChunkerFactory
-	switch chunker {
-	case "rabin":
-		factory = chunk.NewRabin()
-	case "fastcdc":
-		factory = chunk.NewFastCDC()
-	default:
-		size := int(chunkSize)
-		if size <= 0 {
-			size = 256 * 1024
-		}
-		factory = chunk.NewFixed(size)
-	}
-	c, err := factory(src)
+	ingestRes, err := ingest.IngestFile(ctx, b.store, f, ingest.Options{
+		Name:       name,
+		MimeType:   mimeType,
+		Chunker:    chunker,
+		ChunkSize:  int(chunkSize),
+		Seal:       sealRoot,
+		ProgressFn: progressFn,
+	})
 	if err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: chunker: %w", err)
+		return serverpkg.AddResult{}, fmt.Errorf("add: %w", err)
 	}
 
-	// Build DAG.
-	root, err := dag.NewBuilder(b.store).Build(c)
-	if err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: dag: %w", err)
-	}
-
-	// Count leaves by re-walking the DAG (cheap).
-	blocks, size, err := countDAG(b.store, root)
-	if err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: count: %w", err)
-	}
+	root := ingestRes.MID
+	size := ingestRes.Size
+	blocks := ingestRes.Blocks
 
 	// Emit a terminal 100% so a fast ingest that never
 	// tripped the throttle still lands on a full bar.
@@ -181,31 +166,21 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		progressFn(final, final)
 	}
 
-	// Phase 19: persist the per-MID ObjectInfo so the
-	// gateway can reproduce the user-facing metadata
-	// on download. Name defaults to the file's
-	// basename; MimeType defaults to an extension
-	// sniff (see core/store.SniffMime).
-	if name == "" {
-		name = filepath.Base(path)
+	// Wire Reed-Solomon Erasure Coding root manifest
+	erasureCfg := erasure.AdaptiveConfig(int64(size))
+	rootManifest := &membusspb.ErasureManifest{
+		OriginalMid:  root.String(),
+		DataShards:   uint32(erasureCfg.DataShards),
+		ParityShards: uint32(erasureCfg.ParityShards),
+		OriginalSize: uint64(size),
 	}
-	if mimeType == "" {
-		mimeType = store.SniffMime(name)
-	}
-	if err := store.SetObjectInfo(b.store, root, store.ObjectInfo{
-		Name:     name,
-		MimeType: mimeType,
-		Size:     size,
-		IsRoot:   true,
-	}); err != nil {
-		return serverpkg.AddResult{}, fmt.Errorf("add: objectinfo: %w", err)
-	}
+	_ = erasure.SetManifest(b.store, root, rootManifest)
 
 	if sealRoot {
 		if err := b.store.Seal(root, true); err != nil {
 			return serverpkg.AddResult{}, fmt.Errorf("add: seal: %w", err)
 		}
-		// Announce to the DHT so other nodes can find this MID.
+		// Announce root and all erasure shards to the DHT
 		if b.dht != nil {
 			go func(r mid.MID) {
 				announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -587,6 +562,26 @@ func (b *daemonBackend) Stat(ctx context.Context, midStr string) (serverpkg.Stat
 		MimeType: oi.MimeType,
 	}
 
+	manifest, _ := erasure.GetManifest(b.store, root)
+	if manifest != nil {
+		available := uint32(0)
+		for _, smStr := range manifest.ShardMids {
+			if sm, perr := mid.Parse(smStr); perr == nil {
+				if has, _ := b.store.Has(sm); has {
+					available++
+				}
+			}
+		}
+		total := manifest.DataShards + manifest.ParityShards
+		info.Erasure = &serverpkg.ErasureInfo{
+			DataShards:      manifest.DataShards,
+			ParityShards:    manifest.ParityShards,
+			ShardMIDs:       manifest.ShardMids,
+			ShardsAvailable: available,
+			Degraded:        available < total,
+		}
+	}
+
 	if b.dht != nil {
 		provCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		provs, _ := b.dht.FindProviders(provCtx, root)
@@ -880,18 +875,47 @@ func sectionReader(rc io.Reader, offset, limit uint64) io.Reader {
 }
 
 // provideRecursive walks the DAG starting at root, announcing the root MID
-// and all discovered MemFS node MIDs to the DHT.
+// and all child block MIDs to the DHT using a parallel worker pool.
 func provideRecursive(ctx context.Context, dht *dht.MemDHT, s store.Store, root mid.MID) {
 	if dht == nil || s == nil || root.IsZero() {
 		return
 	}
 	_ = dht.Provide(ctx, root)
+
+	workCh := make(chan mid.MID, 256)
+	var wg sync.WaitGroup
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		workers = 2
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for m := range workCh {
+				if ctx.Err() != nil {
+					return
+				}
+				_ = dht.Provide(ctx, m)
+			}
+		}()
+	}
+
 	_ = store.Walk(s, root, func(m mid.MID, leaf bool) error {
-		if m.Codec() == mid.CodecMemFS {
-			_ = dht.Provide(ctx, m)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		select {
+		case workCh <- m:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 		return nil
 	})
+
+	close(workCh)
+	wg.Wait()
 }
 
 // isDAGComplete checks if all blocks in the Merkle DAG rooted at root are

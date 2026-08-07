@@ -134,9 +134,11 @@ type StatInfo struct {
 // the Backend contract does not leak protobuf types to
 // non-rpc callers.
 type ErasureInfo struct {
-	DataShards   uint32
-	ParityShards uint32
-	ShardMIDs    []string
+	DataShards      uint32   `json:"data_shards"`
+	ParityShards    uint32   `json:"parity_shards"`
+	ShardMIDs       []string `json:"shard_mids,omitempty"`
+	ShardsAvailable uint32   `json:"shards_available"`
+	Degraded        bool     `json:"degraded"`
 }
 
 // NodePeerInfo describes a connected peer.

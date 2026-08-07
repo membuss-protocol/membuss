@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"net/http"
+	"strings"
 )
 
 // apiKeyAuth returns a chi middleware that rejects requests
@@ -12,7 +13,7 @@ import (
 func apiKeyAuth(want string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if want == "" {
+			if want == "" || r.URL.Path == "/healthz" || strings.HasSuffix(r.URL.Path, "/healthz") {
 				next.ServeHTTP(w, r)
 				return
 			}

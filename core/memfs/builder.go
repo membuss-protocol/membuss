@@ -1,19 +1,23 @@
 package memfs
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"path"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/chunk"
 	"github.com/nnlgsakib/membuss/core/dag"
+	"github.com/nnlgsakib/membuss/core/erasure"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 
@@ -29,9 +33,10 @@ const DefaultBlockSize = chunk.DefaultBlockSize
 // and the existing Blockstore Put path for everything else,
 // so the dedup, walk, seal and GC machinery all just work.
 type Builder struct {
-	bs      store.Blockstore
-	blk     int
-	chunker string
+	bs            store.Blockstore
+	blk           int
+	chunker       string
+	enableErasure bool
 }
 
 // NewBuilder returns a Builder that writes into bs. The
@@ -60,6 +65,13 @@ func (b *Builder) WithBlockSize(n int) *Builder {
 func (b *Builder) WithChunker(chunker string) *Builder {
 	cp := *b
 	cp.chunker = chunker
+	return &cp
+}
+
+// WithErasure enables inline Reed-Solomon erasure coding during chunk ingestion.
+func (b *Builder) WithErasure(enable bool) *Builder {
+	cp := *b
+	cp.enableErasure = enable
 	return &cp
 }
 
@@ -115,116 +127,314 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 		factory = chunk.NewFixed(b.blk)
 	}
 
+	r = bufio.NewReaderSize(r, 1<<20)
 	chunker, err := factory(r)
 	if err != nil {
 		return AddResult{}, fmt.Errorf("memfs: chunker: %w", err)
 	}
-
-	var leaves []blockRef
-	var totalSize uint64
-	for {
-		blk, err := chunker.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return AddResult{}, fmt.Errorf("memfs: read chunk: %w", err)
-		}
-		lm := blk.MID()
-		if lm.IsZero() {
-			return AddResult{}, errors.New("memfs: chunk has zero MID")
-		}
-		if err := b.bs.Put(lm, blk.Data()); err != nil {
-			return AddResult{}, fmt.Errorf("memfs: store raw block: %w", err)
-		}
-		leaves = append(leaves, blockRef{mid: lm, size: uint64(blk.Size())})
-		totalSize += uint64(blk.Size())
+	type chunkWork struct {
+		idx  uint64
+		data []byte
+	}
+	type chunkResult struct {
+		idx  uint64
+		mid  mid.MID
+		size uint64
+		data []byte
+		err  error
 	}
 
+	numWorkers := runtime.NumCPU()
+	if numWorkers < 2 {
+		numWorkers = 2
+	}
 
-	// Build the FILE node envelope.
+	workCh := make(chan chunkWork, numWorkers*2)
+	resCh := make(chan chunkResult, numWorkers*2)
+
+	var workerWg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			var lastCfg erasure.Config
+			var lastEnc *erasure.Encoder
+
+			for work := range workCh {
+				lm := mid.FromBytes(work.data)
+				if err := b.bs.Put(lm, work.data); err != nil {
+					resCh <- chunkResult{idx: work.idx, err: fmt.Errorf("memfs: store raw block: %w", err)}
+					continue
+				}
+				if b.enableErasure {
+					cfg := erasure.AdaptiveConfig(int64(len(work.data)))
+					if lastEnc == nil || cfg != lastCfg {
+						if enc, eerr := erasure.NewEncoder(cfg); eerr == nil {
+							lastEnc = enc
+							lastCfg = cfg
+						}
+					}
+					if lastEnc != nil {
+						if encoded, encErr := lastEnc.Encode(work.data); encErr == nil && encoded != nil {
+							for _, shard := range encoded.Shards {
+								_ = b.bs.Put(shard.ShardMID, shard.Data)
+							}
+							_ = erasure.SetManifest(b.bs, lm, encoded.Manifest)
+						}
+					}
+				}
+				resCh <- chunkResult{
+					idx:  work.idx,
+					mid:  lm,
+					size: uint64(len(work.data)),
+					data: work.data,
+				}
+			}
+		}()
+	}
+
+	go func() {
+		workerWg.Wait()
+		close(resCh)
+	}()
+
+	go func() {
+		var idx uint64
+		for {
+			blk, err := chunker.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				resCh <- chunkResult{err: fmt.Errorf("memfs: read chunk: %w", err)}
+				break
+			}
+			dataCopy := make([]byte, len(blk.Data()))
+			copy(dataCopy, blk.Data())
+			workCh <- chunkWork{idx: idx, data: dataCopy}
+			idx++
+		}
+		close(workCh)
+	}()
+
+	bld := &memfsLevelStack{bs: b.bs, name: name, mode: mode, mtime: mtime, mime: mime, maxBlk: b.blk}
+	pending := make(map[uint64]chunkResult)
+	var nextIdx uint64
+
+	for res := range resCh {
+		if res.err != nil {
+			return AddResult{}, res.err
+		}
+		pending[res.idx] = res
+		for {
+			item, ok := pending[nextIdx]
+			if !ok {
+				break
+			}
+			delete(pending, nextIdx)
+			if err := bld.pushLeaf(item.mid, item.size, item.data); err != nil {
+				return AddResult{}, err
+			}
+			nextIdx++
+		}
+	}
+
+	return bld.finalize()
+}
+
+type memfsBlockRef struct {
+	mid  mid.MID
+	size uint64
+}
+
+type memfsLevelStack struct {
+	bs         store.Blockstore
+	name       string
+	mode       fs.FileMode
+	mtime      time.Time
+	mime       string
+	maxBlk     int
+	levels     [][]memfsBlockRef
+	totalSize  uint64
+	totalLeafs uint64
+	singleData []byte
+}
+
+func (s *memfsLevelStack) pushLeaf(m mid.MID, size uint64, rawData []byte) error {
+	s.totalSize += size
+	s.totalLeafs++
+	if s.totalLeafs == 1 {
+		s.singleData = rawData
+	} else {
+		s.singleData = nil
+	}
+	return s.push(0, memfsBlockRef{mid: m, size: size})
+}
+
+func (s *memfsLevelStack) push(level int, ref memfsBlockRef) error {
+	for len(s.levels) <= level {
+		s.levels = append(s.levels, nil)
+	}
+	s.levels[level] = append(s.levels[level], ref)
+	if len(s.levels[level]) < dag.Fanout {
+		return nil
+	}
+	parentRef, err := s.collapse(level, s.levels[level])
+	if err != nil {
+		return err
+	}
+	s.levels[level] = s.levels[level][:0]
+	return s.push(level+1, parentRef)
+}
+
+func (s *memfsLevelStack) collapse(level int, children []memfsBlockRef) (memfsBlockRef, error) {
+	if len(children) == 0 {
+		return memfsBlockRef{}, errors.New("memfs: collapse called on empty group")
+	}
+	var groupSize uint64
+	blocks := make([]*membusspb.MemFSBlock, len(children))
+	for i, c := range children {
+		var sz uint64
+		if level == 0 {
+			sz = c.size
+		}
+		blocks[i] = &membusspb.MemFSBlock{
+			Mid:  c.mid.Bytes(),
+			Size: sz,
+		}
+		groupSize += c.size
+	}
+	node := &membusspb.MemFSNode{
+		Type:     membusspb.MemFSType_FILE,
+		FileSize: groupSize,
+		Blocks:   blocks,
+	}
+	raw, err := proto.Marshal(node)
+	if err != nil {
+		return memfsBlockRef{}, fmt.Errorf("memfs: marshal intermediate: %w", err)
+	}
+	nodeMID := mid.FromBytesWithCodec(raw, mid.CodecMemFS)
+	if err := s.bs.Put(nodeMID, raw); err != nil {
+		return memfsBlockRef{}, fmt.Errorf("memfs: store intermediate: %w", err)
+	}
+	return memfsBlockRef{mid: nodeMID, size: groupSize}, nil
+}
+
+func (s *memfsLevelStack) topmost(i int) bool {
+	for j := i + 1; j < len(s.levels); j++ {
+		if len(s.levels[j]) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *memfsLevelStack) finalize() (AddResult, error) {
+	if s.totalLeafs == 0 {
+		// Empty file node
+		pb := &membusspb.MemFSNode{
+			Type:     membusspb.MemFSType_FILE,
+			FileSize: 0,
+			Mode:     uint32(s.mode),
+		}
+		if s.mtime.UnixNano() > 0 {
+			pb.Mtime = s.mtime.UnixNano()
+		}
+		if s.mime != "" {
+			pb.Meta = &membusspb.MemFSMeta{MimeType: s.mime}
+		}
+		raw, err := proto.Marshal(pb)
+		if err != nil {
+			return AddResult{}, fmt.Errorf("memfs: marshal empty file node: %w", err)
+		}
+		rootMID := mid.FromBytesWithCodec(raw, mid.CodecMemFS)
+		if err := s.bs.Put(rootMID, raw); err != nil {
+			return AddResult{}, fmt.Errorf("memfs: store empty file node: %w", err)
+		}
+		if s.name != "" {
+			if err := store.SetObjectInfo(s.bs, rootMID, store.ObjectInfo{
+				Name:     s.name,
+				MimeType: s.mime,
+				Size:     0,
+			}); err != nil {
+				return AddResult{}, fmt.Errorf("memfs: set objectinfo: %w", err)
+			}
+		}
+		return AddResult{
+			MID:   rootMID,
+			Size:  0,
+			Block: 0,
+		}, nil
+	}
+	for i := 0; i < len(s.levels); i++ {
+		if len(s.levels[i]) == 0 {
+			continue
+		}
+		if s.topmost(i) {
+			return s.buildRoot(i, s.levels[i])
+		}
+		parentRef, err := s.collapse(i, s.levels[i])
+		if err != nil {
+			return AddResult{}, err
+		}
+		s.levels[i] = s.levels[i][:0]
+		if err := s.push(i+1, parentRef); err != nil {
+			return AddResult{}, err
+		}
+	}
+	return AddResult{}, errors.New("memfs: empty file")
+}
+
+func (s *memfsLevelStack) buildRoot(level int, children []memfsBlockRef) (AddResult, error) {
 	pb := &membusspb.MemFSNode{
 		Type:     membusspb.MemFSType_FILE,
-		FileSize: totalSize,
-		Mode:     uint32(mode),
+		FileSize: s.totalSize,
+		Mode:     uint32(s.mode),
 	}
-	if mtime.UnixNano() > 0 {
-		pb.Mtime = mtime.UnixNano()
+	if s.mtime.UnixNano() > 0 {
+		pb.Mtime = s.mtime.UnixNano()
 	}
-	if mime != "" {
-		pb.Meta = &membusspb.MemFSMeta{MimeType: mime}
+	if s.mime != "" {
+		pb.Meta = &membusspb.MemFSMeta{MimeType: s.mime}
 	}
 
-	if len(leaves) == 1 && int(leaves[0].size) <= b.blk {
-		// Single block — inline the data in the FILE node.
-		raw, err := b.bs.Get(leaves[0].mid)
-		if err != nil {
-			return AddResult{}, fmt.Errorf("memfs: read single chunk: %w", err)
-		}
-		pb.Data = raw
+	if s.totalLeafs == 1 && len(s.singleData) > 0 && len(s.singleData) <= s.maxBlk {
+		pb.Data = s.singleData
 		pb.Blocks = []*membusspb.MemFSBlock{
-			{Mid: leaves[0].mid.Bytes(), Size: leaves[0].size},
-		}
-	} else if len(leaves) <= dag.Fanout {
-		pb.Blocks = make([]*membusspb.MemFSBlock, len(leaves))
-		for i, l := range leaves {
-			pb.Blocks[i] = &membusspb.MemFSBlock{Mid: l.mid.Bytes(), Size: l.size}
+			{Mid: children[0].mid.Bytes(), Size: children[0].size},
 		}
 	} else {
-		// Build a balanced two-level tree of MemFS FILE
-		// nodes. Each intermediate groups up to dag.Fanout
-		// raw blocks.
-		intermediates := make([]mid.MID, 0, (len(leaves)+dag.Fanout-1)/dag.Fanout)
-		for start := 0; start < len(leaves); start += dag.Fanout {
-			end := start + dag.Fanout
-			if end > len(leaves) {
-				end = len(leaves)
+		pb.Blocks = make([]*membusspb.MemFSBlock, len(children))
+		for i, c := range children {
+			var sz uint64
+			if level == 0 {
+				sz = c.size
 			}
-			group := leaves[start:end]
-			child := &membusspb.MemFSNode{
-				Type:     membusspb.MemFSType_FILE,
-				FileSize: sumBlockSizes(group),
-			}
-			child.Blocks = make([]*membusspb.MemFSBlock, len(group))
-			for i, l := range group {
-				child.Blocks[i] = &membusspb.MemFSBlock{Mid: l.mid.Bytes(), Size: l.size}
-			}
-			raw, err := proto.Marshal(child)
-			if err != nil {
-				return AddResult{}, fmt.Errorf("memfs: marshal intermediate: %w", err)
-			}
-			im := mid.FromBytesWithCodec(raw, mid.CodecMemFS)
-			if err := b.bs.Put(im, raw); err != nil {
-				return AddResult{}, fmt.Errorf("memfs: store intermediate: %w", err)
-			}
-			intermediates = append(intermediates, im)
+			pb.Blocks[i] = &membusspb.MemFSBlock{Mid: c.mid.Bytes(), Size: sz}
 		}
-		rootBlocks := make([]*membusspb.MemFSBlock, len(intermediates))
-		for i, im := range intermediates {
-			rootBlocks[i] = &membusspb.MemFSBlock{Mid: im.Bytes()}
-		}
-		pb.Blocks = rootBlocks
 	}
 
 	raw, err := proto.Marshal(pb)
 	if err != nil {
-		return AddResult{}, fmt.Errorf("memfs: marshal file node: %w", err)
+		return AddResult{}, fmt.Errorf("memfs: marshal root file node: %w", err)
 	}
 	rootMID := mid.FromBytesWithCodec(raw, mid.CodecMemFS)
-	if err := b.bs.Put(rootMID, raw); err != nil {
-		return AddResult{}, fmt.Errorf("memfs: store file node: %w", err)
+	if err := s.bs.Put(rootMID, raw); err != nil {
+		return AddResult{}, fmt.Errorf("memfs: store root file node: %w", err)
 	}
-	if name != "" {
-		_ = store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
-			Name:     name,
-			MimeType: mime,
-			Size:     totalSize,
-		})
+	if s.name != "" {
+		if err := store.SetObjectInfo(s.bs, rootMID, store.ObjectInfo{
+			Name:     s.name,
+			MimeType: s.mime,
+			Size:     s.totalSize,
+		}); err != nil {
+			return AddResult{}, fmt.Errorf("memfs: set objectinfo: %w", err)
+		}
 	}
 	return AddResult{
 		MID:   rootMID,
-		Size:  totalSize,
-		Block: uint64(len(leaves)),
+		Size:  s.totalSize,
+		Block: s.totalLeafs,
 	}, nil
 }
 
@@ -277,11 +487,13 @@ func (b *Builder) AddDir(name string, entries []DirEntry, mode fs.FileMode, mtim
 		return AddResult{}, fmt.Errorf("memfs: store dir: %w", err)
 	}
 	if name != "" {
-		_ = store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
+		if err := store.SetObjectInfo(b.bs, rootMID, store.ObjectInfo{
 			Name:     name,
 			MimeType: "inode/directory",
 			Size:     total,
-		})
+		}); err != nil {
+			return AddResult{}, fmt.Errorf("memfs: set objectinfo: %w", err)
+		}
 	}
 	return AddResult{
 		MID:   rootMID,

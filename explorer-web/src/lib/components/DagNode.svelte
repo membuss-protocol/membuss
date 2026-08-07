@@ -29,7 +29,10 @@
 		loading = true;
 		error = null;
 		try {
-			const res = await fetch(`${base.replace('/explorer', '')}/mem/${encodeURIComponent(mid)}?format=dag-json`);
+			const res = await fetch(
+				`${base.replace('/explorer', '')}/mem/${encodeURIComponent(mid)}?format=dag-json`,
+				{ headers: { 'X-Explorer-Request': 'true' } }
+			);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			nodeData = await res.json();
 		} catch (err) {

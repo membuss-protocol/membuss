@@ -860,6 +860,11 @@ func (m *MemGate) handlePathGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *MemGate) handleDAGJSON(w http.ResponseWriter, r *http.Request, root mid.MID) {
+	if r.URL.Query().Get("recursive") == "true" || r.URL.Query().Get("format") == "dag-tree-json" {
+		m.handleDAGTreeJSON(w, r, root)
+		return
+	}
+
 	etagVal := root.String()
 	if checkETag(w, r, etagVal) {
 		return
@@ -889,6 +894,70 @@ func (m *MemGate) handleDAGJSON(w http.ResponseWriter, r *http.Request, root mid
 	w.Header().Set("Cache-Control", "public, immutable, max-age=31536000")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+type dagTreeNodeJSON struct {
+	Size  *uint64  `json:"size"`
+	Links []string `json:"links"`
+}
+
+type dagTreeResponseJSON struct {
+	Root  string                      `json:"root"`
+	Nodes map[string]dagTreeNodeJSON `json:"nodes"`
+}
+
+func (m *MemGate) handleDAGTreeJSON(w http.ResponseWriter, r *http.Request, root mid.MID) {
+	nodesMap := make(map[string]dagTreeNodeJSON)
+	queue := []mid.MID{root}
+	visited := make(map[string]bool)
+
+	for len(queue) > 0 && len(visited) < 10000 {
+		curr := queue[0]
+		queue = queue[1:]
+
+		currStr := curr.String()
+		if visited[currStr] {
+			continue
+		}
+		visited[currStr] = true
+
+		rawBody, err := m.cfg.Backend.DAGNodeJSON(r.Context(), curr)
+		if err != nil {
+			continue
+		}
+
+		var Parsed struct {
+			Size  *uint64  `json:"size"`
+			Links []string `json:"links"`
+		}
+		if err := json.Unmarshal(rawBody, &Parsed); err != nil {
+			continue
+		}
+
+		if Parsed.Links == nil {
+			Parsed.Links = []string{}
+		}
+		nodesMap[currStr] = dagTreeNodeJSON{
+			Size:  Parsed.Size,
+			Links: Parsed.Links,
+		}
+
+		for _, linkStr := range Parsed.Links {
+			if childMID, perr := mid.Parse(linkStr); perr == nil && !visited[childMID.String()] {
+				queue = append(queue, childMID)
+			}
+		}
+	}
+
+	resp := dagTreeResponseJSON{
+		Root:  root.String(),
+		Nodes: nodesMap,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Membuss-MID", root.String())
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (m *MemGate) handleRawBlock(w http.ResponseWriter, r *http.Request, root mid.MID) {

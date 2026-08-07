@@ -162,18 +162,15 @@
 		resetUploadState();
 		uploadActive = true;
 		uploadFilesCount = filesList.length;
-		
 		totalBytes = filesList.reduce((acc, f) => acc + f.size, 0);
-		
-		uploadFileList = filesList.map(f => ({
+		uploadFileList = filesList.map((f) => ({
 			name: f.name,
 			size: f.size,
 			isFolder: !!f.webkitRelativePath && f.webkitRelativePath.includes('/'),
-			path: f.webkitRelativePath || f.name
+			path: f.webkitRelativePath || f.name,
 		}));
-
 		uploadPhase = 'uploading';
-		uploadStatusText = 'Uploading raw blocks...';
+		uploadStatusText = 'Streaming blocks, Erasure Coding & Indexing...';
 
 		const xhr = new XMLHttpRequest();
 		activeXhr = xhr;
@@ -187,16 +184,14 @@
 		});
 
 		xhr.upload.addEventListener('load', () => {
-			// Upload completed, backend is now erasure coding, hashing, and sealing the Merkle tree
-			uploadPhase = 'sealing';
-			uploadStatusText = 'Erasure coding & sealing Merkle DAG...';
+			uploadPercent = 100;
 		});
 
 		xhr.addEventListener('load', () => {
 			if (xhr.status >= 200 && xhr.status < 300) {
 				uploadPercent = 100;
 				uploadPhase = 'done';
-				uploadStatusText = 'Ingest complete!';
+				uploadStatusText = 'Ingest Complete!';
 
 				// Redirect to resulting MID
 				const finalUrl = xhr.responseURL || xhr.getResponseHeader('Location');
