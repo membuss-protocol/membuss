@@ -177,9 +177,12 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 	_ = erasure.SetManifest(b.store, root, rootManifest)
 
 	if sealRoot {
-		if err := b.store.Seal(root, true); err != nil {
+		if err := b.store.Seal(root, false); err != nil {
 			return serverpkg.AddResult{}, fmt.Errorf("add: seal: %w", err)
 		}
+		go func(r mid.MID) {
+			_ = b.store.Seal(r, true)
+		}(root)
 		// Announce root and all erasure shards to the DHT
 		if b.dht != nil {
 			go func(r mid.MID) {

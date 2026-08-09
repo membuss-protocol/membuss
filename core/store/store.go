@@ -45,6 +45,7 @@ type StoreHooks interface {
 // concurrent use.
 type Blockstore interface {
 	Put(m mid.MID, data []byte) error
+	PutBatch(blocks []Block) error
 	Get(m mid.MID) ([]byte, error)
 	Has(m mid.MID) (bool, error)
 	Delete(m mid.MID) error
@@ -94,6 +95,15 @@ func (m *Memstore) Put(mid mid.MID, data []byte) error {
 	m.blocks[mid.String()] = cp
 	m.sizeVal += uint64(len(cp))
 	m.mu.Unlock()
+	return nil
+}
+
+func (m *Memstore) PutBatch(blocks []Block) error {
+	for _, b := range blocks {
+		if err := m.Put(b.MID, b.Data); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

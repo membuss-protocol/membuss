@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { formatBytes } from '$lib/api';
 	import { toast } from '$lib/toast';
+	import { uploader } from '$lib/uploader';
 	import Icon from '@iconify/svelte';
 
 	let activeTab = $state<'file' | 'folder' | 'descriptor'>('file');
@@ -159,70 +160,9 @@
 	}
 
 	function startUpload(formData: FormData, filesList: File[]) {
+		uploader.startUpload(filesList, folderName);
 		resetUploadState();
-		uploadActive = true;
-		uploadFilesCount = filesList.length;
-		totalBytes = filesList.reduce((acc, f) => acc + f.size, 0);
-		uploadFileList = filesList.map((f) => ({
-			name: f.name,
-			size: f.size,
-			isFolder: !!f.webkitRelativePath && f.webkitRelativePath.includes('/'),
-			path: f.webkitRelativePath || f.name,
-		}));
-		uploadPhase = 'uploading';
-		uploadStatusText = 'Streaming blocks, Erasure Coding & Indexing...';
-
-		const xhr = new XMLHttpRequest();
-		activeXhr = xhr;
-
-		xhr.upload.addEventListener('progress', (e) => {
-			if (e.lengthComputable) {
-				loadedBytes = e.loaded;
-				totalBytes = e.total;
-				uploadPercent = Math.round((e.loaded / e.total) * 100);
-			}
-		});
-
-		xhr.upload.addEventListener('load', () => {
-			uploadPercent = 100;
-		});
-
-		xhr.addEventListener('load', () => {
-			if (xhr.status >= 200 && xhr.status < 300) {
-				uploadPercent = 100;
-				uploadPhase = 'done';
-				uploadStatusText = 'Ingest Complete!';
-
-				// Redirect to resulting MID
-				const finalUrl = xhr.responseURL || xhr.getResponseHeader('Location');
-				setTimeout(() => {
-					resetUploadState();
-					if (finalUrl) {
-						// Clean redirect to base explorer path
-						const urlObj = new URL(finalUrl);
-						goto(urlObj.pathname);
-					} else {
-						goto(`${base}/`);
-					}
-				}, 1000);
-			} else {
-				showError('Upload failed: ' + xhr.responseText);
-			}
-		});
-
-		xhr.addEventListener('error', () => {
-			showError('Network error occurred during transmission.');
-		});
-
-		function showError(msg: string) {
-			uploadPhase = 'error';
-			uploadStatusText = 'Failed';
-			toast.error(msg);
-			resetUploadState();
-		}
-
-		xhr.open('POST', `${base}/upload`);
-		xhr.send(formData);
+		goto(`${base}/files`);
 	}
 
 	function handleFileSubmit(e: Event) {
