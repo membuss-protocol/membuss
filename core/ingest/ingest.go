@@ -162,9 +162,12 @@ func IngestFile(ctx context.Context, s store.Store, r io.Reader, opts Options) (
 	}
 
 	if opts.Seal {
-		if err := s.Seal(finalMID, true); err != nil {
+		if err := s.Seal(finalMID, false); err != nil {
 			return Result{}, fmt.Errorf("ingest: seal: %w", err)
 		}
+		go func(m mid.MID) {
+			_ = s.Seal(m, true)
+		}(finalMID)
 	}
 
 	return Result{
@@ -208,9 +211,12 @@ func IngestDirectoryStream(ctx context.Context, s store.Store, entries []memfs.S
 	}
 
 	if opts.Seal {
-		if err := s.Seal(res.MID, true); err != nil {
+		if err := s.Seal(res.MID, false); err != nil {
 			return Result{}, fmt.Errorf("ingest: seal: %w", err)
 		}
+		go func(m mid.MID) {
+			_ = s.Seal(m, true)
+		}(res.MID)
 	}
 
 	return Result{

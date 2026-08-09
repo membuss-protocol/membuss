@@ -276,6 +276,89 @@ func (s *MemStore) Put(m mid.MID, data []byte) error {
 	return nil
 }
 
+// PutBatch stores multiple blocks atomically using a single DB write transaction.
+func (s *MemStore) PutBatch(blocks []Block) error {
+	if len(blocks) == 0 {
+		return nil
+	}
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.exit()
+
+	b := s.db.NewBatch()
+	defer b.Close()
+
+	for i := range blocks {
+		m := blocks[i].MID
+		data := blocks[i].Data
+		if m.IsZero() {
+			return errors.New("store: zero MID in batch")
+		}
+		if s.Hooks != nil {
+			blk, err := s.Hooks.TriggerBeforeBlockPut(context.Background(), &Block{MID: m, Data: data})
+			if err != nil {
+				return err
+			}
+			if blk != nil {
+				m = blk.MID
+				data = blk.Data
+			}
+		}
+		if err := verifyContent(m, data); err != nil {
+			return err
+		}
+
+		if s.blocksPath != "" && len(data) >= LargeBlockThreshold {
+			fpath := s.blockPath(m)
+			if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+				return fmt.Errorf("store: create block dir: %w", err)
+			}
+			tmpFile := fpath + ".tmp"
+			if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+				return fmt.Errorf("store: write block file: %w", err)
+			}
+			if err := os.Rename(tmpFile, fpath); err != nil {
+				_ = os.Remove(tmpFile)
+				return fmt.Errorf("store: rename block file: %w", err)
+			}
+
+			valBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(valBytes, uint64(len(data)))
+			if err := b.Set(db.BlockKey(m), valBytes); err != nil {
+				return err
+			}
+		} else {
+			if err := b.Set(db.BlockKey(m), data); err != nil {
+				return err
+			}
+		}
+
+		if err := db.PutTimestamp(b, m); err != nil {
+			return err
+		}
+	}
+
+	if err := b.Commit(); err != nil {
+		return err
+	}
+
+	for i := range blocks {
+		m := blocks[i].MID
+		dataLen := int64(len(blocks[i].Data))
+		if s.bloom != nil {
+			s.bloom.add(m)
+		}
+		if s.gcTracker != nil {
+			s.gcTracker.RecordWrite(m)
+		}
+		if s.Hooks != nil {
+			s.Hooks.TriggerAfterBlockPut(context.Background(), m, dataLen)
+		}
+	}
+	return nil
+}
+
 // PutDAG stores data under the given MID as a DAG node.
 func (s *MemStore) PutDAG(m mid.MID, data []byte) error {
 	if err := s.enter(); err != nil {

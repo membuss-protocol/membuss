@@ -132,6 +132,7 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 	if err != nil {
 		return AddResult{}, fmt.Errorf("memfs: chunker: %w", err)
 	}
+
 	type chunkWork struct {
 		idx  uint64
 		data []byte
@@ -143,31 +144,44 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 		data []byte
 		err  error
 	}
+	type erasureTask struct {
+		lm   mid.MID
+		data []byte
+	}
 
 	numWorkers := runtime.NumCPU()
 	if numWorkers < 2 {
 		numWorkers = 2
 	}
 
-	workCh := make(chan chunkWork, numWorkers*2)
-	resCh := make(chan chunkResult, numWorkers*2)
+	workCh := make(chan chunkWork, numWorkers*16)
+	resCh := make(chan chunkResult, numWorkers*16)
+	erasureCh := make(chan erasureTask, numWorkers*64)
 
-	var workerWg sync.WaitGroup
-	for i := 0; i < numWorkers; i++ {
-		workerWg.Add(1)
-		go func() {
-			defer workerWg.Done()
-			var lastCfg erasure.Config
-			var lastEnc *erasure.Encoder
+	erasureWorkers := numWorkers * 2
+	if erasureWorkers < 4 {
+		erasureWorkers = 4
+	}
 
-			for work := range workCh {
-				lm := mid.FromBytes(work.data)
-				if err := b.bs.Put(lm, work.data); err != nil {
-					resCh <- chunkResult{idx: work.idx, err: fmt.Errorf("memfs: store raw block: %w", err)}
-					continue
+	var erasureWg sync.WaitGroup
+	if b.enableErasure {
+		for i := 0; i < erasureWorkers; i++ {
+			erasureWg.Add(1)
+			go func() {
+				defer erasureWg.Done()
+				var lastCfg erasure.Config
+				var lastEnc *erasure.Encoder
+
+				shardBatch := make([]store.Block, 0, 64)
+				flushShards := func() {
+					if len(shardBatch) > 0 {
+						_ = b.bs.PutBatch(shardBatch)
+						shardBatch = shardBatch[:0]
+					}
 				}
-				if b.enableErasure {
-					cfg := erasure.AdaptiveConfig(int64(len(work.data)))
+
+				for task := range erasureCh {
+					cfg := erasure.AdaptiveConfig(int64(len(task.data)))
 					if lastEnc == nil || cfg != lastCfg {
 						if enc, eerr := erasure.NewEncoder(cfg); eerr == nil {
 							lastEnc = enc
@@ -175,26 +189,82 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 						}
 					}
 					if lastEnc != nil {
-						if encoded, encErr := lastEnc.Encode(work.data); encErr == nil && encoded != nil {
+						if encoded, encErr := lastEnc.Encode(task.data); encErr == nil && encoded != nil {
 							for _, shard := range encoded.Shards {
-								_ = b.bs.Put(shard.ShardMID, shard.Data)
+								shardBatch = append(shardBatch, store.Block{MID: shard.ShardMID, Data: shard.Data})
+								if len(shardBatch) >= 56 {
+									flushShards()
+								}
 							}
-							_ = erasure.SetManifest(b.bs, lm, encoded.Manifest)
+							_ = erasure.SetManifest(b.bs, task.lm, encoded.Manifest)
 						}
 					}
 				}
-				resCh <- chunkResult{
+				flushShards()
+			}()
+		}
+	}
+
+	var workerWg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			rawBatch := make([]store.Block, 0, 32)
+			pendingRes := make([]chunkResult, 0, 32)
+
+			flushRaw := func() {
+				if len(rawBatch) > 0 {
+					if err := b.bs.PutBatch(rawBatch); err != nil {
+						for _, pr := range pendingRes {
+							resCh <- chunkResult{idx: pr.idx, err: fmt.Errorf("memfs: store raw block: %w", err)}
+						}
+					} else {
+						for _, pr := range pendingRes {
+							resCh <- pr
+						}
+					}
+					rawBatch = rawBatch[:0]
+					pendingRes = pendingRes[:0]
+				}
+			}
+
+			for work := range workCh {
+				lm := mid.FromBytes(work.data)
+				rawBatch = append(rawBatch, store.Block{MID: lm, Data: work.data})
+				pendingRes = append(pendingRes, chunkResult{
 					idx:  work.idx,
 					mid:  lm,
 					size: uint64(len(work.data)),
 					data: work.data,
+				})
+
+				if b.enableErasure {
+					erasureData := make([]byte, len(work.data))
+					copy(erasureData, work.data)
+					t := erasureTask{lm: lm, data: erasureData}
+					select {
+					case erasureCh <- t:
+					default:
+						erasureWg.Add(1)
+						go func(task erasureTask) {
+							defer erasureWg.Done()
+							erasureCh <- task
+						}(t)
+					}
+				}
+
+				if len(rawBatch) >= 32 {
+					flushRaw()
 				}
 			}
+			flushRaw()
 		}()
 	}
 
 	go func() {
 		workerWg.Wait()
+		close(erasureCh)
 		close(resCh)
 	}()
 
@@ -223,6 +293,7 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 
 	for res := range resCh {
 		if res.err != nil {
+			erasureWg.Wait()
 			return AddResult{}, res.err
 		}
 		pending[res.idx] = res
@@ -233,13 +304,22 @@ func (b *Builder) AddFile(name string, r io.Reader, mode fs.FileMode, mtime time
 			}
 			delete(pending, nextIdx)
 			if err := bld.pushLeaf(item.mid, item.size, item.data); err != nil {
+				erasureWg.Wait()
 				return AddResult{}, err
 			}
 			nextIdx++
 		}
 	}
 
-	return bld.finalize()
+	res, err := bld.finalize()
+	if err != nil {
+		erasureWg.Wait()
+		return AddResult{}, err
+	}
+	go func() {
+		erasureWg.Wait()
+	}()
+	return res, nil
 }
 
 type memfsBlockRef struct {

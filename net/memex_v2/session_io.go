@@ -25,6 +25,20 @@ func (a *memexBlockstoreAdapter) Put(m mid.MID, data []byte) error {
 	return a.bs.Put(m, data)
 }
 
+func (a *memexBlockstoreAdapter) PutBatch(blocks []store.Block) error {
+	if batcher, ok := a.bs.(interface {
+		PutBatch([]store.Block) error
+	}); ok {
+		return batcher.PutBatch(blocks)
+	}
+	for _, b := range blocks {
+		if err := a.bs.Put(b.MID, b.Data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *memexBlockstoreAdapter) Get(m mid.MID) ([]byte, error) {
 	data, err := a.bs.Get(m)
 	if err == nil {

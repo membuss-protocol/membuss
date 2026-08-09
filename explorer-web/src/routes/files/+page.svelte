@@ -7,6 +7,7 @@
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import ActionMenu from '$lib/components/ActionMenu.svelte';
 	import Icon from '@iconify/svelte';
+	import { uploader, type UploadTask } from '$lib/uploader';
 
 	interface StoredMID {
 		MID: string;
@@ -280,68 +281,12 @@
 
 	// File Ingestion Upload Handlers
 	function handleUpload(files: File[], customFolderName?: string) {
-		uploadActive = true;
-		uploadPercent = 0;
-		loadedBytes = 0;
-		totalBytes = files.reduce((acc, f) => acc + f.size, 0);
-		uploadFileList = files.map(f => ({ name: f.name, size: f.size }));
-		uploadPhase = 'uploading';
-		uploadStatusText = 'Streaming blocks, Erasure Coding & Indexing...';
-
-		const formData = new FormData();
-		if (activeUploadTab === 'file') {
-			formData.append('file', files[0]);
-		} else {
-			for (let i = 0; i < files.length; i++) {
-				formData.append('files', files[i]);
-				formData.append('paths', files[i].webkitRelativePath || files[i].name);
-			}
-			if (customFolderName) {
-				formData.append('folder_name', customFolderName);
-			}
-		}
-
-		const xhr = new XMLHttpRequest();
-		activeXhr = xhr;
-
-		xhr.upload.addEventListener('progress', (e) => {
-			if (e.lengthComputable) {
-				loadedBytes = e.loaded;
-				totalBytes = e.total;
-				uploadPercent = Math.round((e.loaded / e.total) * 100);
-			}
-		});
-
-		xhr.upload.addEventListener('load', () => {
-			uploadPercent = 100;
-		});
-
-		xhr.addEventListener('load', () => {
-			if (xhr.status >= 200 && xhr.status < 300) {
-				uploadPercent = 100;
-				uploadPhase = 'done';
-				uploadStatusText = 'Ingest Complete!';
-				
-				setTimeout(() => {
-					uploadActive = false;
-					selectedFile = null;
-					selectedFiles = null;
-					folderName = '';
-					loadFiles();
-				}, 1000);
-			} else {
-				toast.error('Upload failed: ' + xhr.responseText);
-				uploadActive = false;
-			}
-		});
-
-		xhr.addEventListener('error', () => {
-			toast.error('Network error occurred.');
-			uploadActive = false;
-		});
-
-		xhr.open('POST', `${base}/upload`);
-		xhr.send(formData);
+		uploader.startUpload(files, customFolderName);
+		selectedFile = null;
+		selectedFiles = null;
+		folderName = '';
+		// Auto refresh file table while uploads complete in background
+		setTimeout(() => loadFiles(), 2000);
 	}
 
 	function cancelUpload() {
@@ -469,8 +414,27 @@
 		}
 	}
 
+	let activeUploadTasks = $state<UploadTask[]>([]);
+
 	onMount(() => {
 		loadFiles();
+		const unsub = uploader.subscribe(() => {
+			activeUploadTasks = uploader.allTasks;
+			if (uploader.allTasks.some((t) => t.phase === 'done')) {
+				loadFiles();
+			}
+		});
+
+		const pollTimer = setInterval(() => {
+			if (activeUploadTasks.some((t) => t.phase === 'uploading' || t.phase === 'indexing')) {
+				loadFiles();
+			}
+		}, 2000);
+
+		return () => {
+			unsub();
+			clearInterval(pollTimer);
+		};
 	});
 
 	onDestroy(() => {
@@ -664,6 +628,59 @@
 						</div>
 						<div class="w-full h-1 bg-slate-900 rounded-full overflow-hidden">
 							<div class="h-full bg-cyan-400 transition-all duration-300" style={`width: ${res.percent}%`}></div>
+						</div>
+					</div>
+				{/each}
+			</div>
+		</section>
+	{/if}
+
+	<!-- Active backend ingest & processing queue -->
+	{#if activeUploadTasks.length > 0}
+		<section class="bg-slate-900 border border-cyan-900/50 rounded-xl p-5 flex flex-col gap-4 shadow-lg ring-1 ring-cyan-500/10">
+			<div class="flex items-center justify-between border-b border-slate-700/50 pb-2">
+				<h3 class="font-bold text-xs text-cyan-400 font-mono uppercase tracking-wider flex items-center gap-2">
+					<Icon icon="ph:lightning-bold" class="w-4 h-4 text-cyan-400" />
+					Active Backend Ingest & Processing Pipeline
+				</h3>
+				<button 
+					onclick={() => uploader.clearCompleted()}
+					class="text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+				>
+					Clear Finished Tasks
+				</button>
+			</div>
+			<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+				{#each activeUploadTasks as task}
+					<div class="bg-slate-950/70 border border-slate-800 rounded-lg p-3.5 flex flex-col gap-2.5 font-mono text-[11px] relative">
+						<div class="flex items-center justify-between">
+							<span class="font-bold text-slate-200 truncate pr-4" title={task.title}>{task.title}</span>
+							<span class={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+								task.phase === 'done'
+									? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+									: task.phase === 'indexing'
+										? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
+										: 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+							}`}>
+								{task.phase}
+							</span>
+						</div>
+						<div class="text-[10px] text-slate-400 truncate">{task.statusText}</div>
+						<div class="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+							<div
+								class={`h-full transition-all duration-300 ${
+									task.phase === 'done' ? 'bg-emerald-400' : 'bg-cyan-400'
+								}`}
+								style={`width: ${task.percent}%`}
+							></div>
+						</div>
+						<div class="text-[9px] text-slate-500 flex items-center justify-between">
+							<span>{task.items.length} items ({formatBytes(task.totalBytes)})</span>
+							{#if task.phase === 'done'}
+								<button onclick={() => loadFiles()} class="text-cyan-400 hover:underline">
+									Refresh Files List
+								</button>
+							{/if}
 						</div>
 					</div>
 				{/each}

@@ -8,6 +8,7 @@
 	import { apiFetch } from '$lib/api';
 	import Icon from '@iconify/svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
+	import UploadWidget from '$lib/components/UploadWidget.svelte';
 
 	let { children } = $props();
 
@@ -199,4 +200,5 @@
 	</footer>
 
 	<Toasts />
+	<UploadWidget />
 </div>

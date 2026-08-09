@@ -1256,29 +1256,70 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	b := e.cfg.Backend
 
+	// Parse multipart form up to 128MB in RAM, spilling larger parts to temp files
+	if err := r.ParseMultipartForm(128 << 20); err == nil {
+		if files, ok := r.MultipartForm.File["files"]; ok && len(files) > 0 {
+			paths := r.MultipartForm.Value["paths"]
+			var dirFiles []DirectoryFile
+			for i, fh := range files {
+				f, err := fh.Open()
+				if err != nil {
+					http.Error(w, "open file: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				defer f.Close()
+
+				path := fh.Filename
+				if i < len(paths) && paths[i] != "" {
+					path = paths[i]
+				}
+
+				dirFiles = append(dirFiles, DirectoryFile{
+					Path: path,
+					Size: fh.Size,
+					R:    f,
+				})
+			}
+
+			folderName := r.FormValue("folder_name")
+			res, err := b.AddDirectory(ctx, folderName, dirFiles)
+			if err != nil {
+				http.Error(w, "add directory: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			respondUploadResult(w, r, res)
+			return
+		}
+
+		if fileHeader, ok := r.MultipartForm.File["file"]; ok && len(fileHeader) > 0 {
+			fh := fileHeader[0]
+			f, err := fh.Open()
+			if err != nil {
+				http.Error(w, "open file: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer f.Close()
+
+			res, err := b.Add(ctx, fh.Filename, f)
+			if err != nil {
+				http.Error(w, "add: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			respondUploadResult(w, r, res)
+			return
+		}
+	}
+
 	mr, err := r.MultipartReader()
 	if err == nil {
-		var dirFiles []DirectoryFile
-		var folderName string
 		var singleRes *ContentInfo
-
 		for {
 			part, perr := mr.NextPart()
-			if errors.Is(perr, io.EOF) {
-				break
-			}
-			if perr != nil {
+			if errors.Is(perr, io.EOF) || perr != nil {
 				break
 			}
 
 			formName := part.FormName()
-			if formName == "folder_name" {
-				buf, _ := io.ReadAll(part)
-				folderName = string(buf)
-				part.Close()
-				continue
-			}
-
 			if formName == "file" {
 				fileName := part.FileName()
 				res, aerr := b.Add(ctx, fileName, bufio.NewReaderSize(part, 1<<20))
@@ -1291,29 +1332,10 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, r.Body)
 				break
 			}
-
-			if formName == "files" {
-				fileName := part.FileName()
-				dirFiles = append(dirFiles, DirectoryFile{
-					Path: fileName,
-					Size: 0,
-					R:    part,
-				})
-			}
 		}
 
 		if singleRes != nil {
-			http.Redirect(w, r, "/explorer/mid/"+singleRes.MID, http.StatusSeeOther)
-			return
-		}
-
-		if len(dirFiles) > 0 {
-			res, aerr := b.AddDirectory(ctx, folderName, dirFiles)
-			if aerr != nil {
-				http.Error(w, "add directory: "+aerr.Error(), http.StatusInternalServerError)
-				return
-			}
-			http.Redirect(w, r, "/explorer/mid/"+res.MID, http.StatusSeeOther)
+			respondUploadResult(w, r, *singleRes)
 			return
 		}
 	}
@@ -1353,7 +1375,7 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "add directory: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/explorer/mid/"+res.MID, http.StatusSeeOther)
+		respondUploadResult(w, r, res)
 		return
 	}
 
@@ -1367,6 +1389,27 @@ func (e *Explorer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	res, err := b.Add(ctx, header.Filename, file)
 	if err != nil {
 		http.Error(w, "add: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondUploadResult(w, r, res)
+}
+
+func respondUploadResult(w http.ResponseWriter, r *http.Request, res ContentInfo) {
+	isAJAX := r.Header.Get("X-Requested-With") == "XMLHttpRequest" ||
+		strings.Contains(r.Header.Get("Accept"), "application/json") ||
+		r.Header.Get("Sec-Fetch-Dest") == "empty"
+
+	if isAJAX {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":     true,
+			"mid":    res.MID,
+			"name":   res.Name,
+			"size":   res.Size,
+			"mime":   res.MimeType,
+			"blocks": res.Blocks,
+		})
 		return
 	}
 	http.Redirect(w, r, "/explorer/mid/"+res.MID, http.StatusSeeOther)
