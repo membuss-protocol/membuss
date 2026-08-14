@@ -422,7 +422,18 @@ fn main() -> io::Result<()> {
 	let testRuntime = $state<'js' | 'wasm'>('js');
 	let testBody = $state('');
 	let testQueryParams = $state<{ key: string; value: string }[]>([]);
-	let testHeaders = $state<{ key: string; value: string }[]>([]);
+	const PUBLIC_GATEWAY = 'https://gateway.membuss.dpdns.org';
+
+	function getLocalOrigin(): string {
+		if (typeof window !== 'undefined' && window.location.origin) {
+			return window.location.origin;
+		}
+		return 'http://localhost:8080';
+	}
+
+	let showShareMenu = $state(false);
+	let showDeployedShareMenu = $state(false);
+
 	let testing = $state(false);
 	let testResponse = $state<EdgeResponse | null>(null);
 	let testActiveTab = $state<'body' | 'headers' | 'logs'>('body');
@@ -461,6 +472,7 @@ fn main() -> io::Result<()> {
 
 		let sub = testPath || '';
 		if (sub && !sub.startsWith('/')) sub = '/' + sub;
+		if (sub === '/') sub = '';
 
 		const qParams: string[] = ['exec=true'];
 		for (const q of testQueryParams) {
@@ -1289,16 +1301,30 @@ fn main() -> io::Result<()> {
 								<div>
 									<div class="flex items-center justify-between text-[10px] text-slate-400 mb-1">
 										<span>DIRECT GATEWAY EXECUTION URL:</span>
-										<button
-											onclick={() => {
-												navigator.clipboard.writeText(window.location.origin + lastDeployed!.gateway_url);
-												toast.success('URL copied!');
-											}}
-											class="text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-1"
-										>
-											<Icon icon="ph:copy" class="w-3 h-3" />
-											Copy URL
-										</button>
+										<div class="flex items-center gap-2">
+											<button
+												onclick={() => {
+													navigator.clipboard.writeText(getLocalOrigin() + lastDeployed!.gateway_url);
+													toast.success('Local Gateway URL copied!');
+												}}
+												class="text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-1"
+												title="Copy Local URL"
+											>
+												<Icon icon="ph:house" class="w-3 h-3" />
+												Local
+											</button>
+											<button
+												onclick={() => {
+													navigator.clipboard.writeText(PUBLIC_GATEWAY + lastDeployed!.gateway_url);
+													toast.success('Public Gateway URL copied!');
+												}}
+												class="text-emerald-400 hover:text-emerald-300 text-[10px] flex items-center gap-1"
+												title="Copy Public URL"
+											>
+												<Icon icon="ph:globe-hemisphere-west" class="w-3 h-3" />
+												Public
+											</button>
+										</div>
 									</div>
 									<code class="text-slate-200 select-all break-all bg-slate-950 p-2 rounded block border border-slate-800 text-[11px]">
 										{lastDeployed.gateway_url}
@@ -1310,7 +1336,7 @@ fn main() -> io::Result<()> {
 										<span>CURL COMMAND:</span>
 										<button
 											onclick={() => {
-												navigator.clipboard.writeText(`curl "http://localhost:8080${lastDeployed!.gateway_url}"`);
+												navigator.clipboard.writeText(`curl "${getLocalOrigin()}${lastDeployed!.gateway_url}"`);
 												toast.success('cURL command copied!');
 											}}
 											class="text-cyan-400 hover:text-cyan-300 text-[10px] flex items-center gap-1"
@@ -1320,7 +1346,7 @@ fn main() -> io::Result<()> {
 										</button>
 									</div>
 									<code class="text-cyan-300 select-all break-all bg-slate-950 p-2 rounded block border border-slate-800 text-[11px]">
-										curl "http://localhost:8080{lastDeployed.gateway_url}"
+										curl "{getLocalOrigin()}{lastDeployed.gateway_url}"
 									</code>
 								</div>
 
@@ -1732,10 +1758,10 @@ fn main() -> io::Result<()> {
 						</code>
 					</div>
 
-					<div class="flex items-center gap-2 shrink-0">
+					<div class="flex items-center gap-2 shrink-0 relative">
 						<button
 							onclick={() => {
-								navigator.clipboard.writeText(`curl "http://localhost:8080${liveGatewayURL}"`);
+								navigator.clipboard.writeText(`curl -X ${testMethod} "${getLocalOrigin()}${liveGatewayURL}"`);
 								toast.success('cURL command copied!');
 							}}
 							class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 text-[11px] flex items-center gap-1.5 transition-colors"
@@ -1747,15 +1773,93 @@ fn main() -> io::Result<()> {
 
 						<button
 							onclick={() => {
-								navigator.clipboard.writeText(`http://localhost:8080${liveGatewayURL}`);
-								toast.success('Full Gateway URL copied!');
+								navigator.clipboard.writeText(getLocalOrigin() + liveGatewayURL);
+								toast.success('Local Gateway URL copied!');
 							}}
 							class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 text-[11px] flex items-center gap-1.5 transition-colors"
-							title="Copy Full Gateway URL"
+							title="Copy Local Gateway URL"
 						>
 							<Icon icon="ph:copy" class="w-3.5 h-3.5" />
 							<span>Copy URL</span>
 						</button>
+
+						<!-- Share Menu Target Selector Dropdown -->
+						<div class="relative">
+							<button
+								onclick={() => showShareMenu = !showShareMenu}
+								class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 text-[11px] flex items-center gap-1.5 transition-colors"
+								title="Share and Copy options (Local, Public, cURL)"
+							>
+								<Icon icon="ph:share-network" class="w-3.5 h-3.5 text-cyan-400" />
+								<span>Share</span>
+								<Icon icon="ph:caret-down" class="w-3 h-3 text-slate-400" />
+							</button>
+
+							{#if showShareMenu}
+								<div class="absolute right-0 bottom-full mb-2 w-72 p-2 rounded-xl bg-slate-900 border border-slate-750 shadow-2xl z-50 space-y-1 text-left font-mono animate-fade-in">
+									<div class="px-2 py-1 text-[10px] text-slate-400 font-bold uppercase tracking-wider border-b border-slate-800 flex justify-between items-center">
+										<span>Copy Execution Target</span>
+										<button onclick={() => showShareMenu = false} class="text-slate-500 hover:text-slate-300">✕</button>
+									</div>
+									<button
+										onclick={() => {
+											navigator.clipboard.writeText(getLocalOrigin() + liveGatewayURL);
+											toast.success('Local Gateway URL copied!');
+											showShareMenu = false;
+										}}
+										class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 text-xs flex items-center gap-2 transition-colors text-left"
+									>
+										<Icon icon="ph:house" class="w-4 h-4 text-cyan-400 shrink-0" />
+										<div class="truncate">
+											<div class="font-bold text-[11px]">Local Node URL</div>
+											<div class="text-[10px] text-slate-400 truncate">{getLocalOrigin()}{liveGatewayURL}</div>
+										</div>
+									</button>
+									<button
+										onclick={() => {
+											navigator.clipboard.writeText(PUBLIC_GATEWAY + liveGatewayURL);
+											toast.success('Public Gateway URL copied!');
+											showShareMenu = false;
+										}}
+										class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 text-xs flex items-center gap-2 transition-colors text-left"
+									>
+										<Icon icon="ph:globe-hemisphere-west" class="w-4 h-4 text-emerald-400 shrink-0" />
+										<div class="truncate">
+											<div class="font-bold text-[11px]">Public Gateway URL</div>
+											<div class="text-[10px] text-slate-400 truncate">{PUBLIC_GATEWAY}{liveGatewayURL}</div>
+										</div>
+									</button>
+									<button
+										onclick={() => {
+											navigator.clipboard.writeText(`curl -X ${testMethod} "${getLocalOrigin()}${liveGatewayURL}"`);
+											toast.success('cURL command copied!');
+											showShareMenu = false;
+										}}
+										class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 text-xs flex items-center gap-2 transition-colors text-left"
+									>
+										<Icon icon="ph:terminal" class="w-4 h-4 text-amber-400 shrink-0" />
+										<div class="truncate">
+											<div class="font-bold text-[11px]">cURL Command</div>
+											<div class="text-[10px] text-slate-400 truncate">curl -X {testMethod} "{getLocalOrigin()}{liveGatewayURL}"</div>
+										</div>
+									</button>
+									<button
+										onclick={() => {
+											navigator.clipboard.writeText(liveGatewayURL);
+											toast.success('Relative path copied!');
+											showShareMenu = false;
+										}}
+										class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 text-xs flex items-center gap-2 transition-colors text-left"
+									>
+										<Icon icon="ph:fingerprint" class="w-4 h-4 text-purple-400 shrink-0" />
+										<div class="truncate">
+											<div class="font-bold text-[11px]">Relative Path</div>
+											<div class="text-[10px] text-slate-400 truncate">{liveGatewayURL}</div>
+										</div>
+									</button>
+								</div>
+							{/if}
+						</div>
 
 						{#if testTargetType !== 'scratch'}
 							<a
