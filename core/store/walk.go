@@ -125,18 +125,23 @@ func WalkOptions(bs BlockGetter, root mid.MID, ignoreMissing bool, visit func(m 
 			if uerr := proto.Unmarshal(data, &node); uerr == nil {
 				switch node.Type {
 				case membusspb.MemFSType_FILE:
-					isInternal = len(node.Blocks) > 0
-					for _, b := range node.Blocks {
-						if b == nil || len(b.Mid) == 0 {
-							continue
-						}
-						var codec uint64 = mid.CodecMemFS
-						if b.Size > 0 {
-							codec = mid.CodecRaw
-						}
-						child, err := mid.FromMultihash(codec, b.Mid)
-						if err == nil {
-							childMIDs = append(childMIDs, child)
+					if len(node.Data) > 0 && len(node.Blocks) <= 1 {
+						// Single inline block file is self-contained leaf
+						isInternal = false
+					} else {
+						isInternal = len(node.Blocks) > 0
+						for _, b := range node.Blocks {
+							if b == nil || len(b.Mid) == 0 {
+								continue
+							}
+							var codec uint64 = mid.CodecMemFS
+							if b.Size > 0 {
+								codec = mid.CodecRaw
+							}
+							child, err := mid.FromMultihash(codec, b.Mid)
+							if err == nil {
+								childMIDs = append(childMIDs, child)
+							}
 						}
 					}
 				case membusspb.MemFSType_DIR:
