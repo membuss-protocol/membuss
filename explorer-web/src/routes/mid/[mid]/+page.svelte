@@ -218,21 +218,19 @@
 				statBlocksTotal = d.total;
 				statBlocksResolved = d.blocks;
 
-				if (!hasStartedScan) {
+				const targetGridSize = d.total > 0 ? Math.min(MAX_BOXES, d.total) : 100;
+				if (!hasStartedScan || pieceGrid.length !== targetGridSize) {
 					hasStartedScan = true;
 					initPieceGrid(d.total);
 				}
 				updateGridState(d.total, d.blocks, true);
 
-				if (d.blocks > 0) {
-					const pct = Math.round((d.blocks / d.total) * 100);
-					statAvailability = `${pct}% fetched`;
-					statStatusText = `Downloading blocks (${d.blocks}/${d.total})...`;
-					statusBadgeText = 'Downloading';
-				} else if (activeProviders.length === 0) {
-					statAvailability = '0% (0 Providers Found)';
-					statStatusText = 'Searching DHT for providers...';
-				}
+				const pct = Math.round((d.blocks / d.total) * 100);
+				statAvailability = `${pct}% (${d.blocks}/${d.total} blocks)`;
+				statStatusText = d.blocks > 0
+					? `Downloading blocks (${d.blocks}/${d.total})...`
+					: `Requesting blocks (0/${d.total})...`;
+				statusBadgeText = 'Downloading';
 			}
 		};
 

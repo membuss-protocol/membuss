@@ -160,15 +160,35 @@ func (a *memgateAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pro
 	}
 	if !has && b.memex != nil {
 		var provs []peer.AddrInfo
-		if b.dht != nil {
-			provCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			provs, _ = b.dht.FindProviders(provCtx, m)
-			cancel()
-		}
-		if len(provs) == 0 && b.host != nil {
-			// Fallback: use currently connected swarm peers
+		seenPids := make(map[peer.ID]struct{})
+
+		// 1. Immediately include connected swarm peers
+		if b.host != nil {
 			for _, pid := range b.host.Network().Peers() {
-				provs = append(provs, b.host.Peerstore().PeerInfo(pid))
+				if pid != b.host.ID() {
+					info := b.host.Peerstore().PeerInfo(pid)
+					if info.ID != "" && len(info.Addrs) > 0 {
+						provs = append(provs, info)
+						seenPids[pid] = struct{}{}
+					}
+				}
+			}
+		}
+
+		// 2. Fast initial DHT probe (1.5s max if peers connected, 3s if none)
+		if b.dht != nil {
+			dhtTimeout := 1500 * time.Millisecond
+			if len(provs) == 0 {
+				dhtTimeout = 3 * time.Second
+			}
+			provCtx, cancel := context.WithTimeout(ctx, dhtTimeout)
+			dhtProvs, _ := b.dht.FindProviders(provCtx, m)
+			cancel()
+			for _, p := range dhtProvs {
+				if _, ok := seenPids[p.ID]; !ok && p.ID != "" {
+					provs = append(provs, p)
+					seenPids[p.ID] = struct{}{}
+				}
 			}
 		}
 		if len(provs) > 0 {

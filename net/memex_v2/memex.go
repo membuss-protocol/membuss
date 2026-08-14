@@ -388,7 +388,7 @@ func (e *Engine) serveWants(wants []*membusspb.WantEntry) *membusspb.MemexMessag
 			continue
 		}
 		if w.SendDontHave {
-			resp.HaveMids = append(resp.HaveMids, w.Mid)
+			resp.DontHaves = append(resp.DontHaves, w.Mid)
 		}
 	}
 	return resp
