@@ -130,7 +130,7 @@ func (dm *DownloadManager) GetOrCreateJob(m mid.MID, backend Backend) (*Download
 
 		progressFn := func(u ProgressUpdate) {
 			job.mu.Lock()
-			if u.BlocksResolved > 0 {
+			if u.BlocksResolved > 0 || u.BlocksTotal > 0 {
 				job.State = "fetching"
 			} else {
 				job.State = "discovering"

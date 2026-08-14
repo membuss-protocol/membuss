@@ -600,9 +600,31 @@ func (m *MemGate) handleDirList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *MemGate) handleDirListForMID(w http.ResponseWriter, r *http.Request, root mid.MID, midStr string) {
+	// Check if content is local. If not, and it's a browser request, trigger background fetch and show status page
+	_, statErr := m.cfg.Backend.Stat(r.Context(), root)
+	if statErr != nil {
+		if strings.Contains(r.Header.Get("Accept"), "text/html") &&
+			r.URL.Query().Get("format") == "" &&
+			r.URL.Query().Get("download") != "1" {
+
+			_, _ = m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
+
+			_, _, isSubdomain := m.resolveSubdomain(r)
+			var ssePath string
+			if isSubdomain {
+				ssePath = "/~status"
+			} else {
+				ssePath = fmt.Sprintf("/mem/%s/~status", midStr)
+			}
+			m.renderResolvePage(w, r, midStr, ssePath)
+			return
+		}
+	}
+
 	info, err := m.cfg.Backend.MemFSInfo(r.Context(), root)
 	if err != nil {
-		http.Error(w, "memfs: "+err.Error(), http.StatusNotFound)
+		// Non-directory or raw block fallback
+		m.handleResolved(w, r, root, midStr)
 		return
 	}
 	if info.Type != "dir" {
@@ -2088,6 +2110,7 @@ func (m *MemGate) handleFetchStatusSSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
 	job, _ := m.downloadManager.GetOrCreateJob(root, m.cfg.Backend)
