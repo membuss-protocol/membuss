@@ -66,3 +66,12 @@ servers:
   grpc:
     enabled: true
 
+# MemEdge: Decentralized P2P serverless compute (Wasm/Go + JavaScript)
+edge_compute:
+  enabled: true
+  mode: "community"             # "community", "publisher_only", or "off"
+  max_execution_time: 500ms     # Timeout per invocation
+  max_memory_mb: 32             # Max RAM per VM
+  max_concurrent_tasks: 16      # Concurrency limit
+
+

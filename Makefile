@@ -55,11 +55,11 @@ FRONTEND_DIR  := explorer-web
 NPM           ?= npm
 
 # Docker knobs. Override on the command line, e.g.
-#   make docker-push IMAGE=ghcr.io/me/membuss:0.1.0
+#   make docker-push IMAGE=ghcr.io/nnlgsakib/membuss:latest
 DOCKER        ?= docker
-IMAGE         ?= membuss:local
+REGISTRY      ?= ghcr.io/nnlgsakib
+IMAGE         ?= ghcr.io/nnlgsakib/membuss:latest
 CONTAINER     ?= membuss
-REGISTRY      ?=
 COMPOSE       ?= docker compose
 
 .PHONY: build frontend frontend-dev proto test lint run-daemon tidy clean \
@@ -144,13 +144,9 @@ docker-stop:
 docker-logs:
 	$(DOCKER) logs -f $(CONTAINER)
 
-# docker-push tags the local image for the configured registry
-# and pushes it. Override REGISTRY (or set IMAGE explicitly) to
-# target a non-default registry.
+# docker-push tags and pushes the local image to the configured container registry.
 docker-push: docker-build
-	@test -n "$(REGISTRY)" || (echo "REGISTRY is empty; set REGISTRY=ghcr.io/me or pass IMAGE=..."; exit 1)
-	$(DOCKER) tag $(IMAGE) $(REGISTRY)/$(IMAGE)
-	$(DOCKER) push $(REGISTRY)/$(IMAGE)
+	$(DOCKER) push $(IMAGE)
 
 docker-compose-up:
 	$(COMPOSE) up -d --build

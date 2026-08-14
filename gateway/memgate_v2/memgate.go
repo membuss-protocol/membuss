@@ -25,9 +25,12 @@ import (
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/net/edge_rpc"
 )
 
 // // Backend is the contract Mem-Gate depends on. The daemon
@@ -160,6 +163,11 @@ type Config struct {
 	// MetricsToken, if set, requires Authorization: Bearer <MetricsToken> or ?token=<MetricsToken>.
 	// When empty, metrics endpoints are restricted to localhost/internal connections only.
 	MetricsToken string
+
+	// MemEdge: Serverless Edge Functions (Go/Wasm & JavaScript)
+	EdgeEngine  memedge.Engine
+	EdgeService *edge_rpc.Service
+	EdgeLimits  *memedge.Limits
 }
 
 // MemGate is the public HTTP gateway.
@@ -457,19 +465,19 @@ func (m *MemGate) buildRouter() chi.Router {
 		r.Handle("/metrics", metricsHandler)
 		r.Handle("/explorer/metrics", metricsHandler)
 	}
-	r.Get("/mem/{mid}", m.handleGet)
+	r.HandleFunc("/mem/{mid}", m.handleGet)
 	r.Get("/mem/{mid}/~status", m.handleFetchStatusSSE)
 	r.Head("/mem/{mid}", m.handleHead)
 	// Directory listing (HTML or JSON) when the path
 	// component is empty.
 	r.Get("/mem/{mid}/", m.handleDirList)
-	r.Get("/mem/{mid}/*", m.handlePathGet)
+	r.HandleFunc("/mem/{mid}/*", m.handlePathGet)
 
 	// Phase 18: MemNS and MemLink routes
-	r.Get("/memns/{name}", m.handleMemNSResolve)
-	r.Get("/memns/{name}/*", m.handleMemNSResolve)
-	r.Get("/memlink/{domain}", m.handleMemLinkGet)
-	r.Get("/memlink/{domain}/*", m.handleMemLinkGet)
+	r.HandleFunc("/memns/{name}", m.handleMemNSResolve)
+	r.HandleFunc("/memns/{name}/*", m.handleMemNSResolve)
+	r.HandleFunc("/memlink/{domain}", m.handleMemLinkGet)
+	r.HandleFunc("/memlink/{domain}/*", m.handleMemLinkGet)
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if m.cfg.ExplorerHandler != nil {
@@ -1084,6 +1092,10 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 
 	cacheKey := "resolved:" + midStr
 	if data, ok := m.lru.get(cacheKey); ok {
+		if m.isEdgeExecution(r, name, name) {
+			m.executeEdgeFunction(w, r, data, name, "", nil)
+			return
+		}
 		if m.metrics != nil {
 			m.metrics.cacheHitsTotal.Inc()
 		}
@@ -1093,6 +1105,16 @@ func (m *MemGate) handleResolved(w http.ResponseWriter, r *http.Request, root mi
 	}
 	if m.metrics != nil {
 		m.metrics.cacheMissesTotal.Inc()
+	}
+
+	if m.isEdgeExecution(r, name, name) {
+		buf, err := io.ReadAll(io.LimitReader(rc, 10<<20))
+		if err != nil {
+			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		m.executeEdgeFunction(w, r, buf, name, "", nil)
+		return
 	}
 
 	// Cache eligibility: for non-range requests under MaxCacheItemBytes, stream
@@ -1609,6 +1631,20 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 	}
 
 	if err != nil {
+		// Single-file edge function fallback: if caller requests /mem/{MID}/sub/path?exec=true, execute the root function with the inner subpath
+		if (r.URL.Query().Get("exec") == "true" || r.Header.Get("X-MemEdge") == "run") && (m.cfg.EdgeEngine != nil || m.cfg.EdgeService != nil) {
+			if statInfo, statErr := m.cfg.Backend.Stat(r.Context(), root); statErr == nil {
+				if m.isEdgeExecution(r, statInfo.Name, statInfo.Name) {
+					if rc, _, resErr := m.cfg.Backend.Resolve(r.Context(), root); resErr == nil {
+						defer rc.Close()
+						buf, _ := io.ReadAll(io.LimitReader(rc, 10<<20))
+						m.executeEdgeFunction(w, r, buf, statInfo.Name, "", nil)
+						return
+					}
+				}
+			}
+		}
+
 		if strings.Contains(err.Error(), "not found") {
 			// SPA fallback: Serve index.html if the requested path is not found,
 			// the browser accepts HTML (navigation), and index.html exists at the root or common build dirs.
@@ -1682,6 +1718,10 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		}
 		if json.Unmarshal(cachedBytes, &cp) == nil {
 			filename := filepath.Base(resolvedPath)
+			if m.isEdgeExecution(r, filename, resolvedPath) {
+				m.executeEdgeFunction(w, r, cp.Data, filename, "", nil)
+				return
+			}
 			w.Header().Set("Content-Type", cp.Mime)
 			w.Header().Set("X-Membuss-MID", pathInfo.MID)
 			w.Header().Set("X-Membuss-Path", "/"+resolvedPath)
@@ -1724,6 +1764,10 @@ func (m *MemGate) serveMemFSPath(w http.ResponseWriter, r *http.Request, midStr,
 		buf := make([]byte, size)
 		if _, err := io.ReadFull(rc, buf); err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			http.Error(w, "read: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if m.isEdgeExecution(r, filename, resolvedPath) {
+			m.executeEdgeFunction(w, r, buf, filename, "", nil)
 			return
 		}
 		ct = DetectContentType(resolvedPath, buf, mimeType)
@@ -2520,5 +2564,101 @@ func (m *MemGate) renderResolvePage(w http.ResponseWriter, r *http.Request, midS
     </script>
 </body>
 </html>`, midStr, midStr, ssePath)
+}
+
+// isEdgeExecution checks whether the request targets an executable edge function.
+func (m *MemGate) isEdgeExecution(r *http.Request, filename, pathStr string) bool {
+	if m.cfg.EdgeEngine == nil && m.cfg.EdgeService == nil {
+		return false
+	}
+	if r.Header.Get("X-MemEdge") == "run" || r.URL.Query().Get("exec") == "true" {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext != ".js" && ext != ".mjs" && ext != ".wasm" {
+		return false
+	}
+	cleanPath := strings.ToLower(pathStr)
+	if strings.Contains(cleanPath, "api/") || strings.Contains(cleanPath, "_edge/") || strings.Contains(cleanPath, ".edge/") {
+		return true
+	}
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch {
+		return true
+	}
+	return false
+}
+
+// executeEdgeFunction executes code bytes via 3-Tier fallback and writes the dynamic HTTP response.
+func (m *MemGate) executeEdgeFunction(w http.ResponseWriter, r *http.Request, code []byte, filename string, publisherPeer peer.ID, candidatePeers []peer.ID) {
+	reqBody, _ := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	edgeReq := memedge.NewRequestFromHTTP(r, reqBody)
+
+	// Clean path for multi-route sub-routing when invoked through /mem/{mid}/* or /memns/{name}/*
+	if strings.HasPrefix(edgeReq.Path, "/mem/") {
+		parts := strings.SplitN(strings.TrimPrefix(edgeReq.Path, "/mem/"), "/", 2)
+		if len(parts) == 2 {
+			edgeReq.Path = "/" + parts[1]
+		} else {
+			edgeReq.Path = "/"
+		}
+	} else if strings.HasPrefix(edgeReq.Path, "/memns/") {
+		parts := strings.SplitN(strings.TrimPrefix(edgeReq.Path, "/memns/"), "/", 2)
+		if len(parts) == 2 {
+			edgeReq.Path = "/" + parts[1]
+		} else {
+			edgeReq.Path = "/"
+		}
+	}
+
+	runtimeType := memedge.DetectRuntime(filename, code)
+
+	var resp *memedge.Response
+	var err error
+
+	if m.cfg.EdgeService != nil {
+		rpcReq := &edge_rpc.RPCRequest{
+			Path:    r.URL.Path,
+			Code:    code,
+			Runtime: runtimeType,
+			Req:     edgeReq,
+			Limits:  m.cfg.EdgeLimits,
+		}
+		resp, err = m.cfg.EdgeService.Delegate(r.Context(), publisherPeer, candidatePeers, rpcReq)
+	} else if m.cfg.EdgeEngine != nil {
+		resp, err = m.cfg.EdgeEngine.Execute(r.Context(), code, runtimeType, edgeReq, m.cfg.EdgeLimits)
+		if resp != nil {
+			resp.Tier = memedge.TierGateway
+		}
+	}
+
+	if err != nil && (resp == nil || resp.Status == 0) {
+		http.Error(w, "edge execution failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if resp == nil {
+		http.Error(w, "edge execution returned empty response", http.StatusInternalServerError)
+		return
+	}
+
+	for k, v := range resp.Headers {
+		w.Header().Set(k, v)
+	}
+
+	w.Header().Set("X-Membuss-Edge", "true")
+	w.Header().Set("X-Membuss-Edge-Tier", resp.Tier.String())
+	w.Header().Set("X-Membuss-Edge-Runtime", string(resp.Runtime))
+	w.Header().Set("X-Membuss-Edge-Duration", fmt.Sprintf("%.2fms", resp.DurationMs))
+
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+
+	status := resp.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(resp.Body))
 }
 

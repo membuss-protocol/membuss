@@ -20,6 +20,16 @@
 		created_at: string;
 	}
 
+	interface EdgeStats {
+		enabled: boolean;
+		mode: string;
+		total_executions: number;
+		total_errors: number;
+		avg_duration_ms: number;
+		active_tasks: number;
+		max_concurrency: number;
+	}
+
 	interface NodeData {
 		Title: string;
 		NodeInfo: NodeInfo;
@@ -29,6 +39,7 @@
 	}
 
 	let data = $state<NodeData | null>(null);
+	let edgeStats = $state<EdgeStats | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let copiedId = $state<string | null>(null);
@@ -66,8 +77,14 @@
 
 	async function loadNode() {
 		try {
-			const res = await apiFetch('/node');
+			const [res, edgeRes] = await Promise.all([
+				apiFetch('/node'),
+				apiFetch('/edge/status').catch(() => null)
+			]);
 			data = res;
+			if (edgeRes && edgeRes.enabled !== undefined) {
+				edgeStats = edgeRes;
+			}
 			loading = false;
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load node details';
@@ -194,7 +211,7 @@
 			{error}
 		</div>
 	{:else if data}
-		<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+		<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 			<!-- Identity Card -->
 			<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4 shadow-lg">
 				<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2 flex items-center justify-between">
@@ -263,8 +280,48 @@
 				</div>
 			</div>
 
+			<!-- MemEdge Compute Engine Card -->
+			<div class="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 flex flex-col gap-4 justify-between shadow-lg">
+				<div>
+					<h3 class="font-bold text-sm text-slate-400 font-mono border-b border-slate-800 pb-2 flex items-center justify-between">
+						<span>Serverless (MemEdge)</span>
+						<Icon icon="ph:lightning-bold" class="text-cyan-400 text-base" />
+					</h3>
+					<dl class="grid grid-cols-3 gap-y-3 text-xs leading-relaxed mt-4">
+						<dt class="text-slate-500 font-mono">Engine Status</dt>
+						<dd class="col-span-2">
+							<span class={`font-bold px-2 py-0.5 rounded text-[10px] ${edgeStats && edgeStats.enabled ? 'bg-emerald-950/60 border border-emerald-800/40 text-emerald-400' : 'bg-slate-950 border border-slate-850 text-slate-500'}`}>
+								{edgeStats && edgeStats.enabled ? 'ONLINE (' + (edgeStats.mode || 'local').toUpperCase() + ')' : 'DISABLED'}
+							</span>
+						</dd>
+
+						<dt class="text-slate-500 font-mono">Runtimes</dt>
+						<dd class="col-span-2 text-slate-300 font-mono">Goja JS + WASI</dd>
+
+						<dt class="text-slate-500 font-mono">Invocations</dt>
+						<dd class="col-span-2 text-slate-200 font-bold font-mono">{edgeStats ? edgeStats.total_executions : 0} calls</dd>
+
+						<dt class="text-slate-500 font-mono">Avg Latency</dt>
+						<dd class="col-span-2 text-cyan-300 font-mono">{edgeStats && edgeStats.avg_duration_ms ? edgeStats.avg_duration_ms.toFixed(2) + 'ms' : '< 1ms'}</dd>
+
+						<dt class="text-slate-500 font-mono">Workers</dt>
+						<dd class="col-span-2 text-slate-300 font-mono">{edgeStats ? edgeStats.active_tasks : 0} / {edgeStats ? edgeStats.max_concurrency : 16} concurrency</dd>
+					</dl>
+				</div>
+
+				<div class="mt-4 pt-4 border-t border-slate-800">
+					<a
+						href="{base}/edge"
+						class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-xl border border-cyan-500/30 bg-cyan-950/20 hover:bg-cyan-900/40 text-cyan-400 hover:text-cyan-300 transition-all duration-300"
+					>
+						<Icon icon="ph:code-bold" class="text-sm" />
+						Open Edge Studio
+					</a>
+				</div>
+			</div>
+
 			<!-- Listen Interfaces & Multiaddresses -->
-			<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 md:col-span-2 flex flex-col gap-5 shadow-xl">
+			<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 lg:col-span-3 flex flex-col gap-5 shadow-xl">
 				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
 					<div class="flex items-center gap-2">
 						<Icon icon="ph:broadcast-bold" class="text-cyan-400 text-base" />

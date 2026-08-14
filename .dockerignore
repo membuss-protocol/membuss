@@ -46,7 +46,7 @@ go.work.sum
 # Desktop app is not needed in the daemon image
 desktop/
 
-# Node modules and Svelte source - only the built dist/ is needed
+# Node modules and temporary build caches are ignored (source files are included for multi-stage build)
 explorer-web/node_modules/
 explorer-web/.svelte-kit/
-explorer-web/src/
+

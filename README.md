@@ -99,6 +99,7 @@ make build
 
 ## 🏛️ Ecosystem & Future Capabilities
 
+- **MemEdge Serverless Compute**: Decentralized edge execution engine for **Go (WebAssembly / Wazero)** and **JavaScript (Goja)** with 3-Tier Fair Compute Scheduling (Publisher $\rightarrow$ Peer $\rightarrow$ Local Gateway).
 - **Mem-Gate HTTP CDN Gateway**: Built-in HTTP gateway (`:8080`) supporting RFC 7233 byte-range streaming for seamless 4K video playbacks.
 - **MemNS Cryptographic Mutable Pointers**: Ed25519 signed pointers allowing dynamic updates without altering root content MIDs.
 - **Mem-Git Version Control**: Content-addressed Merkle DAGs enabling native Git-style snapshotting and diff tracking.

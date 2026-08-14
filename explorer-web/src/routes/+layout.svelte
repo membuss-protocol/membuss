@@ -21,6 +21,7 @@
 		{ name: 'Files', path: '/files', icon: 'ph:folder-open-light', group: 'content' },
 		{ name: 'Explore', path: '/explore', icon: 'ph:git-branch-light', group: 'content' },
 		{ name: 'MemNS', path: '/memns', icon: 'ph:identification-card-light', group: 'content' },
+		{ name: 'Edge', path: '/edge', icon: 'ph:lightning-light', group: 'compute' },
 		{ name: 'Peers', path: '/peers', icon: 'ph:circle-notch-light', group: 'network' },
 		{ name: 'Tunnel', path: '/tunnel', icon: 'ph:link-light', group: 'network' },
 		{ name: 'Node Info', path: '/node', icon: 'ph:gear-six-light', group: 'system' }

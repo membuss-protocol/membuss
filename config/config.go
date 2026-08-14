@@ -203,6 +203,18 @@ type Config struct {
 
 	// Servers configures individual server toggles (Gateway, Node API, gRPC).
 	Servers ServersConfig `yaml:"servers"`
+
+	// EdgeCompute configures the decentralized MemEdge serverless engine.
+	EdgeCompute EdgeComputeConfig `yaml:"edge_compute"`
+}
+
+// EdgeComputeConfig configures the decentralized MemEdge serverless engine.
+type EdgeComputeConfig struct {
+	Enabled            bool          `yaml:"enabled"`
+	Mode               string        `yaml:"mode"` // "community", "publisher_only", "off"
+	MaxExecutionTime   time.Duration `yaml:"max_execution_time"`
+	MaxMemoryMB        int           `yaml:"max_memory_mb"`
+	MaxConcurrentTasks int           `yaml:"max_concurrent_tasks"`
 }
 
 // PluginsConfig holds options for the modular plugin system.
@@ -383,6 +395,13 @@ func Default() *Config {
 			NodeAPI: ServerToggle{Enabled: true},
 			GRPC:    ServerToggle{Enabled: true},
 			IPC:     ServerToggle{Enabled: true},
+		},
+		EdgeCompute: EdgeComputeConfig{
+			Enabled:            true,
+			Mode:               "community",
+			MaxExecutionTime:   500 * time.Millisecond,
+			MaxMemoryMB:        32,
+			MaxConcurrentTasks: 16,
 		},
 	}
 }

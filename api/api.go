@@ -30,8 +30,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/nnlgsakib/membuss/core/keyring"
+	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memns"
 	"github.com/nnlgsakib/membuss/core/mid"
+	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/obs/metrics"
 	"github.com/nnlgsakib/membuss/pkg/plugin"
 	membusspb "github.com/nnlgsakib/membuss/proto"
@@ -210,6 +212,10 @@ type Config struct {
 
 	// PluginRoutes contains routes mounted by plugins
 	PluginRoutes *plugin.MapHTTPRegistry
+
+	// MemEdge fields
+	EdgeEngine  memedge.Engine
+	EdgeService *edge_rpc.Service
 }
 
 // NodeAPI is the local HTTP control API.
@@ -314,6 +320,11 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		r.Get("/descriptor/{mid}", a.handleDescriptorExport)
 		r.Get("/descriptor/{mid}/meta", a.handleDescriptorMeta)
 		r.Post("/descriptor/import", a.handleDescriptorImport)
+
+		// MemEdge endpoints
+		r.Post("/edge/run", a.handleEdgeRun)
+		r.Get("/edge/status", a.handleEdgeStatus)
+		r.Post("/edge/validate", a.handleEdgeValidate)
 
 		// Plugin HTTP API routes
 		if a.cfg.PluginRoutes != nil {
@@ -1259,4 +1270,143 @@ func (a *NodeAPI) handleDescriptorImport(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ok(w, map[string]any{"mid": midStr})
+}
+
+// --- MemEdge handlers ---
+
+type EdgeRunPayload struct {
+	Code    string            `json:"code"`
+	MID     string            `json:"mid"`
+	Path    string            `json:"path"`
+	Runtime string            `json:"runtime"`
+	Method  string            `json:"method"`
+	Query   map[string]string `json:"query"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
+func (a *NodeAPI) handleEdgeRun(w http.ResponseWriter, r *http.Request) {
+	var payload EdgeRunPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		fail(w, http.StatusBadRequest, fmt.Errorf("invalid json request: %w", err))
+		return
+	}
+
+	var codeBytes []byte
+	if payload.Code != "" {
+		codeBytes = []byte(payload.Code)
+	} else if payload.MID != "" {
+		m, err := mid.Parse(payload.MID)
+		if err != nil {
+			fail(w, http.StatusBadRequest, fmt.Errorf("bad mid: %w", err))
+			return
+		}
+		rc, _, err := a.cfg.Backend.Resolve(r.Context(), m)
+		if err != nil {
+			fail(w, http.StatusNotFound, fmt.Errorf("resolve mid: %w", err))
+			return
+		}
+		defer rc.Close()
+		codeBytes, err = io.ReadAll(io.LimitReader(rc, 10<<20))
+		if err != nil {
+			fail(w, http.StatusBadRequest, fmt.Errorf("read mid: %w", err))
+			return
+		}
+	}
+
+	if len(codeBytes) == 0 {
+		fail(w, http.StatusBadRequest, errors.New("no code or mid provided"))
+		return
+	}
+
+	method := payload.Method
+	if method == "" {
+		method = "GET"
+	}
+
+	edgeReq := &memedge.Request{
+		Method:   method,
+		URL:      "/api/v1/edge/run",
+		Path:     payload.Path,
+		Headers:  payload.Headers,
+		Query:    payload.Query,
+		Body:     payload.Body,
+		ClientIP: r.RemoteAddr,
+	}
+
+	runtimeType := memedge.RuntimeType(payload.Runtime)
+	if runtimeType == "" {
+		runtimeType = memedge.DetectRuntime(payload.Path, codeBytes)
+	}
+
+	var resp *memedge.Response
+	var err error
+
+	if a.cfg.EdgeService != nil {
+		rpcReq := &edge_rpc.RPCRequest{
+			MID:     payload.MID,
+			Path:    payload.Path,
+			Code:    codeBytes,
+			Runtime: runtimeType,
+			Req:     edgeReq,
+		}
+		resp, err = a.cfg.EdgeService.Delegate(r.Context(), "", nil, rpcReq)
+	} else if a.cfg.EdgeEngine != nil {
+		resp, err = a.cfg.EdgeEngine.Execute(r.Context(), codeBytes, runtimeType, edgeReq, nil)
+		if resp != nil {
+			resp.Tier = memedge.TierGateway
+		}
+	} else {
+		fail(w, http.StatusServiceUnavailable, errors.New("edge engine not configured on node"))
+		return
+	}
+
+	if err != nil && (resp == nil || resp.Status == 0) {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	ok(w, resp)
+}
+
+func (a *NodeAPI) handleEdgeStatus(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.EdgeEngine == nil {
+		ok(w, map[string]any{
+			"enabled": false,
+			"message": "MemEdge engine is not initialized",
+		})
+		return
+	}
+
+	if defaultEng, isDefault := a.cfg.EdgeEngine.(*memedge.DefaultEngine); isDefault {
+		ok(w, defaultEng.Stats())
+		return
+	}
+
+	ok(w, map[string]any{
+		"enabled": true,
+		"status":  "running",
+	})
+}
+
+type EdgeValidatePayload struct {
+	Code    string `json:"code"`
+	Path    string `json:"path"`
+	Runtime string `json:"runtime"`
+}
+
+func (a *NodeAPI) handleEdgeValidate(w http.ResponseWriter, r *http.Request) {
+	var payload EdgeValidatePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		fail(w, http.StatusBadRequest, fmt.Errorf("invalid json request: %w", err))
+		return
+	}
+
+	result, err := memedge.ValidateCode(r.Context(), payload.Path, []byte(payload.Code), memedge.RuntimeType(payload.Runtime))
+	if err != nil && result == nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ok(w, result)
 }

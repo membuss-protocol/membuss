@@ -31,6 +31,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ import (
 	"github.com/nnlgsakib/membuss/cmd/membuss/daemon"
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/ipc"
+	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/pkg/plugin"
@@ -189,6 +191,7 @@ Run "membuss init" first to set up the data directory.`,
 		newMemNSCmd(),
 		newKeyRingCmd(),
 		newDescriptorCmd(),
+		newEdgeCmd(),
 		newVersionCmd(),
 	)
 
@@ -2420,4 +2423,268 @@ func newDescriptorMetaCmd() *cobra.Command {
 			return enc.Encode(env.Data)
 		},
 	}
+}
+
+func newEdgeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "edge",
+		Short: "Manage and execute MemEdge serverless functions (Go/Wasm & JS)",
+		Long: `MemEdge is the decentralized, content-addressed serverless compute engine for Membuss.
+Execute functions on the local node or delegate across the P2P network using 3-Tier Fair Compute Scheduling.`,
+	}
+	cmd.AddCommand(
+		newEdgeRunCmd(),
+		newEdgeValidateCmd(),
+		newEdgeStatusCmd(),
+		newEdgeBuildCmd(),
+	)
+	return cmd
+}
+
+func newEdgeRunCmd() *cobra.Command {
+	var (
+		method  string
+		query   string
+		body    string
+		headers []string
+		jsonOut bool
+	)
+	cmd := &cobra.Command{
+		Use:   "run <file|MID>",
+		Short: "Execute an edge function locally or via network delegation",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := args[0]
+			queryMap := make(map[string]string)
+			if query != "" {
+				parts := strings.Split(query, "&")
+				for _, p := range parts {
+					kv := strings.SplitN(p, "=", 2)
+					if len(kv) == 2 {
+						queryMap[kv[0]] = kv[1]
+					} else if len(kv) == 1 {
+						queryMap[kv[0]] = ""
+					}
+				}
+			}
+
+			headerMap := make(map[string]string)
+			for _, h := range headers {
+				kv := strings.SplitN(h, ":", 2)
+				if len(kv) == 2 {
+					headerMap[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+				}
+			}
+
+			var codeContent string
+			var midTarget string
+			var pathTarget string
+
+			if _, err := os.Stat(target); err == nil {
+				data, err := os.ReadFile(target)
+				if err != nil {
+					return fmt.Errorf("read file %s: %w", target, err)
+				}
+				codeContent = string(data)
+				pathTarget = filepath.Base(target)
+			} else {
+				midTarget = target
+				pathTarget = target
+			}
+
+			reqPayload := map[string]any{
+				"code":    codeContent,
+				"mid":     midTarget,
+				"path":    pathTarget,
+				"method":  method,
+				"query":   queryMap,
+				"headers": headerMap,
+				"body":    body,
+			}
+
+			payloadBytes, _ := json.Marshal(reqPayload)
+			url := httpBase() + "/api/v1/edge/run"
+			httpReq, err := http.NewRequestWithContext(cmd.Context(), "POST", url, bytes.NewReader(payloadBytes))
+			if err != nil {
+				return err
+			}
+			httpReq.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(httpReq)
+			if err != nil {
+				return fmt.Errorf("edge run request failed: %w", err)
+			}
+			defer resp.Body.Close()
+
+			var env struct {
+				OK    bool              `json:"ok"`
+				Data  *memedge.Response `json:"data"`
+				Error string            `json:"error"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+				return fmt.Errorf("decode edge response: %w", err)
+			}
+			if !env.OK || env.Data == nil {
+				return fmt.Errorf("edge run error: %s", env.Error)
+			}
+
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(env.Data)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "HTTP Status: %d\n", env.Data.Status)
+			fmt.Fprintf(cmd.OutOrStdout(), "Execution Tier: %s\n", env.Data.Tier)
+			if env.Data.DurationMs > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Duration: %.2f ms\n", env.Data.DurationMs)
+			}
+			if len(env.Data.Headers) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Headers:\n")
+				for k, v := range env.Data.Headers {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", k, v)
+				}
+			}
+			if len(env.Data.Logs) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Logs:\n")
+				for _, l := range env.Data.Logs {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", l)
+				}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "\nBody:\n%s\n", env.Data.Body)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&method, "method", "X", "GET", "HTTP method (GET, POST, PUT, DELETE)")
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Query string parameters (e.g. name=Alice&id=1)")
+	cmd.Flags().StringVarP(&body, "body", "d", "", "Request body string or JSON")
+	cmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "Custom HTTP header (key: value)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output raw JSON response")
+	return cmd
+}
+
+func newEdgeValidateCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "validate <file>",
+		Short: "Statically validate a JavaScript or WebAssembly edge function",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			filePath := args[0]
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("read file %s: %w", filePath, err)
+			}
+
+			result, err := memedge.ValidateCode(cmd.Context(), filePath, data, memedge.RuntimeAuto)
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(result)
+			}
+
+			if err != nil || (result != nil && !result.Valid) {
+				fmt.Fprintf(cmd.OutOrStderr(), "❌ Validation FAILED for %s:\n", filePath)
+				if result != nil {
+					for _, e := range result.Errors {
+						fmt.Fprintf(cmd.OutOrStderr(), "  - %s\n", e)
+					}
+				}
+				return errors.New("validation failed")
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "✅ Valid %s edge function: %s (%d bytes)\n", result.Runtime, filePath, result.ByteSize)
+			if result.Entrypoint != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "   Entrypoint: %s\n", result.Entrypoint)
+			}
+			for _, w := range result.Warnings {
+				fmt.Fprintf(cmd.OutOrStdout(), "   ⚠️ Warning: %s\n", w)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output raw JSON validation result")
+	return cmd
+}
+
+func newEdgeStatusCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show local node edge compute telemetry and resource limits",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			url := httpBase() + "/api/v1/edge/status"
+			resp, err := http.Get(url)
+			if err != nil {
+				return fmt.Errorf("fetch edge status: %w", err)
+			}
+			defer resp.Body.Close()
+
+			var env struct {
+				OK    bool           `json:"ok"`
+				Data  *memedge.Stats `json:"data"`
+				Error string         `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+				return err
+			}
+			if !env.OK || env.Data == nil {
+				return fmt.Errorf("status error: %s", env.Error)
+			}
+
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(env.Data)
+			}
+
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+			fmt.Fprintf(w, "MEMEDGE STATUS\n")
+			fmt.Fprintf(w, "--------------\n")
+			fmt.Fprintf(w, "Enabled:\t%v\n", env.Data.Enabled)
+			fmt.Fprintf(w, "Mode:\t%s\n", env.Data.Mode)
+			fmt.Fprintf(w, "Active Workers:\t%d\n", env.Data.ActiveGoroutines)
+			fmt.Fprintf(w, "Total Executions:\t%d\n", env.Data.TotalExecutions)
+			fmt.Fprintf(w, "Total Errors:\t%d\n", env.Data.TotalErrors)
+			fmt.Fprintf(w, "Average Latency:\t%.2f ms\n", env.Data.AvgDurationMs)
+			fmt.Fprintf(w, "Max Concurrency:\t%d\n", env.Data.MaxConcurrency)
+			return w.Flush()
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output raw JSON status")
+	return cmd
+}
+
+func newEdgeBuildCmd() *cobra.Command {
+	var outPath string
+	cmd := &cobra.Command{
+		Use:   "build <main.go>",
+		Short: "Compile a Go application into a WASI WebAssembly binary for MemEdge",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			src := args[0]
+			if outPath == "" {
+				base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+				outPath = base + ".wasm"
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Building Go WASI binary: %s -> %s ...\n", src, outPath)
+
+			buildCmd := exec.CommandContext(cmd.Context(), "go", "build", "-o", outPath, src)
+			buildCmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+			buildCmd.Stdout = cmd.OutOrStdout()
+			buildCmd.Stderr = cmd.OutOrStderr()
+
+			if err := buildCmd.Run(); err != nil {
+				return fmt.Errorf("compilation failed: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "✅ Build successful: %s\n", outPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&outPath, "output", "o", "", "Output path for the compiled wasm file (default: <name>.wasm)")
+	return cmd
 }

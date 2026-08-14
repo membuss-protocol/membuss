@@ -55,8 +55,10 @@ import (
 	"github.com/nnlgsakib/membuss/anchor"
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/keyring"
+	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
+	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/shard"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -630,9 +632,39 @@ func Run(args []string) error {
 	}
 	defer plugin.StopPlugins(ctx)
 
+	// 8c) MemEdge: Serverless Edge Compute Engine (Wasm/Go & JS).
+	var edgeEngine memedge.Engine
+	var edgeSvc *edge_rpc.Service
+	if cfg.EdgeCompute.Enabled && cfg.EdgeCompute.Mode != "off" {
+		edgeCfg := memedge.Config{
+			Enabled: true,
+			Mode:    cfg.EdgeCompute.Mode,
+			DefaultLimits: memedge.Limits{
+				MaxExecutionTime: cfg.EdgeCompute.MaxExecutionTime,
+				MaxMemoryBytes:   uint64(cfg.EdgeCompute.MaxMemoryMB) << 20,
+				MaxBodySizeBytes: 10 << 20,
+			},
+			MaxConcurrentTasks: cfg.EdgeCompute.MaxConcurrentTasks,
+			CacheCapacity:      256,
+		}
+		var engErr error
+		edgeEngine, engErr = memedge.NewEngine(ctx, edgeCfg)
+		if engErr != nil {
+			logger.Warn("memedge engine init", "err", engErr.Error())
+		} else {
+			defer edgeEngine.Close()
+			if h != nil {
+				edgeSvc = edge_rpc.NewService(h, edgeEngine)
+			}
+			fmt.Fprintf(os.Stdout, "  edge_compute:   enabled (mode: %s)\n", cfg.EdgeCompute.Mode)
+		}
+	} else {
+		fmt.Fprintf(os.Stdout, "  edge_compute:   disabled\n")
+	}
+
 	var gateSrv *httpServer
 	if cfg.Servers.Gateway.Enabled {
-		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg, cfg.MetricsToken)
+		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg, cfg.MetricsToken, edgeEngine, edgeSvc)
 		if err != nil {
 			logger.Error("gateway", "err", err.Error())
 			os.Exit(1)
@@ -647,7 +679,7 @@ func Run(args []string) error {
 	// 10) Node API: local control plane over HTTP/JSON.
 	var apiSrv *httpServer
 	if cfg.Servers.NodeAPI.Enabled {
-		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg, httpIPCLis)
+		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg, edgeEngine, edgeSvc, httpIPCLis)
 		if err != nil {
 			logger.Error("api", "err", err.Error())
 			os.Exit(1)
@@ -1033,15 +1065,17 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
-		ExplorerHandler: buildExplorer(exp, tunMgr),
+		ExplorerHandler: buildExplorer(exp, tunMgr, edgeEngine, edgeSvc),
 		RateLimitPerMin: rateLimitPerMin,
 		MemNSResolver:   memnsRes,
 		LogLevel:        logLevel,
 		MetricsToken:    metricsToken,
+		EdgeEngine:      edgeEngine,
+		EdgeService:     edgeSvc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("memgate: %w", err)
@@ -1067,7 +1101,7 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 // startNodeAPI brings up the local Node control API. mtrx
 // exposes Prometheus at /metrics; apiKey enables X-Membuss-Key
 // auth on every /api/v1 endpoint; tls enables HTTPS.
-func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, pluginReg *plugin.MapHTTPRegistry, extraLis ...net.Listener) (*httpServer, error) {
+func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, pluginReg *plugin.MapHTTPRegistry, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, extraLis ...net.Listener) (*httpServer, error) {
 	nodeAPI, err := api.New(api.Config{
 		Backend:        b,
 		MaxUploadBytes: 1 << 30, // 1 GiB
@@ -1077,6 +1111,8 @@ func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey stri
 		MemNSResolver:  memnsRes,
 		LogLevel:       logLevel,
 		PluginRoutes:   pluginReg,
+		EdgeEngine:     edgeEngine,
+		EdgeService:    edgeSvc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("nodeapi: %w", err)
@@ -1213,13 +1249,15 @@ func (h *httpServer) Addr() string {
 // buildExplorer constructs the explorer http.Handler.
 // It returns nil when exp is nil so the gateway can be
 // constructed without an explorer for tests.
-func buildExplorer(exp *explorerAdapter, tunMgr *tunnel.Manager) http.Handler {
+func buildExplorer(exp *explorerAdapter, tunMgr *tunnel.Manager, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) http.Handler {
 	if exp == nil {
 		return nil
 	}
 	h, err := explorerPkg.New(explorerPkg.Config{
 		Backend:       exp,
 		TunnelManager: tunMgr,
+		EdgeEngine:    edgeEngine,
+		EdgeService:   edgeSvc,
 	})
 	if err != nil {
 		slog.Warn("explorer", "err", err.Error())
