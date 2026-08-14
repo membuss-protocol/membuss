@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/dag"
+	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
 	membusspb "github.com/nnlgsakib/membuss/proto"
 )
@@ -320,6 +321,14 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 	// Emit a terminal update so the caller sees 100% of blocks
 	// resolved before the reader is drained
 	s.emitProgress()
+
+	if s.cfg.Root.Codec() == mid.CodecMemFS {
+		res := memfs.NewResolver(asBlockstore(s.cfg.Engine.bs, s))
+		rc, err := res.Open(ctx, s.cfg.Root)
+		if err == nil {
+			return &cancelOnCloseReader{r: rc, cancel: cancel}, nil
+		}
+	}
 
 	resolver := dag.NewResolver(asBlockstore(s.cfg.Engine.bs, s))
 	rc, err := resolver.Resolve(s.cfg.Root, nil)
@@ -707,6 +716,27 @@ func (s *Session) enqueueChildren(ctx context.Context, midStr string) error {
 			s.mu.Unlock()
 			switch node.Type {
 			case membusspb.MemFSType_FILE:
+				if len(node.Data) > 0 && len(node.Blocks) == 1 && node.Blocks[0] != nil && len(node.Blocks[0].Mid) > 0 {
+					var codec uint64 = mid.CodecMemFS
+					if node.Blocks[0].Size > 0 {
+						codec = mid.CodecRaw
+					}
+					if child, err := mid.FromMultihash(codec, node.Blocks[0].Mid); err == nil {
+						_ = s.cfg.Engine.bs.Put(child, node.Data)
+						s.mu.Lock()
+						childStr := child.String()
+						s.enqueued[childStr] = struct{}{}
+						s.resolved[childStr] = struct{}{}
+						s.bytesDelivered += uint64(len(node.Data))
+						s.mu.Unlock()
+						s.emitProgress()
+						select {
+						case s.resolvedCh <- struct{}{}:
+						default:
+						}
+					}
+					return nil
+				}
 				for _, b := range node.Blocks {
 					if b == nil || len(b.Mid) == 0 {
 						continue
