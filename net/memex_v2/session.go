@@ -88,6 +88,10 @@ type Session struct {
 	wantStates      map[string]*wantState
 	schedulerWakeCh chan struct{}
 
+	startTime       time.Time
+	bytesDelivered  uint64
+	bytesTotal      uint64
+
 	provMu          sync.Mutex
 	liveProviders   []peer.AddrInfo
 	activeProviders map[peer.ID]*pooledStream
@@ -97,6 +101,38 @@ type Session struct {
 	resolvedCh chan struct{}
 	walkerDone chan struct{}
 	doneWg     sync.WaitGroup
+}
+
+func (s *Session) emitProgress() {
+	if s == nil || s.cfg.ProgressFn == nil {
+		return
+	}
+	s.mu.Lock()
+	resolved := uint64(len(s.resolved))
+	total := uint64(len(s.enqueued))
+	delivered := s.bytesDelivered
+	totalBytes := s.bytesTotal
+	start := s.startTime
+	s.mu.Unlock()
+
+	var throughput float64
+	var eta float64
+	elapsed := time.Since(start).Seconds()
+	if elapsed > 0 && delivered > 0 {
+		throughput = float64(delivered) / elapsed
+		if totalBytes > delivered && throughput > 0 {
+			eta = float64(totalBytes-delivered) / throughput
+		}
+	}
+
+	s.cfg.ProgressFn(ProgressUpdate{
+		BlocksResolved: resolved,
+		BlocksTotal:    total,
+		BytesDelivered: delivered,
+		BytesTotal:     totalBytes,
+		Throughput:     throughput,
+		ETA:            eta,
+	})
 }
 
 func NewSession(cfg SessionConfig) (*Session, error) {
@@ -111,6 +147,7 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	}
 	sess := &Session{
 		cfg:             cfg,
+		startTime:       time.Now(),
 		enqueued:        make(map[string]struct{}),
 		resolved:        make(map[string]struct{}),
 		wantlist:        make(map[string]mid.MID),
@@ -202,16 +239,12 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 	}()
 
 	// Progress reporting. Fetch resolves the whole DAG before
-	// returning a reader, so unlike FetchStream there is no
-	// byte counter to draw from; we report block resolution
-	// instead. Without this the caller sees no signal at all
-	// until the entire object has been pulled — a long silent
-	// stall on large objects. The ticker stops when the
-	// resolution loop closes done.
+	// returning a reader, emitting live block and byte telemetry.
 	progressStop := make(chan struct{})
 	if s.cfg.ProgressFn != nil {
+		s.emitProgress()
 		go func() {
-			t := time.NewTicker(200 * time.Millisecond)
+			t := time.NewTicker(50 * time.Millisecond)
 			defer t.Stop()
 			for {
 				select {
@@ -220,14 +253,7 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					s.mu.Lock()
-					resolved := uint64(len(s.resolved))
-					total := uint64(len(s.enqueued))
-					s.mu.Unlock()
-					s.cfg.ProgressFn(ProgressUpdate{
-						BlocksResolved: resolved,
-						BlocksTotal:    total,
-					})
+					s.emitProgress()
 				}
 			}
 		}()
@@ -292,15 +318,8 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 	}
 
 	// Emit a terminal update so the caller sees 100% of blocks
-	// resolved before the reader is drained; the ticker may
-	// have stopped a beat short of the final block.
-	if s.cfg.ProgressFn != nil {
-		s.mu.Lock()
-		resolved := uint64(len(s.resolved))
-		total := uint64(len(s.enqueued))
-		s.mu.Unlock()
-		s.cfg.ProgressFn(ProgressUpdate{BlocksResolved: resolved, BlocksTotal: total})
-	}
+	// resolved before the reader is drained
+	s.emitProgress()
 
 	resolver := dag.NewResolver(asBlockstore(s.cfg.Engine.bs, s))
 	rc, err := resolver.Resolve(s.cfg.Root, nil)
@@ -502,10 +521,9 @@ func (s *Session) FetchStream(ctx context.Context) (io.Reader, error) {
 
 func (s *Session) checkAndEnqueue(ctx context.Context, id mid.MID) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	midStr := id.String()
 	if _, ok := s.enqueued[midStr]; ok {
+		s.mu.Unlock()
 		return
 	}
 	s.enqueued[midStr] = struct{}{}
@@ -513,12 +531,11 @@ func (s *Session) checkAndEnqueue(ctx context.Context, id mid.MID) {
 	has, err := s.cfg.Engine.bs.Has(id)
 	if err == nil && has {
 		s.resolved[midStr] = struct{}{}
-		if s.cfg.ProgressFn != nil {
-			s.cfg.ProgressFn(ProgressUpdate{
-				BlocksResolved: uint64(len(s.resolved)),
-				BlocksTotal:    uint64(len(s.enqueued)),
-			})
+		if data, derr := s.cfg.Engine.bs.Get(id); derr == nil {
+			s.bytesDelivered += uint64(len(data))
 		}
+		s.mu.Unlock()
+		s.emitProgress()
 		select {
 		case s.resolvedCh <- struct{}{}:
 		default:
@@ -529,6 +546,8 @@ func (s *Session) checkAndEnqueue(ctx context.Context, id mid.MID) {
 			mid:            id,
 			triedProviders: make(map[peer.ID]struct{}),
 		}
+		s.mu.Unlock()
+		s.emitProgress()
 		s.wakeScheduler()
 	}
 }
@@ -538,8 +557,6 @@ func (s *Session) markResolved(id mid.MID) {
 		s.touchFn()
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	midStr := id.String()
 	ws, ok := s.wantStates[midStr]
 	if ok && ws.currentProvider != "" {
@@ -549,13 +566,12 @@ func (s *Session) markResolved(id mid.MID) {
 	s.resolved[midStr] = struct{}{}
 	delete(s.wantlist, midStr)
 	delete(s.wantStates, midStr)
-
-	if s.cfg.ProgressFn != nil {
-		s.cfg.ProgressFn(ProgressUpdate{
-			BlocksResolved: uint64(len(s.resolved)),
-			BlocksTotal:    uint64(len(s.enqueued)),
-		})
+	if data, derr := s.cfg.Engine.bs.Get(id); derr == nil {
+		s.bytesDelivered += uint64(len(data))
 	}
+	s.mu.Unlock()
+
+	s.emitProgress()
 
 	// Notify active streams to cancel want
 	s.provMu.Lock()
@@ -668,6 +684,11 @@ func (s *Session) enqueueChildren(ctx context.Context, midStr string) error {
 	var childMIDs []mid.MID
 
 	if desc, uerr := tryParseDescriptor(data); uerr == nil && desc.RootMid != "" && len(desc.Blocks) > 0 {
+		s.mu.Lock()
+		if desc.TotalSize > 0 {
+			s.bytesTotal = desc.TotalSize
+		}
+		s.mu.Unlock()
 		if rMID, err := mid.Parse(desc.RootMid); err == nil {
 			childMIDs = append(childMIDs, rMID)
 		}
@@ -679,6 +700,11 @@ func (s *Session) enqueueChildren(ctx context.Context, midStr string) error {
 	} else if id.Codec() == mid.CodecMemFS {
 		var node membusspb.MemFSNode
 		if uerr := proto.Unmarshal(data, &node); uerr == nil {
+			s.mu.Lock()
+			if node.GetFileSize() > 0 {
+				s.bytesTotal = node.GetFileSize()
+			}
+			s.mu.Unlock()
 			switch node.Type {
 			case membusspb.MemFSType_FILE:
 				for _, b := range node.Blocks {

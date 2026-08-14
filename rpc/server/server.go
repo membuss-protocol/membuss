@@ -307,6 +307,23 @@ func streamAdd(stream grpc.ServerStreamingServer[membusspb.AddProgress], ingest 
 			return status.FromContextError(stream.Context().Err()).Err()
 		}
 	}
+
+	// Drain any pending progress update that arrived before completion
+	for {
+		select {
+		case p := <-progressCh:
+			if err := stream.Send(&membusspb.AddProgress{
+				BytesProcessed: p.processed,
+				TotalBytes:     p.total,
+			}); err != nil {
+				return err
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+
 	if out.err != nil {
 		return status.Errorf(codes.Internal, "add: %v", out.err)
 	}

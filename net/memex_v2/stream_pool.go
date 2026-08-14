@@ -203,13 +203,15 @@ func (ps *pooledStream) readLoop() {
 
 		// Adjust Congestion Window (AIMD: Additive Increase on successful responses)
 		ps.seqMu.Lock()
-		if len(msg.Blocks) > 0 || len(msg.HaveMids) > 0 {
-			// Increase window size
-			if ps.cwnd < 128 {
-				ps.cwnd++
+		resolvedCount := len(msg.Blocks) + len(msg.HaveMids) + len(msg.DontHaves)
+		if resolvedCount > 0 {
+			if len(msg.Blocks) > 0 || len(msg.HaveMids) > 0 {
+				// Increase window size on positive responses
+				if ps.cwnd < 128 {
+					ps.cwnd++
+				}
 			}
 			// Reduce in-flight wants
-			resolvedCount := len(msg.Blocks) + len(msg.HaveMids)
 			ps.inFlight -= resolvedCount
 			if ps.inFlight < 0 {
 				ps.inFlight = 0
