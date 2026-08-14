@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -32,8 +34,10 @@ import (
 
 	"github.com/nnlgsakib/membuss/config"
 	"github.com/nnlgsakib/membuss/core/descriptor"
+	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/version"
+	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/net/tunnel"
 )
 
@@ -347,14 +351,33 @@ type Config struct {
 	ResolveTimeout time.Duration
 	// TunnelManager handles the lifecycle of the ngrok tunnel.
 	TunnelManager *tunnel.Manager
+	// EdgeEngine executes Wasm and JS edge functions.
+	EdgeEngine memedge.Engine
+	// EdgeService manages 3-Tier P2P edge execution.
+	EdgeService *edge_rpc.Service
+}
+
+// EdgeFunctionDeployment records a deployed serverless function on the node.
+type EdgeFunctionDeployment struct {
+	MID        string    `json:"mid"`
+	Name       string    `json:"name"`
+	Runtime    string    `json:"runtime"`
+	Size       uint64    `json:"size"`
+	MemNSName  string    `json:"memns_name,omitempty"`
+	MemNSKey   string    `json:"memns_key,omitempty"`
+	GatewayURL string    `json:"gateway_url"`
+	MemNSURL   string    `json:"memns_url,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // Explorer is the built-in web UI.
 type Explorer struct {
-	cfg    Config
-	tpl    *template.Template
-	pages  map[string]*template.Template
-	tunMgr *tunnel.Manager
+	cfg         Config
+	tpl         *template.Template
+	pages       map[string]*template.Template
+	tunMgr      *tunnel.Manager
+	edgeMu      sync.RWMutex
+	edgeDeploys map[string]EdgeFunctionDeployment
 }
 
 // New parses the embedded templates and returns an Explorer
@@ -385,10 +408,11 @@ func New(cfg Config) (*Explorer, error) {
 		pages, _ = buildPages(tpl)
 	}
 	return &Explorer{
-		cfg:    cfg,
-		tpl:    tpl,
-		pages:  pages,
-		tunMgr: cfg.TunnelManager,
+		cfg:         cfg,
+		tpl:         tpl,
+		pages:       pages,
+		tunMgr:      cfg.TunnelManager,
+		edgeDeploys: make(map[string]EdgeFunctionDeployment),
 	}, nil
 }
 
@@ -557,6 +581,12 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Post("/node/flash", e.handleNodeFlash)
 	r.Get("/node/tunnel", e.handleGetTunnel)
 	r.Post("/node/tunnel", e.handlePostTunnel)
+	r.Post("/edge/run", e.handleEdgeRun)
+	r.Get("/edge/status", e.handleEdgeStatus)
+	r.Post("/edge/deploy", e.handleEdgeDeploy)
+	r.Get("/edge/functions", e.handleEdgeFunctions)
+	r.Post("/edge/bind", e.handleEdgeBind)
+	r.Delete("/edge/functions/{mid}", e.handleEdgeDeleteFunction)
 
 	// Phase 21: descriptor endpoints
 	r.Get("/descriptor/{mid}", e.handleDescriptorExport)
@@ -1929,4 +1959,373 @@ func (e *Explorer) handlePostTunnel(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+type EdgeRunRequest struct {
+	Code    string            `json:"code"`
+	MID     string            `json:"mid"`
+	MemNS   string            `json:"memns"`
+	Path    string            `json:"path"`
+	Runtime string            `json:"runtime"` // "js" or "wasm"
+	Method  string            `json:"method"`
+	Query   map[string]string `json:"query"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
+func (e *Explorer) handleEdgeRun(w http.ResponseWriter, r *http.Request) {
+	var req EdgeRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var codeBytes []byte
+	var targetMID string
+
+	if req.MemNS != "" || strings.HasPrefix(req.MID, "memns://") || (!strings.HasPrefix(req.MID, "mem") && len(req.MID) > 0 && len(req.MID) < 40) {
+		memnsName := req.MemNS
+		if memnsName == "" {
+			memnsName = strings.TrimPrefix(req.MID, "memns://")
+		}
+		res, err := e.cfg.Backend.ResolveMemNSRecord(r.Context(), memnsName)
+		if err != nil {
+			http.Error(w, "resolve memns '"+memnsName+"': "+err.Error(), http.StatusNotFound)
+			return
+		}
+		targetMID = res.Value
+	} else if req.MID != "" {
+		targetMID = req.MID
+	}
+
+	if req.Code != "" {
+		codeBytes = []byte(req.Code)
+	} else if targetMID != "" {
+		m, err := mid.Parse(targetMID)
+		if err != nil {
+			http.Error(w, "bad mid: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		rc, _, err := e.cfg.Backend.Resolve(r.Context(), m)
+		if err != nil {
+			http.Error(w, "resolve mid: "+err.Error(), http.StatusNotFound)
+			return
+		}
+		defer rc.Close()
+		codeBytes, err = io.ReadAll(io.LimitReader(rc, 10<<20))
+		if err != nil {
+			http.Error(w, "read mid: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if len(codeBytes) == 0 {
+		http.Error(w, "no code, mid, or memns provided", http.StatusBadRequest)
+		return
+	}
+
+	method := req.Method
+	if method == "" {
+		method = "GET"
+	}
+
+	cleanPath := req.Path
+	if cleanPath == "" || cleanPath == "/" {
+		cleanPath = "/"
+	} else if strings.HasSuffix(cleanPath, ".js") || strings.HasSuffix(cleanPath, ".wasm") || strings.HasSuffix(cleanPath, ".ts") {
+		// If caller passed source filename (e.g. "api/test.js") instead of subpath, normalize to "/"
+		cleanPath = "/"
+	} else if !strings.HasPrefix(cleanPath, "/") {
+		cleanPath = "/" + cleanPath
+	}
+
+	edgeReq := &memedge.Request{
+		Method:   method,
+		URL:      "/explorer/edge/run",
+		Path:     cleanPath,
+		Headers:  req.Headers,
+		Query:    req.Query,
+		Body:     req.Body,
+		ClientIP: r.RemoteAddr,
+	}
+
+	runtimeType := memedge.RuntimeType(req.Runtime)
+	if runtimeType == "" {
+		runtimeType = memedge.DetectRuntime(req.Path, codeBytes)
+	}
+
+	var resp *memedge.Response
+	var err error
+
+	if e.cfg.EdgeService != nil {
+		rpcReq := &edge_rpc.RPCRequest{
+			MID:     req.MID,
+			Path:    req.Path,
+			Code:    codeBytes,
+			Runtime: runtimeType,
+			Req:     edgeReq,
+		}
+		resp, err = e.cfg.EdgeService.Delegate(r.Context(), "", nil, rpcReq)
+	} else if e.cfg.EdgeEngine != nil {
+		resp, err = e.cfg.EdgeEngine.Execute(r.Context(), codeBytes, runtimeType, edgeReq, nil)
+		if resp != nil {
+			resp.Tier = memedge.TierGateway
+		}
+	} else {
+		http.Error(w, "edge engine not configured on explorer", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil && (resp == nil || resp.Status == 0) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": 500,
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (e *Explorer) handleEdgeStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if e.cfg.EdgeEngine == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled": false,
+			"message": "MemEdge engine is not initialized",
+		})
+		return
+	}
+
+	if defaultEng, ok := e.cfg.EdgeEngine.(*memedge.DefaultEngine); ok {
+		stats := defaultEng.Stats()
+		_ = json.NewEncoder(w).Encode(stats)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"enabled": true,
+		"status":  "running",
+	})
+}
+
+type EdgeDeployRequest struct {
+	Name    string `json:"name"`
+	Code    string `json:"code"`
+	Runtime string `json:"runtime"`
+	KeyName string `json:"key_name"`
+	TTL     uint32 `json:"ttl"`
+	Seal    bool   `json:"seal"`
+}
+
+func (e *Explorer) handleEdgeDeploy(w http.ResponseWriter, r *http.Request) {
+	var req EdgeDeployRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		req.Name = "function.js"
+	}
+	if req.Code == "" {
+		http.Error(w, "empty code payload", http.StatusBadRequest)
+		return
+	}
+
+	codeBytes := []byte(req.Code)
+	runtimeType := memedge.RuntimeType(req.Runtime)
+	if runtimeType == "" {
+		runtimeType = memedge.DetectRuntime(req.Name, codeBytes)
+	}
+
+	// Auto-decode Base64 for Wasm binaries
+	if runtimeType == memedge.RuntimeWasm {
+		if decoded, decErr := base64.StdEncoding.DecodeString(req.Code); decErr == nil && len(decoded) >= 4 && bytes.Equal(decoded[:4], memedge.WasmMagicHeader) {
+			codeBytes = decoded
+		}
+	}
+
+	// 1. Pre-flight static validation
+	valResult, err := memedge.ValidateCode(r.Context(), req.Name, codeBytes, runtimeType)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     400,
+			"error":      "Pre-flight validation failed: " + err.Error(),
+			"validation": valResult,
+		})
+		return
+	}
+
+	// 2. Ingest into content store
+	info, err := e.cfg.Backend.Add(r.Context(), req.Name, bytes.NewReader(codeBytes))
+	if err != nil {
+		http.Error(w, "failed to ingest edge function: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	mimeType := "application/javascript"
+	if runtimeType == memedge.RuntimeWasm {
+		mimeType = "application/wasm"
+	}
+	if m, err := mid.Parse(info.MID); err == nil {
+		_ = e.cfg.Backend.TrackRootWithMetadata(m, req.Name, mimeType, info.Size)
+	}
+
+	// 3. Optional MemNS binding
+	var memnsName string
+	var memnsURL string
+	if req.KeyName != "" {
+		ttl := req.TTL
+		if ttl == 0 {
+			ttl = 86400 // 24h default
+		}
+		res, err := e.cfg.Backend.MemNSPublish(r.Context(), req.KeyName, info.MID, ttl, "MemEdge Deploy: "+req.Name)
+		if err == nil {
+			memnsName = res.Name
+			memnsURL = "/memns/" + res.Name
+		}
+	}
+
+	// 4. Save to local edge deployment registry
+	deployment := EdgeFunctionDeployment{
+		MID:        info.MID,
+		Name:       req.Name,
+		Runtime:    string(runtimeType),
+		Size:       info.Size,
+		MemNSName:  memnsName,
+		MemNSKey:   req.KeyName,
+		GatewayURL: "/mem/" + info.MID + "?exec=true",
+		MemNSURL:   memnsURL,
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	e.edgeMu.Lock()
+	e.edgeDeploys[info.MID] = deployment
+	e.edgeMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(deployment)
+}
+
+func (e *Explorer) handleEdgeFunctions(w http.ResponseWriter, r *http.Request) {
+	e.edgeMu.RLock()
+	deploys := make([]EdgeFunctionDeployment, 0, len(e.edgeDeploys))
+	for _, d := range e.edgeDeploys {
+		deploys = append(deploys, d)
+	}
+	e.edgeMu.RUnlock()
+
+	// Also discover any stored MIDs with .js or .wasm extensions
+	if allMIDs, err := e.cfg.Backend.AllStoredMIDs(r.Context()); err == nil {
+		existing := make(map[string]bool)
+		for _, d := range deploys {
+			existing[d.MID] = true
+		}
+		for _, sm := range allMIDs {
+			if existing[sm.MID] {
+				continue
+			}
+			isEdge := strings.HasSuffix(sm.Name, ".js") || strings.HasSuffix(sm.Name, ".wasm") ||
+				sm.MimeType == "application/javascript" || sm.MimeType == "application/wasm"
+			if isEdge {
+				rt := "js"
+				if strings.HasSuffix(sm.Name, ".wasm") || sm.MimeType == "application/wasm" {
+					rt = "wasm"
+				}
+				deploys = append(deploys, EdgeFunctionDeployment{
+					MID:        sm.MID,
+					Name:       sm.Name,
+					Runtime:    rt,
+					Size:       sm.Size,
+					GatewayURL: "/mem/" + sm.MID + "?exec=true",
+					CreatedAt:  time.Now().UTC(),
+				})
+			}
+		}
+	}
+
+	sort.Slice(deploys, func(i, j int) bool {
+		return deploys[i].CreatedAt.After(deploys[j].CreatedAt)
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(deploys)
+}
+
+func (e *Explorer) handleEdgeBind(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MID     string `json:"mid"`
+		KeyName string `json:"key_name"`
+		TTL     uint32 `json:"ttl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.MID == "" || req.KeyName == "" {
+		http.Error(w, "mid and key_name are required", http.StatusBadRequest)
+		return
+	}
+
+	ttl := req.TTL
+	if ttl == 0 {
+		ttl = 86400
+	}
+
+	res, err := e.cfg.Backend.MemNSPublish(r.Context(), req.KeyName, req.MID, ttl, "MemEdge Bind")
+	if err != nil {
+		http.Error(w, "memns publish: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	e.edgeMu.Lock()
+	if dep, ok := e.edgeDeploys[req.MID]; ok {
+		dep.MemNSKey = req.KeyName
+		dep.MemNSName = res.Name
+		dep.MemNSURL = "/memns/" + res.Name
+		e.edgeDeploys[req.MID] = dep
+	} else {
+		e.edgeDeploys[req.MID] = EdgeFunctionDeployment{
+			MID:        req.MID,
+			Name:       req.KeyName,
+			Runtime:    "js",
+			MemNSKey:   req.KeyName,
+			MemNSName:  res.Name,
+			GatewayURL: "/mem/" + req.MID + "?exec=true",
+			MemNSURL:   "/memns/" + res.Name,
+			CreatedAt:  time.Now().UTC(),
+		}
+	}
+	e.edgeMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":         true,
+		"mid":        req.MID,
+		"memns_name": res.Name,
+		"memns_url":  "/memns/" + res.Name,
+	})
+}
+
+func (e *Explorer) handleEdgeDeleteFunction(w http.ResponseWriter, r *http.Request) {
+	midStr := chi.URLParam(r, "mid")
+	if midStr == "" {
+		http.Error(w, "mid required", http.StatusBadRequest)
+		return
+	}
+
+	e.edgeMu.Lock()
+	delete(e.edgeDeploys, midStr)
+	e.edgeMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }

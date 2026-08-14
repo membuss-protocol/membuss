@@ -13,6 +13,16 @@
 		AnchorMode: boolean;
 	}
 
+	interface EdgeStats {
+		enabled: boolean;
+		mode: string;
+		total_executions: number;
+		total_errors: number;
+		avg_duration_ms: number;
+		active_tasks: number;
+		max_concurrency: number;
+	}
+
 	interface IndexData {
 		Title: string;
 		NodeInfo: NodeInfo;
@@ -29,6 +39,7 @@
 	}
 
 	let data = $state<IndexData | null>(null);
+	let edgeStats = $state<EdgeStats | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let formattedUptime = $state('');
@@ -88,8 +99,14 @@
 
 	async function loadDashboard() {
 		try {
-			const res = await apiFetch('/');
+			const [res, edgeRes] = await Promise.all([
+				apiFetch('/'),
+				apiFetch('/edge/status').catch(() => null)
+			]);
 			data = res;
+			if (edgeRes && edgeRes.enabled !== undefined) {
+				edgeStats = edgeRes;
+			}
 			updateUptimeString();
 			loading = false;
 		} catch (err) {
@@ -385,7 +402,7 @@
 </div>
 
 <!-- Secondary Statistics Grid -->
-<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
 	<!-- Storage & Telemetry Card -->
 	<div class="animate-fade-in-up double-bezel" style="animation-delay: 200ms">
 		<div class="double-bezel-inner flex flex-col gap-3 font-mono text-xs">
@@ -437,6 +454,14 @@
 				<span class="text-slate-500">libp2p Discovery</span>
 				<span class="text-slate-200 font-bold">mDNS + Kademlia</span>
 			</div>
+			<div class="flex justify-between border-t border-white/[0.04] pt-2 mt-1">
+				<span class="text-slate-500">System Version</span>
+				<span class="text-slate-200 font-bold">{data ? data.NodeInfo.Version : '--'}</span>
+			</div>
+			<div class="flex justify-between">
+				<span class="text-slate-500">Active Peers</span>
+				<span class="text-slate-200 font-bold">{data ? data.PeerCount : 0} nodes</span>
+			</div>
 		</div>
 	</div>
 
@@ -448,7 +473,7 @@
 				Network Bindings
 			</h4>
 			{#if data && data.NodeInfo.Addrs && data.NodeInfo.Addrs.length > 0}
-				<div class="flex flex-col gap-2 mt-1 overflow-hidden max-h-24">
+				<div class="flex flex-col gap-2 mt-1 overflow-hidden max-h-28">
 					{#each data.NodeInfo.Addrs.slice(0, 2) as addr}
 						<span class="text-[10px] text-slate-400 truncate bg-white/[0.02] border border-white/[0.03] px-2.5 py-1.5 rounded-lg select-all">{addr}</span>
 					{/each}
@@ -459,6 +484,43 @@
 			{:else}
 				<span class="text-slate-500 italic mt-1">No active addresses bound</span>
 			{/if}
+		</div>
+	</div>
+
+	<!-- MemEdge Serverless Compute Card -->
+	<div class="animate-fade-in-up double-bezel" style="animation-delay: 350ms">
+		<div class="double-bezel-inner flex flex-col gap-3 font-mono text-xs">
+			<div class="flex items-center justify-between border-b border-white/[0.04] pb-2">
+				<h4 class="text-slate-400 text-[10px] uppercase tracking-widest font-semibold flex items-center gap-2">
+					<Icon icon="ph:lightning-light" class="text-cyan-400 w-3.5 h-3.5" />
+					MemEdge Compute
+				</h4>
+				<a href="{base}/edge" class="text-[10px] text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1 font-semibold">
+					Studio &rarr;
+				</a>
+			</div>
+			<div class="flex justify-between mt-1">
+				<span class="text-slate-500">Compute Engine</span>
+				<span class="font-bold {edgeStats && edgeStats.enabled ? 'text-emerald-400' : 'text-slate-500'}">
+					{edgeStats && edgeStats.enabled ? 'ONLINE (' + (edgeStats.mode || 'local').toUpperCase() + ')' : 'OFFLINE'}
+				</span>
+			</div>
+			<div class="flex justify-between">
+				<span class="text-slate-500">Total Invocations</span>
+				<span class="text-slate-200 font-bold">{edgeStats ? edgeStats.total_executions : 0} calls</span>
+			</div>
+			<div class="flex justify-between">
+				<span class="text-slate-500">Avg Latency</span>
+				<span class="text-cyan-300 font-bold">{edgeStats && edgeStats.avg_duration_ms ? edgeStats.avg_duration_ms.toFixed(2) + 'ms' : '< 1ms'}</span>
+			</div>
+			<div class="flex justify-between border-t border-white/[0.04] pt-2 mt-1">
+				<span class="text-slate-500">Runtimes</span>
+				<span class="text-slate-300 font-bold">Goja JS + WASI</span>
+			</div>
+			<div class="flex justify-between">
+				<span class="text-slate-500">Concurrency</span>
+				<span class="text-slate-200 font-bold">{edgeStats ? edgeStats.active_tasks : 0} / {edgeStats ? edgeStats.max_concurrency : 16}</span>
+			</div>
 		</div>
 	</div>
 </div>
