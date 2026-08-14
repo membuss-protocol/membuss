@@ -530,7 +530,7 @@ func TestCLI_DaemonStatus_AliasesPing(t *testing.T) {
 // subcommands. This guards against accidental removals during
 // refactors.
 func TestCLI_CommandTree(t *testing.T) {
-	want := []string{"add", "get", "seal", "unseal", "stat", "peers", "dht", "gc", "anchor", "ping", "daemon"}
+	want := []string{"add", "get", "seal", "unseal", "stat", "peers", "dht", "gc", "anchor", "ping", "daemon", "edge"}
 	root := newRootCmd()
 	got := make(map[string]bool, len(root.Commands()))
 	for _, c := range root.Commands() {
@@ -540,5 +540,19 @@ func TestCLI_CommandTree(t *testing.T) {
 		if !got[w] {
 			t.Errorf("missing command: %s", w)
 		}
+	}
+}
+
+func TestCLI_EdgeValidate(t *testing.T) {
+	dir := t.TempDir()
+	validJS := filepath.Join(dir, "api.js")
+	_ = os.WriteFile(validJS, []byte("export default function(req) { return { status: 200 }; }"), 0600)
+
+	out, _, err := withCLI(t, []string{"edge", "validate", validJS}, nil)
+	if err != nil {
+		t.Fatalf("edge validate: %v", err)
+	}
+	if !strings.Contains(out, "Valid js edge function") {
+		t.Errorf("expected output to indicate valid JS, got: %s", out)
 	}
 }
