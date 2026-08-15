@@ -28,8 +28,9 @@ func NewWasmRunner(ctx context.Context, cache *CodeCache) (*WasmRunner, error) {
 		cache = NewCodeCache(128)
 	}
 
-	// Create Wazero JIT runtime
-	r := wazero.NewRuntime(ctx)
+	// Create Wazero JIT runtime with 32 MiB default memory limit (512 pages of 64 KiB)
+	runtimeCfg := wazero.NewRuntimeConfig().WithMemoryLimitPages(512)
+	r := wazero.NewRuntimeWithConfig(ctx, runtimeCfg)
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
 
 	return &WasmRunner{

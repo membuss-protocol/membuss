@@ -422,6 +422,7 @@ fn main() -> io::Result<()> {
 	let testRuntime = $state<'js' | 'wasm'>('js');
 	let testBody = $state('');
 	let testQueryParams = $state<{ key: string; value: string }[]>([]);
+	let testHeaders = $state<{ key: string; value: string }[]>([]);
 	const PUBLIC_GATEWAY = 'https://gateway.membuss.dpdns.org';
 
 	function getLocalOrigin(): string {
