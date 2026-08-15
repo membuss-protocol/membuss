@@ -37,18 +37,26 @@ type RPCResponse struct {
 	Error    string            `json:"error,omitempty"`
 }
 
+type peerLimiter struct {
+	tokens    float64
+	lastCheck time.Time
+}
+
 // Service manages inbound and outbound P2P edge execution streams.
 type Service struct {
-	h      host.Host
-	engine memedge.Engine
-	mu     sync.RWMutex
+	h          host.Host
+	engine     memedge.Engine
+	peerLimits map[peer.ID]*peerLimiter
+	limiterMu  sync.Mutex
+	mu         sync.RWMutex
 }
 
 // NewService registers the edge execution protocol handler on the libp2p host.
 func NewService(h host.Host, engine memedge.Engine) *Service {
 	s := &Service{
-		h:      h,
-		engine: engine,
+		h:          h,
+		engine:     engine,
+		peerLimits: make(map[peer.ID]*peerLimiter),
 	}
 
 	if h != nil && engine != nil {
@@ -58,12 +66,57 @@ func NewService(h host.Host, engine memedge.Engine) *Service {
 	return s
 }
 
+func (s *Service) allowPeer(p peer.ID) bool {
+	s.limiterMu.Lock()
+	defer s.limiterMu.Unlock()
+
+	now := time.Now()
+	lim, exists := s.peerLimits[p]
+	if !exists {
+		s.peerLimits[p] = &peerLimiter{
+			tokens:    19.0,
+			lastCheck: now,
+		}
+		if len(s.peerLimits) > 10000 {
+			for k, v := range s.peerLimits {
+				if now.Sub(v.lastCheck) > 10*time.Minute {
+					delete(s.peerLimits, k)
+				}
+			}
+		}
+		return true
+	}
+
+	elapsed := now.Sub(lim.lastCheck).Seconds()
+	lim.lastCheck = now
+	lim.tokens += elapsed * 5.0
+	if lim.tokens > 20.0 {
+		lim.tokens = 20.0
+	}
+
+	if lim.tokens >= 1.0 {
+		lim.tokens -= 1.0
+		return true
+	}
+	return false
+}
+
 // handleStream handles incoming execution requests from other nodes.
 func (s *Service) handleStream(stream network.Stream) {
 	defer stream.Close()
 
 	r := msgio.NewVarintReaderSize(stream, 10<<20)
 	w := msgio.NewVarintWriter(stream)
+
+	remotePeer := stream.Conn().RemotePeer()
+	if !s.allowPeer(remotePeer) {
+		resp := RPCResponse{
+			Error: fmt.Sprintf("rate limit exceeded for peer %s", remotePeer),
+		}
+		out, _ := json.Marshal(resp)
+		_ = w.WriteMsg(out)
+		return
+	}
 
 	msgBytes, err := r.ReadMsg()
 	if err != nil {

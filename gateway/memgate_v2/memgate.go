@@ -2613,7 +2613,37 @@ func (m *MemGate) isEdgeExecution(r *http.Request, filename, pathStr string) boo
 
 // executeEdgeFunction executes code bytes via 3-Tier fallback and writes the dynamic HTTP response.
 func (m *MemGate) executeEdgeFunction(w http.ResponseWriter, r *http.Request, code []byte, filename string, publisherPeer peer.ID, candidatePeers []peer.ID) {
-	reqBody, _ := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	// Handle CORS preflight requests immediately
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	maxBodySize := int64(10 << 20) // 10 MiB default
+	if m.cfg.EdgeLimits != nil && m.cfg.EdgeLimits.MaxBodySizeBytes > 0 {
+		maxBodySize = m.cfg.EdgeLimits.MaxBodySizeBytes
+	}
+
+	if r.ContentLength > maxBodySize {
+		http.Error(w, fmt.Sprintf("payload too large: maximum allowed body size is %d bytes", maxBodySize), http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	reqBody, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize+1))
+	if err != nil {
+		http.Error(w, "failed to read request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if int64(len(reqBody)) > maxBodySize {
+		http.Error(w, fmt.Sprintf("payload too large: body exceeded %d bytes", maxBodySize), http.StatusRequestEntityTooLarge)
+		return
+	}
+
 	edgeReq := memedge.NewRequestFromHTTP(r, reqBody)
 
 	// Clean path for multi-route sub-routing when invoked through /mem/{mid}/* or /memns/{name}/*
@@ -2636,7 +2666,7 @@ func (m *MemGate) executeEdgeFunction(w http.ResponseWriter, r *http.Request, co
 	runtimeType := memedge.DetectRuntime(filename, code)
 
 	var resp *memedge.Response
-	var err error
+	var execErr error
 
 	if m.cfg.EdgeService != nil {
 		rpcReq := &edge_rpc.RPCRequest{
@@ -2646,16 +2676,16 @@ func (m *MemGate) executeEdgeFunction(w http.ResponseWriter, r *http.Request, co
 			Req:     edgeReq,
 			Limits:  m.cfg.EdgeLimits,
 		}
-		resp, err = m.cfg.EdgeService.Delegate(r.Context(), publisherPeer, candidatePeers, rpcReq)
+		resp, execErr = m.cfg.EdgeService.Delegate(r.Context(), publisherPeer, candidatePeers, rpcReq)
 	} else if m.cfg.EdgeEngine != nil {
-		resp, err = m.cfg.EdgeEngine.Execute(r.Context(), code, runtimeType, edgeReq, m.cfg.EdgeLimits)
+		resp, execErr = m.cfg.EdgeEngine.Execute(r.Context(), code, runtimeType, edgeReq, m.cfg.EdgeLimits)
 		if resp != nil {
 			resp.Tier = memedge.TierGateway
 		}
 	}
 
-	if err != nil && (resp == nil || resp.Status == 0) {
-		http.Error(w, "edge execution failed: "+err.Error(), http.StatusInternalServerError)
+	if execErr != nil && (resp == nil || resp.Status == 0) {
+		http.Error(w, "edge execution failed: "+execErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -2666,6 +2696,19 @@ func (m *MemGate) executeEdgeFunction(w http.ResponseWriter, r *http.Request, co
 
 	for k, v := range resp.Headers {
 		w.Header().Set(k, v)
+	}
+
+	if w.Header().Get("Access-Control-Allow-Origin") == "" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
+	if w.Header().Get("Access-Control-Allow-Methods") == "" {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+	}
+	if w.Header().Get("Access-Control-Allow-Headers") == "" {
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+	}
+	if w.Header().Get("Access-Control-Expose-Headers") == "" {
+		w.Header().Set("Access-Control-Expose-Headers", "*")
 	}
 
 	w.Header().Set("X-Membuss-Edge", "true")

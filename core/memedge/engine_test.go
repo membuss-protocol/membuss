@@ -239,3 +239,50 @@ func TestEngine_DetectRuntime(t *testing.T) {
 		t.Errorf("expected wasm magic bytes to detect as RuntimeWasm")
 	}
 }
+
+func TestJSRunner_WebAPIsAndPromises(t *testing.T) {
+	ctx := context.Background()
+	engine, err := NewEngine(ctx, DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer engine.Close()
+
+	jsCode := `
+function handler(req) {
+	const encoded = btoa("hello world");
+	const decoded = atob(encoded);
+	const uuid = crypto.randomUUID();
+	return Promise.resolve({
+		status: 200,
+		body: {
+			encoded: encoded,
+			decoded: decoded,
+			uuid: uuid,
+			uuid_len: uuid.length
+		}
+	});
+}
+`
+
+	req := &Request{
+		Method: "GET",
+		Path:   "/api/crypto.js",
+	}
+
+	resp, err := engine.Execute(ctx, []byte(jsCode), RuntimeJS, req, nil)
+	if err != nil {
+		t.Fatalf("execution failed: %v", err)
+	}
+
+	if resp.Status != 200 {
+		t.Fatalf("expected status 200, got %d (err: %s)", resp.Status, resp.Error)
+	}
+	if !strings.Contains(resp.Body, `"decoded":"hello world"`) {
+		t.Errorf("expected body to contain decoded text, got %s", resp.Body)
+	}
+	if !strings.Contains(resp.Body, `"uuid_len":36`) {
+		t.Errorf("expected body to contain 36-char uuid, got %s", resp.Body)
+	}
+}
+

@@ -132,3 +132,58 @@ export default function(req) {
 	}
 }
 
+func TestMemGate_EdgeExecution_CORSAndPayloadLimits(t *testing.T) {
+	ctx := context.Background()
+	b := newMemBackend()
+
+	jsCode := []byte(`
+export default function(req) {
+	return { status: 200, body: JSON.stringify({ ok: true }) };
+}
+`)
+
+	funcMID := mid.FromBytes(jsCode)
+	b.putWithMeta(funcMID, jsCode, "application/javascript", "api/test.js", "application/javascript")
+
+	edgeEngine, err := memedge.NewEngine(ctx, memedge.DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create edge engine: %v", err)
+	}
+	defer edgeEngine.Close()
+
+	customLimits := memedge.DefaultLimits()
+	customLimits.MaxBodySizeBytes = 64 // 64 bytes max for testing
+
+	mg, err := New(Config{
+		Backend:    b,
+		EdgeEngine: edgeEngine,
+		EdgeLimits: &customLimits,
+	})
+	if err != nil {
+		t.Fatalf("failed to create memgate: %v", err)
+	}
+
+	// 1. Test CORS OPTIONS preflight
+	reqOptions := httptest.NewRequest("OPTIONS", "/mem/"+funcMID.String()+"?exec=true", nil)
+	wOptions := httptest.NewRecorder()
+	mg.Router().ServeHTTP(wOptions, reqOptions)
+
+	if wOptions.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204 for OPTIONS preflight, got %d", wOptions.Code)
+	}
+	if wOptions.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin '*', got %s", wOptions.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// 2. Test Payload Too Large (413)
+	largeBody := strings.Repeat("x", 200) // 200 bytes > 64 bytes limit
+	reqLarge := httptest.NewRequest("POST", "/mem/"+funcMID.String()+"?exec=true", strings.NewReader(largeBody))
+	wLarge := httptest.NewRecorder()
+	mg.Router().ServeHTTP(wLarge, reqLarge)
+
+	if wLarge.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413 Payload Too Large, got %d", wLarge.Code)
+	}
+}
+
+

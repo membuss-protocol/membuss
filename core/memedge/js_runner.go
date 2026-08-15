@@ -2,6 +2,7 @@ package memedge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
+	"github.com/google/uuid"
 )
 
 // JSRunner executes JavaScript serverless functions inside a Goja runtime.
@@ -100,6 +102,33 @@ func (r *JSRunner) Execute(ctx context.Context, code []byte, req *Request, limit
 	_ = vm.Set("req", reqObj)
 	_ = vm.Set("request", reqObj)
 
+	// Web standard polyfills: atob, btoa, crypto.randomUUID
+	_ = vm.Set("btoa", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return vm.ToValue("")
+		}
+		str := call.Arguments[0].String()
+		return vm.ToValue(base64.StdEncoding.EncodeToString([]byte(str)))
+	})
+
+	_ = vm.Set("atob", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return vm.ToValue("")
+		}
+		str := call.Arguments[0].String()
+		decoded, err := base64.StdEncoding.DecodeString(str)
+		if err != nil {
+			panic(vm.ToValue(fmt.Sprintf("Invalid base64 string: %v", err)))
+		}
+		return vm.ToValue(string(decoded))
+	})
+
+	cryptoObj := vm.NewObject()
+	_ = cryptoObj.Set("randomUUID", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(uuid.NewString())
+	})
+	_ = vm.Set("crypto", cryptoObj)
+
 	// Setup module/exports compatibility shims
 	moduleObj := vm.NewObject()
 	exportsObj := vm.NewObject()
@@ -177,6 +206,20 @@ func (r *JSRunner) Execute(ctx context.Context, code []byte, req *Request, limit
 				return r.handleError(invErr, start, limits, logs)
 			}
 			resVal = invokedVal
+		}
+	}
+
+	// If the return value is a Promise, unwrap the resolved/fulfilled value
+	if resVal != nil {
+		if p, ok := resVal.Export().(*goja.Promise); ok {
+			switch p.State() {
+			case goja.PromiseStateFulfilled:
+				resVal = p.Result()
+			case goja.PromiseStateRejected:
+				return r.handleError(fmt.Errorf("promise rejected: %v", p.Result()), start, limits, logs)
+			case goja.PromiseStatePending:
+				resVal = p.Result()
+			}
 		}
 	}
 

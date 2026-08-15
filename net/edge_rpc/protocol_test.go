@@ -101,3 +101,24 @@ function handler(req) {
 		t.Errorf("expected status 200 from delegate, got %d", delegateResp.Status)
 	}
 }
+
+func TestEdgeRPC_RateLimiting(t *testing.T) {
+	svc := &Service{
+		peerLimits: make(map[peer.ID]*peerLimiter),
+	}
+
+	testPeer := peer.ID("12D3KooWTestPeerRateLimit12345")
+
+	// Consume 20 tokens (burst limit)
+	for i := 0; i < 20; i++ {
+		if !svc.allowPeer(testPeer) {
+			t.Fatalf("request %d within burst limit should be allowed", i)
+		}
+	}
+
+	// 21st request should be rejected by rate limiter
+	if svc.allowPeer(testPeer) {
+		t.Fatalf("request beyond burst limit should be rate limited")
+	}
+}
+
