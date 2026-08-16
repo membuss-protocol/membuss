@@ -397,24 +397,69 @@ func platformDesktopArchiveDownloadURL(tag string) string {
 		githubRepoOwner, githubRepoName, tag, name)
 }
 
+// findDesktopInstallerURL returns the NSIS installer download URL on Windows.
+func findDesktopInstallerURL(info *latestReleaseInfo) string {
+	if info == nil || runtime.GOOS != "windows" {
+		return ""
+	}
+	wantSuffix := fmt.Sprintf("-%s-%s-installer.exe", runtime.GOOS, runtime.GOARCH)
+	for name, url := range info.Assets {
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "installer") && (strings.Contains(lower, wantSuffix) || strings.HasSuffix(lower, "-installer.exe")) {
+			return url
+		}
+	}
+	if info.TagName != "" {
+		installerName := fmt.Sprintf("Membuss-%s-%s-%s-installer.exe", info.TagName, runtime.GOOS, runtime.GOARCH)
+		if u, ok := info.Assets[installerName]; ok {
+			return u
+		}
+		return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s", githubRepoOwner, githubRepoName, info.TagName, installerName)
+	}
+	return ""
+}
+
+// findDesktopAppImageURL returns the AppImage download URL on Linux.
+func findDesktopAppImageURL(info *latestReleaseInfo) string {
+	if info == nil || runtime.GOOS != "linux" {
+		return ""
+	}
+	for name, url := range info.Assets {
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".appimage") {
+			return url
+		}
+	}
+	if info.TagName != "" {
+		appImageName := fmt.Sprintf("Membuss-%s-linux-amd64.AppImage", info.TagName)
+		if u, ok := info.Assets[appImageName]; ok {
+			return u
+		}
+		return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s", githubRepoOwner, githubRepoName, info.TagName, appImageName)
+	}
+	return ""
+}
+
 // findDesktopAssetURL returns the download URL for the desktop application.
 func findDesktopAssetURL(info *latestReleaseInfo) string {
 	if info == nil {
 		return ""
 	}
+	if runtime.GOOS == "windows" {
+		if u := findDesktopInstallerURL(info); u != "" {
+			return u
+		}
+	} else if runtime.GOOS == "linux" {
+		if u := findDesktopAppImageURL(info); u != "" {
+			return u
+		}
+	}
+
 	wantSuffix := fmt.Sprintf("-%s-%s.", runtime.GOOS, runtime.GOARCH)
 	for name, url := range info.Assets {
 		lower := strings.ToLower(name)
 		if strings.Contains(lower, "desktop") && strings.Contains(lower, wantSuffix) &&
 			(strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".appimage")) {
-			return url
-		}
-	}
-	// Also check if any asset matches AppImage or desktop installer
-	for name, url := range info.Assets {
-		lower := strings.ToLower(name)
-		if strings.Contains(lower, "membuss") && strings.Contains(lower, wantSuffix) &&
-			(strings.HasSuffix(lower, ".appimage") || strings.Contains(lower, "desktop")) {
 			return url
 		}
 	}

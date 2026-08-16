@@ -730,27 +730,49 @@ func (dm *DaemonManager) InstallCustomRelease(targetDir string, opts InstallRele
 		}
 
 		if !desktopUpdated && desktopDownloadURL != "" && desktopDownloadURL != daemonDownloadURL {
-			progressCb(65, fmt.Sprintf("Downloading desktop GUI (%s)...", versionTag))
-			desktopArchive := filepath.Join(targetDir, "membuss-desktop-download.zip")
-			if err := downloadArchiveFile(client, desktopDownloadURL, desktopArchive, 65, 85, progressCb); err == nil {
-				progressCb(88, "Extracting desktop GUI...")
-				stagingDir := filepath.Join(targetDir, "staging_desktop")
-				_ = os.MkdirAll(stagingDir, 0755)
-				_ = extractZip(desktopArchive, stagingDir)
-				_ = os.Remove(desktopArchive)
+			lowerURL := strings.ToLower(desktopDownloadURL)
+			isInstaller := strings.HasSuffix(lowerURL, ".exe") || strings.HasSuffix(lowerURL, ".appimage")
 
-				stagedDesktop := findExtractedDesktopBinary(stagingDir)
-				if stagedDesktop != "" {
-					progressCb(92, "Applying desktop self-update...")
+			if isInstaller {
+				progressCb(65, fmt.Sprintf("Downloading official desktop installer (%s)...", versionTag))
+				installerName := "membuss-installer" + exeExt
+				if runtime.GOOS == "linux" {
+					installerName = "membuss-appimage.AppImage"
+				}
+				installerFile := filepath.Join(targetDir, installerName)
+				if err := downloadArchiveFile(client, desktopDownloadURL, installerFile, 65, 90, progressCb); err == nil {
+					progressCb(92, "Launching installer to complete desktop update...")
 					sum := NewSelfUpdateManager()
-					if err := sum.ApplySelfUpdate(stagedDesktop); err != nil {
-						slog.Error("failed to apply desktop self-update", "error", err)
-						progressCb(94, fmt.Sprintf("Warning: Desktop self-update failed: %v", err))
+					if err := sum.ExecuteInstaller(installerFile); err != nil {
+						slog.Error("failed to launch desktop installer", "error", err)
+						progressCb(94, fmt.Sprintf("Warning: Installer launch failed: %v", err))
 					} else {
 						desktopUpdated = true
 					}
 				}
-				_ = os.RemoveAll(stagingDir)
+			} else {
+				progressCb(65, fmt.Sprintf("Downloading desktop GUI (%s)...", versionTag))
+				desktopArchive := filepath.Join(targetDir, "membuss-desktop-download.zip")
+				if err := downloadArchiveFile(client, desktopDownloadURL, desktopArchive, 65, 85, progressCb); err == nil {
+					progressCb(88, "Extracting desktop GUI...")
+					stagingDir := filepath.Join(targetDir, "staging_desktop")
+					_ = os.MkdirAll(stagingDir, 0755)
+					_ = extractZip(desktopArchive, stagingDir)
+					_ = os.Remove(desktopArchive)
+
+					stagedDesktop := findExtractedDesktopBinary(stagingDir)
+					if stagedDesktop != "" {
+						progressCb(92, "Applying desktop self-update...")
+						sum := NewSelfUpdateManager()
+						if err := sum.ApplySelfUpdate(stagedDesktop); err != nil {
+							slog.Error("failed to apply desktop self-update", "error", err)
+							progressCb(94, fmt.Sprintf("Warning: Desktop self-update failed: %v", err))
+						} else {
+							desktopUpdated = true
+						}
+					}
+					_ = os.RemoveAll(stagingDir)
+				}
 			}
 		}
 

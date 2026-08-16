@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -116,6 +117,22 @@ func TestFindDesktopAssetURL(t *testing.T) {
 	url := findDesktopAssetURL(info)
 	if url == "" {
 		t.Fatal("expected desktop asset url")
+	}
+}
+
+func TestFindDesktopInstallerURL(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("installer url check is Windows-specific")
+	}
+	info := &latestReleaseInfo{
+		TagName: "v2.8.6",
+		Assets: map[string]string{
+			"Membuss-v2.8.6-windows-amd64-installer.exe": "https://github.com/nnlgsakib/membuss/releases/download/v2.8.6/Membuss-v2.8.6-windows-amd64-installer.exe",
+		},
+	}
+	url := findDesktopInstallerURL(info)
+	if url == "" {
+		t.Fatal("expected installer url")
 	}
 }
 

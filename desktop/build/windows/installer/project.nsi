@@ -77,6 +77,8 @@ ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
    !insertmacro wails.checkArchitecture
+   # Close running instances before reinstalling / upgrading
+   nsExec::Exec 'taskkill /F /IM membuss-app.exe /IM membuss-desktop.exe /IM membuss.exe /T'
 FunctionEnd
 
 Section

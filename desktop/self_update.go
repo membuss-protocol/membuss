@@ -195,9 +195,47 @@ func (sum *SelfUpdateManager) RelaunchApp(args ...string) error {
 	return nil
 }
 
+// ExecuteInstaller runs the official setup installer or AppImage in a detached process
+// and cleanly exits the current application.
+func (sum *SelfUpdateManager) ExecuteInstaller(installerPath string) error {
+	if installerPath == "" {
+		return fmt.Errorf("installer path cannot be empty")
+	}
+
+	fi, err := os.Stat(installerPath)
+	if err != nil || fi.IsDir() || fi.Size() == 0 {
+		return fmt.Errorf("invalid installer package at %s", installerPath)
+	}
+
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(installerPath, 0755)
+	}
+
+	cmd := exec.Command(installerPath)
+	cmd.Dir = filepath.Dir(installerPath)
+
+	setupDetachedProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to launch installer at %s: %w", installerPath, err)
+	}
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		if runtime.GOOS != "windows" {
+			_ = cmd.Process.Release()
+		}
+		os.Exit(0)
+	}()
+
+	return nil
+}
+
 // IsDesktopBinary returns true if the filename represents the desktop application.
 func IsDesktopBinary(name string) bool {
 	lower := strings.ToLower(filepath.Base(name))
 	return strings.HasPrefix(lower, "membuss-desktop") ||
-		strings.HasPrefix(lower, "membus-desktop")
+		strings.HasPrefix(lower, "membus-desktop") ||
+		strings.HasPrefix(lower, "membuss-app") ||
+		(strings.HasPrefix(lower, "membuss") && strings.HasSuffix(lower, ".appimage"))
 }
