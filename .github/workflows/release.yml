@@ -201,7 +201,7 @@ jobs:
         shell: bash
         run: ls -la desktop/build/bin/
 
-      - name: Rename installer
+      - name: Rename installer and package portable desktop
         shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
@@ -211,12 +211,21 @@ jobs:
             exit 1
           fi
           cp "$INSTALLER" "Membuss-${TAG}-windows-amd64-installer.exe"
+          
+          # Find and package portable desktop binary
+          DESKTOP_EXE=$(ls desktop/build/bin/membuss-app.exe desktop/build/bin/membuss-desktop.exe desktop/build/bin/*.exe 2>/dev/null | grep -v installer | head -1)
+          if [ -n "$DESKTOP_EXE" ]; then
+            cp "$DESKTOP_EXE" membuss-desktop.exe
+            zip "membuss-desktop-${TAG}-windows-amd64.zip" membuss-desktop.exe
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-windows-installer
-          path: Membuss-*-windows-amd64-installer.exe
+          path: |
+            Membuss-*-windows-amd64-installer.exe
+            membuss-desktop-*-windows-amd64.zip
           retention-days: 1
 
   build-desktop-linux:
@@ -291,16 +300,22 @@ jobs:
           APPRUN
           chmod +x "$APPDIR/AppRun"
 
-      - name: Build AppImage
+      - name: Build AppImage and package portable desktop
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           /opt/appimagetool/AppRun Membuss.AppDir "Membuss-${TAG}-linux-amd64.AppImage"
+          
+          # Package portable Linux desktop binary
+          cp desktop/build/bin/membuss-app membuss-desktop
+          tar -czf "membuss-desktop-${TAG}-linux-amd64.tar.gz" membuss-desktop
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-appimage
-          path: Membuss-*-linux-amd64.AppImage
+          path: |
+            Membuss-*-linux-amd64.AppImage
+            membuss-desktop-*-linux-amd64.tar.gz
           retention-days: 1
 
   release:

@@ -42,6 +42,8 @@ func (a *App) startup(ctx context.Context) {
 		wailsRuntime.LogErrorf(ctx, "failed to load config: %v", err)
 		cfg = &DesktopConfig{}
 	}
+	// The running desktop application's source of truth is always the compiled version.Version
+	cfg.InstalledVersion = "v" + strings.TrimPrefix(version.Version, "v")
 	a.config = cfg
 	a.daemonManager = NewDaemonManager(cfg)
 }
@@ -456,35 +458,74 @@ func getInstalledBinaryVersion(cliPath string) string {
 	return ""
 }
 
-// UpgradeBinaries stops the node, removes the old binaries, downloads the latest release, and updates config.
-func (a *App) UpgradeBinaries() error {
+// InspectReleaseURL inspects a version tag or release URL and returns release metadata.
+func (a *App) InspectReleaseURL(urlOrTag string) (map[string]any, error) {
+	tag := parseReleaseTagOrURL(urlOrTag)
+
+	var info *latestReleaseInfo
+	var err error
+
+	if tag == "latest" || tag == "" {
+		info, err = fetchLatestRelease()
+	} else {
+		info, err = fetchReleaseByTag(tag)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve release: %w", err)
+	}
+	if info == nil {
+		return nil, fmt.Errorf("release information unavailable")
+	}
+
+	currentVer := "v" + strings.TrimPrefix(version.Version, "v")
+	if a.config != nil && a.config.InstalledVersion != "" {
+		a.config.InstalledVersion = currentVer
+	}
+
+	resolvedTag := version.Version
+	if info != nil && info.TagName != "" {
+		resolvedTag = info.TagName
+	}
+
+	daemonURL := ""
+	desktopURL := ""
+	if info != nil {
+		daemonURL = findDaemonAssetURL(info)
+		desktopURL = findDesktopAssetURL(info)
+	}
+
+	return map[string]any{
+		"tag_name":        resolvedTag,
+		"current_version": currentVer,
+		"is_newer":        isVersionNewer(resolvedTag, currentVer),
+		"is_older":        isVersionNewer(currentVer, resolvedTag),
+		"is_same":         resolvedTag == currentVer || strings.TrimPrefix(resolvedTag, "v") == strings.TrimPrefix(currentVer, "v"),
+		"daemon_url":      daemonURL,
+		"desktop_url":     desktopURL,
+		"from_api":        info != nil && info.FromAPI,
+		"assets_count":    len(info.Assets),
+	}, nil
+}
+
+// InstallComponents installs the selected components (Core Daemon and/or Desktop GUI) for the given tag/URL.
+func (a *App) InstallComponents(urlOrTag string, installCore bool, installDesktop bool) error {
 	if a.config.DataDir == "" {
 		return errors.New("no data directory configured")
 	}
 
 	// 1. Stop the node and force-kill system-wide to ensure files are not locked
-	wailsRuntime.LogInfo(a.ctx, "stopping node and force killing processes before upgrading...")
+	wailsRuntime.LogInfo(a.ctx, "stopping node and force killing processes before installing release...")
 	_ = a.daemonManager.Stop()
 	_ = killProcess("membuss*")
-	time.Sleep(1 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
-	// 2. Remove old binary
-	exeExt := ""
-	if runtime.GOOS == "windows" {
-		exeExt = ".exe"
-	}
-	daemonPath := filepath.Join(a.config.DataDir, "bin", "membuss"+exeExt)
-
-	wailsRuntime.LogInfo(a.ctx, "removing old binary...")
-	if err := os.Remove(daemonPath); err != nil && !os.IsNotExist(err) {
-		oldPath := daemonPath + ".old"
-		_ = os.Remove(oldPath) // remove previous old file if any
-		if renameErr := os.Rename(daemonPath, oldPath); renameErr != nil {
-			return fmt.Errorf("failed to remove or rename old daemon binary: %w", err)
-		}
+	opts := InstallReleaseOptions{
+		TagOrURL:       urlOrTag,
+		InstallCore:    installCore,
+		InstallDesktop: installDesktop,
 	}
 
-	// 3. Download and extract the latest release in a background goroutine
 	progressCallback := func(percent int, msg string) {
 		wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
 			"percent": percent,
@@ -493,7 +534,7 @@ func (a *App) UpgradeBinaries() error {
 	}
 
 	go func() {
-		versionTag, err := a.daemonManager.DownloadLatestRelease(a.config.DataDir, progressCallback)
+		versionTag, err := a.daemonManager.InstallCustomRelease(a.config.DataDir, opts, progressCallback)
 		if err != nil {
 			wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
 				"percent": -1,
@@ -509,11 +550,16 @@ func (a *App) UpgradeBinaries() error {
 		// Send success event
 		wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
 			"percent": 100,
-			"message": "Upgrade complete!",
+			"message": fmt.Sprintf("Installation of %s complete!", versionTag),
 		})
 	}()
 
 	return nil
+}
+
+// UpgradeBinaries stops the node, removes the old binaries, downloads the latest release, and updates config.
+func (a *App) UpgradeBinaries() error {
+	return a.InstallComponents("", true, true)
 }
 
 // RelaunchApp restarts the desktop application using the newly installed binary.

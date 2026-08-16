@@ -623,29 +623,47 @@ func findNextFreePort(addr string) (string, error) {
 	return addr, fmt.Errorf("failed to find free port starting from %s", addr)
 }
 
-// DownloadLatestRelease queries GitHub releases and downloads the appropriate zip file.
-// If the latest release has no compatible asset compiled yet (common in local dev),
-// it will fall back to checking if the binaries are compiled in the local bin/ folder
-// and copying them to targetDir to simulate a download.
+// InstallReleaseOptions defines what components to install.
+type InstallReleaseOptions struct {
+	TagOrURL       string `json:"tag_or_url"`
+	InstallCore    bool   `json:"install_core"`
+	InstallDesktop bool   `json:"install_desktop"`
+}
+
+// DownloadLatestRelease downloads and updates both core and desktop binaries to the latest release.
 func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func(percent int, msg string)) (string, error) {
-	progressCb(5, "Checking GitHub for latest releases...")
+	return dm.InstallCustomRelease(targetDir, InstallReleaseOptions{
+		TagOrURL:       "",
+		InstallCore:    true,
+		InstallDesktop: true,
+	}, progressCb)
+}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+// InstallCustomRelease downloads and updates the requested release (or specific components).
+func (dm *DaemonManager) InstallCustomRelease(targetDir string, opts InstallReleaseOptions, progressCb func(percent int, msg string)) (string, error) {
+	if !opts.InstallCore && !opts.InstallDesktop {
+		return "", fmt.Errorf("at least one component (Core or Desktop) must be selected")
+	}
 
-	var downloadUrl string
-	var versionTag string
-	var releaseErr error
+	progressCb(5, "Resolving release information...")
 
-	info, err := fetchLatestRelease()
-	if err != nil {
-		releaseErr = err
-		progressCb(10, "GitHub API unavailable; will try local binaries if needed...")
+	var info *latestReleaseInfo
+	var err error
+
+	targetTag := parseReleaseTagOrURL(opts.TagOrURL)
+	if targetTag != "" {
+		info, err = fetchReleaseByTag(targetTag)
 	} else {
+		info, err = fetchLatestRelease()
+	}
+
+	if err != nil && info == nil {
+		progressCb(10, "GitHub lookup unavailable, checking local binaries...")
+	}
+
+	versionTag := version.Version
+	if info != nil && info.TagName != "" {
 		versionTag = info.TagName
-		downloadUrl = findPlatformAssetURL(info)
-		if !info.FromAPI {
-			progressCb(12, "Resolved latest tag via release page (API rate-limit fallback)...")
-		}
 	}
 
 	binDir := filepath.Join(targetDir, "bin")
@@ -653,130 +671,160 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 		return "", err
 	}
 
-	// Fallback implementation: If download URL is empty, we look for locally built binaries.
-	if downloadUrl == "" {
-		progressCb(30, "No compatible asset found in GitHub release. Falling back to local binaries...")
-		time.Sleep(500 * time.Millisecond)
+	exeExt := ""
+	if runtime.GOOS == "windows" {
+		exeExt = ".exe"
+	}
 
-		rootBin, err := findLocalBinaries()
-		if err != nil {
-			if releaseErr != nil {
-				return "", fmt.Errorf("GitHub release query failed: %w (and local fallback failed: %v)", releaseErr, err)
+	client := &http.Client{Timeout: 30 * time.Second}
+	var daemonDownloadURL, desktopDownloadURL string
+
+	if info != nil {
+		daemonDownloadURL = findDaemonAssetURL(info)
+		desktopDownloadURL = findDesktopAssetURL(info)
+	}
+
+	// 1. Install Core Daemon if selected
+	if opts.InstallCore {
+		if daemonDownloadURL != "" {
+			progressCb(20, fmt.Sprintf("Downloading daemon core (%s)...", versionTag))
+			archiveExt := ".zip"
+			if runtime.GOOS != "windows" {
+				archiveExt = ".tar.gz"
 			}
-			return "", fmt.Errorf("no compatible asset found in GitHub release (and local fallback failed: %w)", err)
+			daemonArchive := filepath.Join(targetDir, "membuss-core"+archiveExt)
+			if err := downloadArchiveFile(client, daemonDownloadURL, daemonArchive, 20, 50, progressCb); err != nil {
+				slog.Warn("daemon asset download failed, attempting local fallback", "err", err)
+				if fbErr := copyLocalCore(binDir); fbErr != nil {
+					return "", fmt.Errorf("failed to download daemon (%w) and local fallback failed: %v", err, fbErr)
+				}
+			} else {
+				progressCb(55, "Extracting daemon core...")
+				if strings.HasSuffix(daemonDownloadURL, ".zip") {
+					_ = extractZip(daemonArchive, binDir)
+				} else {
+					_ = extractTarGz(daemonArchive, binDir)
+				}
+				_ = os.Remove(daemonArchive)
+			}
+		} else {
+			progressCb(30, "Copying local daemon binary...")
+			if err := copyLocalCore(binDir); err != nil {
+				return "", fmt.Errorf("local daemon binary not found: %w", err)
+			}
 		}
+	}
 
-		exeExt := ""
-		if runtime.GOOS == "windows" {
-			exeExt = ".exe"
-		}
-		// Single unified binary: membuss is both node and CLI.
-		daemonSrc := filepath.Join(rootBin, "membuss"+exeExt)
+	// 2. Install Desktop App if selected
+	if opts.InstallDesktop {
+		// First check if desktop was already extracted inside binDir
+		desktopExtracted := filepath.Join(binDir, "membuss-desktop"+exeExt)
+		desktopUpdated := false
 
-		progressCb(60, "Copying local development binary...")
-
-		err = copyFile(daemonSrc, filepath.Join(binDir, "membuss"+exeExt))
-		if err != nil {
-			return "", fmt.Errorf("failed to copy local membuss binary: %w", err)
-		}
-
-		// Also check and update desktop binary if available locally
-		desktopSrc := filepath.Join(rootBin, "membuss-desktop"+exeExt)
-		if fi, err := os.Stat(desktopSrc); err == nil && !fi.IsDir() {
-			progressCb(80, "Applying desktop application self-update...")
+		if fi, err := os.Stat(desktopExtracted); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			progressCb(75, "Applying desktop application self-update...")
 			sum := NewSelfUpdateManager()
-			if updateErr := sum.ApplySelfUpdate(desktopSrc); updateErr != nil {
-				slog.Warn("desktop self-update failed", "error", updateErr)
+			if err := sum.ApplySelfUpdate(desktopExtracted); err == nil {
+				desktopUpdated = true
 			}
 		}
 
-		progressCb(100, "Installation complete!")
-		return version.Version, nil
+		if !desktopUpdated && desktopDownloadURL != "" && desktopDownloadURL != daemonDownloadURL {
+			progressCb(65, fmt.Sprintf("Downloading desktop GUI (%s)...", versionTag))
+			desktopArchive := filepath.Join(targetDir, "membuss-desktop-download.zip")
+			if err := downloadArchiveFile(client, desktopDownloadURL, desktopArchive, 65, 85, progressCb); err == nil {
+				progressCb(88, "Extracting desktop GUI...")
+				stagingDir := filepath.Join(targetDir, "staging_desktop")
+				_ = os.MkdirAll(stagingDir, 0755)
+				_ = extractZip(desktopArchive, stagingDir)
+				_ = os.Remove(desktopArchive)
+
+				stagedDesktop := filepath.Join(stagingDir, "membuss-desktop"+exeExt)
+				if fi, err := os.Stat(stagedDesktop); err == nil && !fi.IsDir() {
+					sum := NewSelfUpdateManager()
+					_ = sum.ApplySelfUpdate(stagedDesktop)
+					desktopUpdated = true
+				}
+				_ = os.RemoveAll(stagingDir)
+			}
+		}
+
+		if !desktopUpdated && opts.TagOrURL == "" {
+			progressCb(80, "Checking local development desktop binary...")
+			if rootBin, err := findLocalBinaries(); err == nil {
+				localDesktop := filepath.Join(rootBin, "membuss-desktop"+exeExt)
+				if fi, err := os.Stat(localDesktop); err == nil && !fi.IsDir() {
+					sum := NewSelfUpdateManager()
+					_ = sum.ApplySelfUpdate(localDesktop)
+					desktopUpdated = true
+				}
+			}
+		}
+
+		if opts.InstallDesktop && !desktopUpdated && opts.TagOrURL != "" {
+			progressCb(90, fmt.Sprintf("Note: Release %s did not contain a standalone desktop archive (installer only). Core was updated.", versionTag))
+		}
 	}
 
-	// If downloadUrl is found, perform the actual download
-	progressCb(20, fmt.Sprintf("Downloading %s release...", versionTag))
-	archiveExt := ".zip"
-	if runtime.GOOS != "windows" {
-		archiveExt = ".tar.gz"
-	}
-	archivePath := filepath.Join(targetDir, "membuss-latest"+archiveExt)
-	
-	out, err := os.Create(archivePath)
+	progressCb(100, fmt.Sprintf("Installation of %s completed!", versionTag))
+	return versionTag, nil
+}
+
+func downloadArchiveFile(client *http.Client, url, destPath string, startPct, endPct int, progressCb func(int, string)) error {
+	out, err := os.Create(destPath)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer out.Close()
 
-	dresp, err := client.Get(downloadUrl)
+	resp, err := client.Get(url)
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer dresp.Body.Close()
+	defer resp.Body.Close()
 
-	if dresp.StatusCode != 200 {
-		return "", fmt.Errorf("download failed: status %s", dresp.Status)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned HTTP %s", resp.Status)
 	}
 
-	// Copy and report progress
-	totalSize := dresp.ContentLength
+	totalSize := resp.ContentLength
 	var downloaded int64
 	buf := make([]byte, 32*1024)
-	
+
 	for {
-		n, rerr := dresp.Body.Read(buf)
+		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			_, werr := out.Write(buf[:n])
-			if werr != nil {
-				return "", werr
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
 			}
 			downloaded += int64(n)
-			if totalSize > 0 {
-				percent := 20 + int(float64(downloaded)/float64(totalSize)*55.0) // Scale to 20-75% progress
-				progressCb(percent, fmt.Sprintf("Downloading... (%d%%)", percent))
+			if totalSize > 0 && progressCb != nil {
+				ratio := float64(downloaded) / float64(totalSize)
+				pct := startPct + int(ratio*float64(endPct-startPct))
+				progressCb(pct, fmt.Sprintf("Downloading... (%d%%)", pct))
 			}
 		}
 		if rerr == io.EOF {
 			break
 		}
 		if rerr != nil {
-			return "", rerr
+			return rerr
 		}
 	}
-	out.Close()
+	return nil
+}
 
-	progressCb(80, "Extracting release binaries...")
-	var extractErr error
-	if strings.HasSuffix(downloadUrl, ".zip") {
-		extractErr = extractZip(archivePath, binDir)
-	} else if strings.HasSuffix(downloadUrl, ".tar.gz") {
-		extractErr = extractTarGz(archivePath, binDir)
-	} else {
-		extractErr = fmt.Errorf("unsupported archive format: %s", downloadUrl)
+func copyLocalCore(binDir string) error {
+	rootBin, err := findLocalBinaries()
+	if err != nil {
+		return err
 	}
-	if extractErr != nil {
-		return "", fmt.Errorf("failed to extract archive: %w", extractErr)
-	}
-
-	// Check if the extracted archive contained a new desktop application binary
 	exeExt := ""
 	if runtime.GOOS == "windows" {
 		exeExt = ".exe"
 	}
-	desktopCandidate := filepath.Join(binDir, "membuss-desktop"+exeExt)
-	if fi, err := os.Stat(desktopCandidate); err == nil && !fi.IsDir() {
-		progressCb(90, "Applying desktop application self-update...")
-		sum := NewSelfUpdateManager()
-		if updateErr := sum.ApplySelfUpdate(desktopCandidate); updateErr != nil {
-			slog.Warn("desktop self-update failed", "error", updateErr)
-		}
-	}
-
-	progressCb(95, "Cleaning up downloaded archive...")
-	_ = os.Remove(archivePath)
-
-	progressCb(100, "Installation complete!")
-	return versionTag, nil
+	daemonSrc := filepath.Join(rootBin, "membuss"+exeExt)
+	return copyFile(daemonSrc, filepath.Join(binDir, "membuss"+exeExt))
 }
 
 // findLocalBinaries attempts to dynamically locate the directory containing

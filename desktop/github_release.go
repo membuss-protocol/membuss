@@ -379,6 +379,187 @@ func findPlatformAssetURL(info *latestReleaseInfo) string {
 	return ""
 }
 
+// platformDesktopArchiveAssetName returns the expected release asset file name for
+// the desktop application on the current OS/arch.
+func platformDesktopArchiveAssetName(tag string) string {
+	tag = strings.TrimSpace(tag)
+	ext := "zip"
+	if runtime.GOOS != "windows" {
+		ext = "tar.gz"
+	}
+	return fmt.Sprintf("membuss-desktop-%s-%s-%s.%s", tag, runtime.GOOS, runtime.GOARCH, ext)
+}
+
+// platformDesktopArchiveDownloadURL builds the public download URL for the desktop package.
+func platformDesktopArchiveDownloadURL(tag string) string {
+	name := platformDesktopArchiveAssetName(tag)
+	return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s",
+		githubRepoOwner, githubRepoName, tag, name)
+}
+
+// findDesktopAssetURL returns the download URL for the desktop application.
+func findDesktopAssetURL(info *latestReleaseInfo) string {
+	if info == nil {
+		return ""
+	}
+	wantSuffix := fmt.Sprintf("-%s-%s.", runtime.GOOS, runtime.GOARCH)
+	for name, url := range info.Assets {
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "desktop") && strings.Contains(lower, wantSuffix) &&
+			(strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".appimage")) {
+			return url
+		}
+	}
+	// Also check if any asset matches AppImage or desktop installer
+	for name, url := range info.Assets {
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "membuss") && strings.Contains(lower, wantSuffix) &&
+			(strings.HasSuffix(lower, ".appimage") || strings.Contains(lower, "desktop")) {
+			return url
+		}
+	}
+	if info.TagName != "" {
+		exact := platformDesktopArchiveAssetName(info.TagName)
+		if u, ok := info.Assets[exact]; ok {
+			return u
+		}
+		return platformDesktopArchiveDownloadURL(info.TagName)
+	}
+	return ""
+}
+
+// findDaemonAssetURL returns the download URL for the daemon binary package.
+func findDaemonAssetURL(info *latestReleaseInfo) string {
+	return findPlatformAssetURL(info)
+}
+
+// parseReleaseTagOrURL extracts a valid semantic tag (e.g. "v2.8.4") from
+// a GitHub release URL, download URL, or user input string.
+func parseReleaseTagOrURL(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+
+	// 1. If it's a GitHub /releases/tag/vX.Y.Z URL
+	if idx := strings.Index(input, "/releases/tag/"); idx >= 0 {
+		rest := input[idx+len("/releases/tag/"):]
+		if end := strings.IndexAny(rest, "/?# \t\n\r"); end >= 0 {
+			rest = rest[:end]
+		}
+		return strings.TrimSpace(rest)
+	}
+
+	// 2. If it's a GitHub /releases/download/vX.Y.Z/... URL
+	if idx := strings.Index(input, "/releases/download/"); idx >= 0 {
+		rest := input[idx+len("/releases/download/"):]
+		if end := strings.Index(rest, "/"); end >= 0 {
+			rest = rest[:end]
+		}
+		return strings.TrimSpace(rest)
+	}
+
+	// 3. If it's a raw tag or version string: e.g. "v2.8.4" or "2.8.4"
+	clean := strings.TrimPrefix(input, "refs/tags/")
+	clean = strings.TrimSpace(clean)
+	if len(clean) > 0 && clean[0] >= '0' && clean[0] <= '9' {
+		clean = "v" + clean
+	}
+	return clean
+}
+
+// isValidSemverTag verifies that the string matches a valid semantic version tag (e.g. v2.8.4, 2.8.4, v1.0.0-rc1).
+func isValidSemverTag(tag string) bool {
+	clean := strings.TrimPrefix(strings.TrimSpace(tag), "v")
+	if clean == "" {
+		return false
+	}
+	// Must start with digit
+	if clean[0] < '0' || clean[0] > '9' {
+		return false
+	}
+	// Verify characters: digits, dots, hyphens, alphanumeric
+	for _, r := range clean {
+		if (r < '0' || r > '9') && r != '.' && r != '-' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// fetchReleaseByTag fetches release details for a specific tag with strict existence checking.
+func fetchReleaseByTag(tag string) (*latestReleaseInfo, error) {
+	tag = parseReleaseTagOrURL(tag)
+	if tag == "" || !isValidSemverTag(tag) {
+		return nil, fmt.Errorf("invalid release version format '%s': expected semantic format like v2.8.4", tag)
+	}
+
+	// 1. Try GitHub REST API
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/%s", githubRepoOwner, githubRepoName, tag)
+	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	if err == nil {
+		applyGitHubAPIHeaders(req)
+		resp, err := newGitHubHTTPClient(10 * time.Second).Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+				var release map[string]any
+				if err := json.Unmarshal(body, &release); err == nil {
+					info := &latestReleaseInfo{
+						TagName: tag,
+						Assets:  make(map[string]string),
+						FromAPI: true,
+					}
+					if assets, ok := release["assets"].([]any); ok {
+						for _, a := range assets {
+							m, ok := a.(map[string]any)
+							if !ok {
+								continue
+							}
+							name, _ := m["name"].(string)
+							url, _ := m["browser_download_url"].(string)
+							if name != "" && url != "" {
+								info.Assets[name] = url
+							}
+						}
+					}
+					return info, nil
+				}
+			} else if resp.StatusCode == http.StatusNotFound {
+				return nil, fmt.Errorf("release '%s' was not found on GitHub", tag)
+			}
+		}
+	}
+
+	// 2. Fallback: Verify release HTML page on GitHub (for rate-limited API calls)
+	htmlURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", githubRepoOwner, githubRepoName, tag)
+	hreq, err := http.NewRequest(http.MethodGet, htmlURL, nil)
+	if err == nil {
+		applyBrowserHeaders(hreq)
+		hresp, err := newGitHubHTTPClient(10 * time.Second).Do(hreq)
+		if err == nil {
+			defer hresp.Body.Close()
+			if hresp.StatusCode == http.StatusOK {
+				info := &latestReleaseInfo{
+					TagName: tag,
+					Assets:  make(map[string]string),
+					FromAPI: false,
+				}
+				daemonName := platformArchiveAssetName(tag)
+				info.Assets[daemonName] = platformArchiveDownloadURL(tag)
+				desktopName := platformDesktopArchiveAssetName(tag)
+				info.Assets[desktopName] = platformDesktopArchiveDownloadURL(tag)
+				return info, nil
+			} else if hresp.StatusCode == http.StatusNotFound {
+				return nil, fmt.Errorf("release '%s' does not exist on GitHub", tag)
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("release '%s' could not be verified on GitHub", tag)
+}
+
 func abbreviate(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= max {
@@ -386,3 +567,4 @@ func abbreviate(s string, max int) string {
 	}
 	return s[:max-3] + "..."
 }
+

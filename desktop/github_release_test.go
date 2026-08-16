@@ -85,6 +85,68 @@ func TestFindPlatformAssetURL_Constructed(t *testing.T) {
 	}
 }
 
+func TestParseReleaseTagOrURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://github.com/nnlgsakib/membuss/releases/tag/v2.8.4", "v2.8.4"},
+		{"https://github.com/nnlgsakib/membuss/releases/tag/v2.8.3?ref=master", "v2.8.3"},
+		{"https://github.com/nnlgsakib/membuss/releases/download/v2.8.4/membuss-v2.8.4-windows-amd64.zip", "v2.8.4"},
+		{"v2.8.4", "v2.8.4"},
+		{"2.8.4", "v2.8.4"},
+		{"refs/tags/v2.8.0", "v2.8.0"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := parseReleaseTagOrURL(c.in)
+		if got != c.want {
+			t.Errorf("parseReleaseTagOrURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFindDesktopAssetURL(t *testing.T) {
+	info := &latestReleaseInfo{
+		TagName: "v2.8.4",
+		Assets: map[string]string{
+			"membuss-desktop-v2.8.4-windows-amd64.zip": "https://custom.download/desktop.zip",
+		},
+	}
+	url := findDesktopAssetURL(info)
+	if url == "" {
+		t.Fatal("expected desktop asset url")
+	}
+}
+
+func TestIsValidSemverTag(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"v2.8.4", true},
+		{"2.8.4", true},
+		{"v1.0.0-rc1", true},
+		{"vgbdg", false},
+		{"random_string", false},
+		{"v", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		got := isValidSemverTag(c.in)
+		if got != c.want {
+			t.Errorf("isValidSemverTag(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFetchReleaseByTag_Invalid(t *testing.T) {
+	_, err := fetchReleaseByTag("vgbdg")
+	if err == nil {
+		t.Fatal("expected error for invalid tag 'vgbdg', got nil")
+	}
+}
+
 // TestFetchLatestRelease_Live hits GitHub; skipped if network fails so CI stays green.
 func TestFetchLatestRelease_Live(t *testing.T) {
 	info, err := fetchLatestRelease()

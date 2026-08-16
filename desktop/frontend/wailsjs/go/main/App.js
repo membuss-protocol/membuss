@@ -42,8 +42,16 @@ export function GetNodeConfigRaw() {
   return window['go']['main']['App']['GetNodeConfigRaw']();
 }
 
+export function InspectReleaseURL(arg1) {
+  return window['go']['main']['App']['InspectReleaseURL'](arg1);
+}
+
 export function InstallBinaries(arg1) {
   return window['go']['main']['App']['InstallBinaries'](arg1);
+}
+
+export function InstallComponents(arg1, arg2, arg3) {
+  return window['go']['main']['App']['InstallComponents'](arg1, arg2, arg3);
 }
 
 export function IsNodeRunningSystemWide() {

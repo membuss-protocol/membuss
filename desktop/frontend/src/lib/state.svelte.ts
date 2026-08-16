@@ -8,6 +8,8 @@ import {
   StopNode,
   CheckForUpdate,
   UpgradeBinaries,
+  InspectReleaseURL,
+  InstallComponents,
   RelaunchApp,
   GetDaemonLogs
 } from '../../wailsjs/go/main/App';
@@ -210,17 +212,47 @@ class AppState {
     }
   }
 
-  async upgradeBinariesAction() {
+  customReleaseInput = $state('');
+  customReleaseData = $state<any>(null);
+  customReleaseLoading = $state(false);
+
+  async inspectCustomReleaseAction(input: string) {
+    if (!input || !input.trim()) {
+      this.addToast('warning', 'Please enter a release version tag or URL');
+      return;
+    }
+    this.customReleaseLoading = true;
+    try {
+      const data = await InspectReleaseURL(input.trim());
+      this.customReleaseData = data;
+      this.addToast('info', `Resolved release details for ${data.tag_name}`);
+    } catch (e: any) {
+      this.addToast('error', 'Failed to resolve release: ' + (e.message || e));
+      this.customReleaseData = null;
+    } finally {
+      this.customReleaseLoading = false;
+    }
+  }
+
+  async installComponentsAction(urlOrTag: string, installCore: boolean, installDesktop: boolean) {
+    if (!installCore && !installDesktop) {
+      this.addToast('warning', 'Select at least one component (Core or Desktop)');
+      return;
+    }
     this.updating = true;
     this.updateCompleted = false;
     this.updateProgress = 5;
-    this.updateMessage = 'Initiating download...';
+    this.updateMessage = 'Initiating installation...';
     try {
-      await UpgradeBinaries();
+      await InstallComponents(urlOrTag, installCore, installDesktop);
     } catch (e: any) {
-      this.addToast('error', 'Upgrade failed: ' + (e.message || e));
+      this.addToast('error', 'Installation failed: ' + (e.message || e));
       this.updating = false;
     }
+  }
+
+  async upgradeBinariesAction() {
+    await this.installComponentsAction('', true, true);
   }
 
   async relaunchAppAction() {

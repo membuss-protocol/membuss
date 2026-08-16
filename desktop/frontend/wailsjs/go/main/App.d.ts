@@ -22,7 +22,11 @@ export function GetNodeConfig():Promise<Record<string, any>>;
 
 export function GetNodeConfigRaw():Promise<string>;
 
+export function InspectReleaseURL(arg1:string):Promise<Record<string, any>>;
+
 export function InstallBinaries(arg1:string):Promise<void>;
+
+export function InstallComponents(arg1:string,arg2:boolean,arg3:boolean):Promise<void>;
 
 export function IsNodeRunningSystemWide():Promise<boolean>;
 
