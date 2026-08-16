@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 )
 
 // SelfUpdateManager handles safe, cross-platform replacement and relaunch
@@ -165,14 +164,6 @@ func (sum *SelfUpdateManager) RelaunchApp(args ...string) error {
 	}()
 
 	return nil
-}
-
-func setupDetachedProcess(cmd *exec.Cmd) {
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | 0x00000008, // DETACHED_PROCESS
-		}
-	}
 }
 
 // IsDesktopBinary returns true if the filename represents the desktop application.

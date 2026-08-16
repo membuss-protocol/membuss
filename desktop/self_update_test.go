@@ -3,11 +3,9 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 )
 
@@ -89,29 +87,10 @@ func TestSelfUpdate_LockedHandleSimulation(t *testing.T) {
 		t.Fatalf("failed to write new binary: %v", err)
 	}
 
-	// Open file with FILE_SHARE_DELETE (which is how the Windows PE loader loads executables)
-	var handle io.Closer
-	if runtime.GOOS == "windows" {
-		pathPtr, _ := syscall.UTF16PtrFromString(targetExe)
-		h, err := syscall.CreateFile(
-			pathPtr,
-			syscall.GENERIC_READ,
-			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
-			nil,
-			syscall.OPEN_EXISTING,
-			syscall.FILE_ATTRIBUTE_NORMAL,
-			0,
-		)
-		if err != nil {
-			t.Fatalf("failed to open handle with FILE_SHARE_DELETE: %v", err)
-		}
-		handle = closerFunc(func() error { return syscall.CloseHandle(h) })
-	} else {
-		f, err := os.Open(targetExe)
-		if err != nil {
-			t.Fatalf("failed to open target handle: %v", err)
-		}
-		handle = f
+	// Open file simulating a running executable
+	handle, err := openSimulatedRunningExecutable(targetExe)
+	if err != nil {
+		t.Fatalf("failed to open simulated handle: %v", err)
 	}
 	defer handle.Close()
 
