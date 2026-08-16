@@ -174,7 +174,7 @@
         <!-- Data Directory -->
         <div class="space-y-2">
           <span class="eyebrow block">Repository Data Directory</span>
-          <p class="text-xs text-[#8c887a]">Disk path where BadgerDB blockstore, cryptographic keys, and state files are stored.</p>
+          <p class="text-xs text-[#8c887a]">Disk path where Pebble blockstore, cryptographic keys, and state files are stored.</p>
           <div class="flex items-center gap-2 mt-2">
             <input
               type="text"

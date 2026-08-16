@@ -493,7 +493,7 @@
 			<p class="text-xs text-slate-400 leading-relaxed whitespace-pre-line">
 				{#if confirmStep === 1}
 					🚨 WARNING: You are about to initiate FLASHNODE.
-					This will completely WIPE the BadgerDB database, clearing all content, pins, cached data, and indices.
+					This will completely WIPE the Pebble database, clearing all content, pins, cached data, and indices.
 					This action is PERMANENT and CANNOT BE UNDONE.
 					Are you sure you want to proceed?
 				{:else}

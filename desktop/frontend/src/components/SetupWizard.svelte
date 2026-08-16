@@ -87,7 +87,7 @@
               </button>
             </div>
             <p class="text-[10px] text-[#5a574f] mt-1 font-mono">
-              Your cryptographic keys, BadgerDB blockstore, and logs will be saved here.
+              Your cryptographic keys, Pebble blockstore, and logs will be saved here.
             </p>
           </div>
 

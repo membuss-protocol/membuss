@@ -238,7 +238,7 @@
                 {app.config?.data_dir || 'G:\\membus\\desktop'}
               </div>
               <p class="text-[11px] text-[#8c887a]">
-                Stores BadgerDB blockstore, peer keys, and DAG indexes.
+                Stores Pebble blockstore, peer keys, and DAG indexes.
               </p>
             </div>
             <button
@@ -317,7 +317,7 @@
         <div class="max-w-md space-y-2">
           <h3 class="font-display text-2xl text-[#e9e2d2]">Initializing Membuss Node...</h3>
           <p class="text-xs text-[#8c887a] font-mono leading-relaxed">
-            Opening BadgerDB blockstore, synchronizing Kademlia routing tables, and binding HTTP gateway on :{app.config?.gateway_addr?.split(':')[1] || '8083'}...
+            Opening Pebble blockstore, synchronizing Kademlia routing tables, and binding HTTP gateway on :{app.config?.gateway_addr?.split(':')[1] || '8083'}...
           </p>
         </div>
         <div class="w-64 bg-[rgba(233,226,210,0.06)] h-1.5 rounded-[1px] overflow-hidden">
@@ -472,7 +472,7 @@
               </div>
             </div>
             <div class="text-[10px] text-[#8c887a] border-t border-[rgba(233,226,210,0.06)] pt-2 font-mono flex items-center justify-between">
-              <span>BadgerDB Blockstore</span>
+              <span>Pebble Blockstore</span>
               <span class="text-[#e8a33d]">Sealed</span>
             </div>
           </div>
