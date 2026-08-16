@@ -14,6 +14,10 @@ export function CheckNodeStatus() {
   return window['go']['main']['App']['CheckNodeStatus']();
 }
 
+export function ClearDaemonLogs() {
+  return window['go']['main']['App']['ClearDaemonLogs']();
+}
+
 export function DownloadContent(arg1, arg2) {
   return window['go']['main']['App']['DownloadContent'](arg1, arg2);
 }
@@ -44,6 +48,10 @@ export function InstallBinaries(arg1) {
 
 export function IsNodeRunningSystemWide() {
   return window['go']['main']['App']['IsNodeRunningSystemWide']();
+}
+
+export function OpenDataDir() {
+  return window['go']['main']['App']['OpenDataDir']();
 }
 
 export function ResetSetup() {

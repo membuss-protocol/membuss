@@ -8,6 +8,8 @@ export function CheckForUpdate():Promise<main.UpdateCheckResult>;
 
 export function CheckNodeStatus():Promise<Record<string, any>>;
 
+export function ClearDaemonLogs():Promise<void>;
+
 export function DownloadContent(arg1:string,arg2:string):Promise<string>;
 
 export function ForceKillNode():Promise<void>;
@@ -23,6 +25,8 @@ export function GetNodeConfigRaw():Promise<string>;
 export function InstallBinaries(arg1:string):Promise<void>;
 
 export function IsNodeRunningSystemWide():Promise<boolean>;
+
+export function OpenDataDir():Promise<void>;
 
 export function ResetSetup():Promise<void>;
 

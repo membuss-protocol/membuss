@@ -95,18 +95,75 @@ func (c *DesktopConfig) Save() error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// LogRingBuffer stores the most recent N lines of daemon logs in memory.
+type LogRingBuffer struct {
+	mu       sync.Mutex
+	lines    []string
+	maxLines int
+}
+
+func NewLogRingBuffer(maxLines int) *LogRingBuffer {
+	if maxLines <= 0 {
+		maxLines = 600
+	}
+	return &LogRingBuffer{
+		lines:    make([]string, 0, maxLines),
+		maxLines: maxLines,
+	}
+}
+
+func (rb *LogRingBuffer) Write(p []byte) (n int, err error) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	str := string(p)
+	parts := strings.Split(str, "\n")
+	for _, part := range parts {
+		trimmed := strings.TrimRight(part, "\r")
+		if trimmed != "" {
+			if len(rb.lines) >= rb.maxLines {
+				rb.lines = rb.lines[1:]
+			}
+			rb.lines = append(rb.lines, trimmed)
+		}
+	}
+	return len(p), nil
+}
+
+func (rb *LogRingBuffer) GetLines() []string {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	out := make([]string, len(rb.lines))
+	copy(out, rb.lines)
+	return out
+}
+
+func (rb *LogRingBuffer) Clear() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.lines = rb.lines[:0]
+}
+
 // DaemonManager manages the background daemon process.
 type DaemonManager struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	config *DesktopConfig
-	ctx    context.Context
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	config    *DesktopConfig
+	ctx       context.Context
+	logBuffer *LogRingBuffer
 }
 
 func NewDaemonManager(cfg *DesktopConfig) *DaemonManager {
 	return &DaemonManager{
-		config: cfg,
+		config:    cfg,
+		logBuffer: NewLogRingBuffer(600),
 	}
+}
+
+func (dm *DaemonManager) GetBufferedLogs() []string {
+	if dm.logBuffer == nil {
+		return nil
+	}
+	return dm.logBuffer.GetLines()
 }
 
 // IsRunning reports whether a usable daemon is currently running.
@@ -297,12 +354,16 @@ func (dm *DaemonManager) Start(dataDir string) error {
 
 	configPath := filepath.Join(dataDir, "config.yaml")
 
-	// Create a log file inside the data directory
+	// Create / append a log file inside the data directory
 	logDir := filepath.Join(dataDir, "logs")
 	_ = os.MkdirAll(logDir, 0755)
-	logFile, err := os.OpenFile(filepath.Join(logDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		logFile = nil
+	logFile, err := os.OpenFile(filepath.Join(logDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		sessionBanner := fmt.Sprintf("\n=== MEMBUSS DAEMON SESSION STARTED AT %s ===\n", time.Now().Format("2006-01-02 15:04:05"))
+		_, _ = logFile.WriteString(sessionBanner)
+		if dm.logBuffer != nil {
+			_, _ = dm.logBuffer.Write([]byte(sessionBanner))
+		}
 	}
 
 	startCmd := func(detached bool) (*exec.Cmd, error) {
@@ -312,9 +373,17 @@ func (dm *DaemonManager) Start(dataDir string) error {
 		} else {
 			hideConsoleWindowSimple(c)
 		}
+		var writers []io.Writer
 		if logFile != nil {
-			c.Stdout = logFile
-			c.Stderr = logFile
+			writers = append(writers, logFile)
+		}
+		if dm.logBuffer != nil {
+			writers = append(writers, dm.logBuffer)
+		}
+		if len(writers) > 0 {
+			mw := io.MultiWriter(writers...)
+			c.Stdout = mw
+			c.Stderr = mw
 		}
 		return c, c.Start()
 	}
@@ -809,8 +878,8 @@ func extractZip(src, dest string) error {
 	return nil
 }
 
-// CheckStatus pings the HTTP API endpoint to verify node health.
-func (dm *DaemonManager) CheckStatus(apiAddr string) (map[string]any, error) {
+// CheckStatus pings the HTTP API and Gateway endpoints to gather rich, live node telemetry.
+func (dm *DaemonManager) CheckStatus(apiAddr, gatewayAddr string) (map[string]any, error) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(fmt.Sprintf("http://%s/api/v1/node/info", apiAddr))
 	if err != nil {
@@ -827,7 +896,76 @@ func (dm *DaemonManager) CheckStatus(apiAddr string) (map[string]any, error) {
 		return nil, err
 	}
 
-	return payload, nil
+	info := make(map[string]any)
+	// Unwrap {"status": "ok", "data": {...}} or flat map
+	if dataMap, ok := payload["data"].(map[string]any); ok {
+		for k, v := range dataMap {
+			info[k] = v
+		}
+	} else {
+		for k, v := range payload {
+			info[k] = v
+		}
+	}
+
+	// Also check peers count from API
+	if pResp, pErr := client.Get(fmt.Sprintf("http://%s/api/v1/peers", apiAddr)); pErr == nil {
+		defer pResp.Body.Close()
+		var pPayload map[string]any
+		if err := json.NewDecoder(pResp.Body).Decode(&pPayload); err == nil {
+			if pData, ok := pPayload["data"].([]any); ok {
+				info["num_peers"] = len(pData)
+			} else if pList, ok := pPayload["peers"].([]any); ok {
+				info["num_peers"] = len(pList)
+			}
+		}
+	}
+
+	// Query rich telemetry from Gateway if available
+	if gatewayAddr != "" {
+		req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/?format=json", gatewayAddr), nil)
+		req.Header.Set("Accept", "application/json")
+		if gResp, gErr := client.Do(req); gErr == nil {
+			defer gResp.Body.Close()
+			var gData map[string]any
+			if err := json.NewDecoder(gResp.Body).Decode(&gData); err == nil {
+				if v, exists := gData["StoreBytes"]; exists {
+					info["repo_size"] = v
+				}
+				if v, exists := gData["BlockCount"]; exists {
+					info["num_blocks"] = v
+				}
+				if v, exists := gData["SealedCount"]; exists {
+					info["sealed_count"] = v
+				}
+				if v, exists := gData["PeerCount"]; exists {
+					info["num_peers"] = v
+				}
+				if v, exists := gData["Uptime"]; exists {
+					info["uptime_sec"] = v
+				}
+				if v, exists := gData["SealedList"]; exists {
+					info["sealed_list"] = v
+				}
+				if v, exists := gData["AllFiles"]; exists {
+					info["all_files"] = v
+				}
+				if nodeInfo, ok := gData["NodeInfo"].(map[string]any); ok {
+					if isAnchor, ok := nodeInfo["AnchorMode"].(bool); ok {
+						info["is_anchor"] = isAnchor
+					}
+					if peerID, ok := nodeInfo["PeerID"].(string); ok && peerID != "" {
+						info["peer_id"] = peerID
+					}
+					if addrs, ok := nodeInfo["Addrs"].([]any); ok && len(addrs) > 0 {
+						info["addrs"] = addrs
+					}
+				}
+			}
+		}
+	}
+
+	return info, nil
 }
 
 // CheckExplorer checks if the gateway's explorer is online.
