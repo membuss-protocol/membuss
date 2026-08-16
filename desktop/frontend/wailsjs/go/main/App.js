@@ -54,6 +54,10 @@ export function OpenDataDir() {
   return window['go']['main']['App']['OpenDataDir']();
 }
 
+export function RelaunchApp() {
+  return window['go']['main']['App']['RelaunchApp']();
+}
+
 export function ResetSetup() {
   return window['go']['main']['App']['ResetSetup']();
 }

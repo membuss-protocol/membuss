@@ -36,6 +36,7 @@ func NewApp() *App {
 // The daemon is NOT auto-started — the user must click Start Node.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	CleanupOldExecutables()
 	cfg, err := LoadConfig()
 	if err != nil {
 		wailsRuntime.LogErrorf(ctx, "failed to load config: %v", err)
@@ -513,6 +514,12 @@ func (a *App) UpgradeBinaries() error {
 	}()
 
 	return nil
+}
+
+// RelaunchApp restarts the desktop application using the newly installed binary.
+func (a *App) RelaunchApp() error {
+	sum := NewSelfUpdateManager()
+	return sum.RelaunchApp()
 }
 
 // IsNodeRunningSystemWide checks if any membuss daemon process is running on the system.

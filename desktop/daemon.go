@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -674,7 +675,17 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 			return "", fmt.Errorf("failed to copy local membuss binary: %w", err)
 		}
 
-		progressCb(100, "Local installation complete!")
+		// Also check and update desktop binary if available locally
+		desktopSrc := filepath.Join(rootBin, "membuss-desktop"+exeExt)
+		if fi, err := os.Stat(desktopSrc); err == nil && !fi.IsDir() {
+			progressCb(80, "Applying desktop application self-update...")
+			sum := NewSelfUpdateManager()
+			if updateErr := sum.ApplySelfUpdate(desktopSrc); updateErr != nil {
+				slog.Warn("desktop self-update failed", "error", updateErr)
+			}
+		}
+
+		progressCb(100, "Installation complete!")
 		return version.Version, nil
 	}
 
@@ -716,7 +727,7 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 			}
 			downloaded += int64(n)
 			if totalSize > 0 {
-				percent := 20 + int(float64(downloaded)/float64(totalSize)*60.0) // Scale to 20-80% progress
+				percent := 20 + int(float64(downloaded)/float64(totalSize)*55.0) // Scale to 20-75% progress
 				progressCb(percent, fmt.Sprintf("Downloading... (%d%%)", percent))
 			}
 		}
@@ -729,7 +740,7 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 	}
 	out.Close()
 
-	progressCb(85, "Extracting binaries...")
+	progressCb(80, "Extracting release binaries...")
 	var extractErr error
 	if strings.HasSuffix(downloadUrl, ".zip") {
 		extractErr = extractZip(archivePath, binDir)
@@ -740,6 +751,20 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 	}
 	if extractErr != nil {
 		return "", fmt.Errorf("failed to extract archive: %w", extractErr)
+	}
+
+	// Check if the extracted archive contained a new desktop application binary
+	exeExt := ""
+	if runtime.GOOS == "windows" {
+		exeExt = ".exe"
+	}
+	desktopCandidate := filepath.Join(binDir, "membuss-desktop"+exeExt)
+	if fi, err := os.Stat(desktopCandidate); err == nil && !fi.IsDir() {
+		progressCb(90, "Applying desktop application self-update...")
+		sum := NewSelfUpdateManager()
+		if updateErr := sum.ApplySelfUpdate(desktopCandidate); updateErr != nil {
+			slog.Warn("desktop self-update failed", "error", updateErr)
+		}
 	}
 
 	progressCb(95, "Cleaning up downloaded archive...")

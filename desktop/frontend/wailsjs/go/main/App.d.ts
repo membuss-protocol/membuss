@@ -28,6 +28,8 @@ export function IsNodeRunningSystemWide():Promise<boolean>;
 
 export function OpenDataDir():Promise<void>;
 
+export function RelaunchApp():Promise<void>;
+
 export function ResetSetup():Promise<void>;
 
 export function SaveConfig(arg1:main.DesktopConfig):Promise<void>;

@@ -8,8 +8,10 @@ import {
   StopNode,
   CheckForUpdate,
   UpgradeBinaries,
+  RelaunchApp,
   GetDaemonLogs
 } from '../../wailsjs/go/main/App';
+import * as wailsRuntime from '../../wailsjs/runtime/runtime';
 
 export interface Toast {
   id: string;
@@ -163,12 +165,40 @@ class AppState {
     }
   }
 
+  updateProgress = $state(0);
+  updateMessage = $state('');
+  updateCompleted = $state(false);
+
+  constructor() {
+    try {
+      wailsRuntime.EventsOn('upgrade_progress', (data: any) => {
+        if (data) {
+          this.updateProgress = data.percent;
+          this.updateMessage = data.message || '';
+          if (data.percent === 100) {
+            this.updateCompleted = true;
+            this.updating = false;
+            this.addToast('success', 'Both Daemon and Desktop app upgraded successfully!');
+          } else if (data.percent === -1) {
+            this.updating = false;
+            this.addToast('error', `Upgrade error: ${data.message}`);
+          }
+        }
+      });
+    } catch (e) {
+      // ignore outside wails runtime
+    }
+  }
+
   async checkForUpdatesAction() {
     this.updateChecking = true;
     try {
       const result = await CheckForUpdate();
       if (result && result.has_update) {
         this.updateInfo = result;
+        this.updateCompleted = false;
+        this.updateProgress = 0;
+        this.updateMessage = '';
         this.showUpdateModal = true;
       } else {
         this.addToast('success', 'Membuss is up to date (' + (result?.current_version || 'latest') + ')');
@@ -182,15 +212,23 @@ class AppState {
 
   async upgradeBinariesAction() {
     this.updating = true;
+    this.updateCompleted = false;
+    this.updateProgress = 5;
+    this.updateMessage = 'Initiating download...';
     try {
       await UpgradeBinaries();
-      this.addToast('success', 'Upgraded to ' + this.updateInfo?.latest_version);
-      this.showUpdateModal = false;
-      await this.loadApp();
     } catch (e: any) {
       this.addToast('error', 'Upgrade failed: ' + (e.message || e));
-    } finally {
       this.updating = false;
+    }
+  }
+
+  async relaunchAppAction() {
+    try {
+      this.addToast('info', 'Relaunching Membuss Desktop...');
+      await RelaunchApp();
+    } catch (e: any) {
+      this.addToast('error', 'Relaunch failed: ' + (e.message || e));
     }
   }
 
