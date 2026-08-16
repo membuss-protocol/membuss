@@ -225,13 +225,18 @@ func (dm *DaemonManager) apiHealthy() bool {
 	if dm.config == nil || dm.config.APIAddr == "" {
 		return false
 	}
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	client := &http.Client{
+		Timeout: 1500 * time.Millisecond,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
 	resp, err := client.Get(fmt.Sprintf("http://%s/api/v1/node/info", dm.config.APIAddr))
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	// Drain so the connection can be reused by the keep-alive transport.
+	// Drain so connection is cleanly released without leaving half-closed sockets.
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
@@ -905,7 +910,12 @@ func extractZip(src, dest string) error {
 
 // CheckStatus pings the HTTP API and Gateway endpoints to gather rich, live node telemetry.
 func (dm *DaemonManager) CheckStatus(apiAddr, gatewayAddr string) (map[string]any, error) {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
 	resp, err := client.Get(fmt.Sprintf("http://%s/api/v1/node/info", apiAddr))
 	if err != nil {
 		return nil, err
@@ -995,12 +1005,25 @@ func (dm *DaemonManager) CheckStatus(apiAddr, gatewayAddr string) (map[string]an
 
 // CheckExplorer checks if the gateway's explorer is online.
 func (dm *DaemonManager) CheckExplorer(gatewayAddr string) bool {
-	conn, err := net.DialTimeout("tcp", gatewayAddr, 1*time.Second)
-	if err != nil {
+	if gatewayAddr == "" {
 		return false
 	}
-	conn.Close()
-	return true
+	client := &http.Client{
+		Timeout: 1 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
+	resp, err := client.Get(fmt.Sprintf("http://%s/healthz", gatewayAddr))
+	if err != nil {
+		resp, err = client.Get(fmt.Sprintf("http://%s/", gatewayAddr))
+		if err != nil {
+			return false
+		}
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode >= 200 && resp.StatusCode < 500
 }
 
 // LoadYamlConfig reads config.yaml from target dir.
