@@ -36,6 +36,7 @@ func NewApp() *App {
 // The daemon is NOT auto-started — the user must click Start Node.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	CleanupOldExecutables()
 	cfg, err := LoadConfig()
 	if err != nil {
 		wailsRuntime.LogErrorf(ctx, "failed to load config: %v", err)
@@ -75,6 +76,22 @@ func (a *App) SelectDirectory() (string, error) {
 		return "", errors.New("directory selection cancelled")
 	}
 	return dir, nil
+}
+
+// OpenDataDir opens the configured data directory in the OS file explorer.
+func (a *App) OpenDataDir() error {
+	dir := a.config.DataDir
+	if dir == "" {
+		return errors.New("no data directory configured")
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer", dir).Start()
+	case "darwin":
+		return exec.Command("open", dir).Start()
+	default:
+		return exec.Command("xdg-open", dir).Start()
+	}
 }
 
 // InstallBinaries downloads and extracts the daemon binaries, emitting progress events.
@@ -180,7 +197,7 @@ func (a *App) StartNode() error {
 		return errors.New("no data directory configured")
 	}
 	// If a keep-alive instance is already healthy, treat as success.
-	if _, err := a.daemonManager.CheckStatus(a.config.APIAddr); err == nil {
+	if _, err := a.daemonManager.CheckStatus(a.config.APIAddr, a.config.GatewayAddr); err == nil {
 		return nil
 	}
 	return a.daemonManager.Start(a.config.DataDir)
@@ -193,15 +210,14 @@ func (a *App) StopNode() error {
 
 // CheckNodeStatus checks if the daemon is online and queries Node Info.
 func (a *App) CheckNodeStatus() (map[string]any, error) {
-	// Tracked child OR system-wide daemon (keep-alive after GUI restart).
-	isRunning := a.daemonManager.IsRunning() || isProcessRunning("membuss")
-
-	// Probe the HTTP API
-	info, err := a.daemonManager.CheckStatus(a.config.APIAddr)
+	// 1. Probe the HTTP API and Gateway (fast, authoritative, zero subprocesses)
+	info, err := a.daemonManager.CheckStatus(a.config.APIAddr, a.config.GatewayAddr)
 	apiOnline := err == nil
-	// If API answers, the node is effectively running even if process scan missed it.
-	if apiOnline {
-		isRunning = true
+
+	isRunning := apiOnline
+	if !isRunning {
+		// 2. Fast in-memory process handle check
+		isRunning = a.daemonManager.IsRunning()
 	}
 
 	statusMap := map[string]any{
@@ -211,7 +227,7 @@ func (a *App) CheckNodeStatus() (map[string]any, error) {
 
 	if apiOnline {
 		statusMap["info"] = info
-	} else if err != nil {
+	} else if isRunning && err != nil {
 		statusMap["error"] = err.Error()
 	}
 
@@ -240,31 +256,39 @@ func (a *App) VerifyInstallation() map[string]any {
 	}
 
 	// 1. Check DataDir exists
+	if cfg.DataDir == "" {
+		result["valid"] = false
+		result["data_dir_ok"] = false
+		return result
+	}
+
 	if fi, err := os.Stat(cfg.DataDir); err != nil || !fi.IsDir() {
 		result["valid"] = false
 		result["data_dir_ok"] = false
 	}
 
-	// 2. Check binaries
-	exeExt := ""
+	// 2. Check daemon binary (membuss is the unified daemon + CLI binary)
+	exeName := "membuss"
 	if runtime.GOOS == "windows" {
-		exeExt = ".exe"
+		exeName = "membuss.exe"
 	}
-	// Single unified binary: membuss is both node and CLI. The
-	// cli_bin_ok flag is kept in the result (mirrors daemon_bin_ok)
-	// for frontend compatibility, but both now refer to the one
-	// binary.
-	daemonPath := filepath.Join(cfg.DataDir, "bin", "membuss"+exeExt)
-
+	daemonPath := filepath.Join(cfg.DataDir, "bin", exeName)
 	if _, err := os.Stat(daemonPath); err != nil {
+		if localBinDir, err := findLocalBinaries(); err == nil {
+			daemonPath = filepath.Join(localBinDir, exeName)
+		} else {
+			daemonPath = ""
+		}
+	}
+	if daemonPath == "" {
 		result["valid"] = false
 		result["daemon_bin_ok"] = false
 		result["cli_bin_ok"] = false
 	}
 
-	// 3. Check config.yaml
-	configPath := filepath.Join(cfg.DataDir, "config.yaml")
-	if _, err := os.Stat(configPath); err != nil {
+	// 3. Check node config.yaml
+	configYamlPath := filepath.Join(cfg.DataDir, "config.yaml")
+	if _, err := os.Stat(configYamlPath); err != nil {
 		result["valid"] = false
 		result["node_config_ok"] = false
 	}
@@ -285,10 +309,19 @@ func (a *App) ResetSetup() error {
 	return a.config.Save()
 }
 
-var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+var ansiRegexp = regexp.MustCompile(`(?:\x1b|\x1B)\[[0-9;?]*[ -/]*[@-~]|\[[0-9]{1,2}(?:;[0-9]{1,2})*m`)
 
-// GetDaemonLogs reads the last few lines from the daemon log file.
+func cleanANSI(s string) string {
+	return ansiRegexp.ReplaceAllString(s, "")
+}
+
+// GetDaemonLogs reads the last few lines from the daemon log file or memory buffer.
 func (a *App) GetDaemonLogs() (string, error) {
+	// 1. Fast in-memory buffer check
+	if buffered := a.daemonManager.GetBufferedLogs(); len(buffered) > 0 {
+		return cleanANSI(strings.Join(buffered, "\n")), nil
+	}
+
 	if a.config.DataDir == "" {
 		return "", errors.New("no data directory configured")
 	}
@@ -310,8 +343,19 @@ func (a *App) GetDaemonLogs() (string, error) {
 		logStr = string(data)
 	}
 
-	cleanLogs := ansiRegexp.ReplaceAllString(logStr, "")
-	return cleanLogs, nil
+	return cleanANSI(logStr), nil
+}
+
+// ClearDaemonLogs clears both the in-memory log buffer and the daemon.log file on disk.
+func (a *App) ClearDaemonLogs() error {
+	if a.daemonManager != nil && a.daemonManager.logBuffer != nil {
+		a.daemonManager.logBuffer.Clear()
+	}
+	if a.config.DataDir != "" {
+		logPath := filepath.Join(a.config.DataDir, "logs", "daemon.log")
+		_ = os.WriteFile(logPath, []byte(""), 0644)
+	}
+	return nil
 }
 
 // domReady is called when the renderer has loaded.
@@ -470,6 +514,12 @@ func (a *App) UpgradeBinaries() error {
 	}()
 
 	return nil
+}
+
+// RelaunchApp restarts the desktop application using the newly installed binary.
+func (a *App) RelaunchApp() error {
+	sum := NewSelfUpdateManager()
+	return sum.RelaunchApp()
 }
 
 // IsNodeRunningSystemWide checks if any membuss daemon process is running on the system.

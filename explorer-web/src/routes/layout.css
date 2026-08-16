@@ -79,6 +79,30 @@
 }
 
 @layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(233, 226, 210, 0.18) #0c1416;
+  }
+
+  /* Custom Sleek Rack Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0c1416;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(233, 226, 210, 0.18);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(232, 163, 61, 0.5);
+  }
+  ::-webkit-scrollbar-corner {
+    background: #0c1416;
+  }
+
   html,
   body {
     max-width: 100%;
