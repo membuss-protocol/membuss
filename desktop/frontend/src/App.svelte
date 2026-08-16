@@ -35,7 +35,7 @@
         <div class="flex items-center justify-between">
           <span class="font-display text-lg leading-none text-[#e9e2d2]">MEMBUSS</span>
           <span class="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-[3px] bg-[rgba(233,226,210,0.06)] text-[#e8a33d] border border-[rgba(233,226,210,0.1)]">
-            {app.config?.installed_version || 'v2.8.8'}
+            {app.config?.installed_version || 'v2.8.9'}
           </span>
         </div>
         <span class="text-[9px] text-[#8c887a] font-mono tracking-[0.22em] uppercase mt-0.5">decentralized content network</span>
