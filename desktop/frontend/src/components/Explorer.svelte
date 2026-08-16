@@ -7,10 +7,46 @@
 
   let iframeRef = $state(null);
   let isChecking = $state(false);
-  let explorerUrl = $derived(`http://${app.config?.gateway_addr || '127.0.0.1:8080'}/explorer/`);
+  let explorerUrl = $derived(`http://${app.config?.gateway_addr || '127.0.0.1:8083'}/explorer/`);
   let checkInterval = null;
 
+  function handleIframeMessage(event) {
+    if (!event || !event.data) return;
+    const data = event.data;
+
+    // Handle open external browser URL requests from embedded explorer
+    if (data.type === 'open-external' && data.url) {
+      try {
+        wailsRuntime.BrowserOpenURL(data.url);
+      } catch (e) {
+        window.open(data.url, '_blank');
+      }
+    }
+
+    // Handle copy requests from embedded explorer
+    if ((data.type === 'copy' || data.type === 'copy-text') && data.text) {
+      try {
+        navigator.clipboard.writeText(data.text);
+      } catch (e) {
+        // Fallback using textarea
+        try {
+          const el = document.createElement('textarea');
+          el.value = data.text;
+          el.setAttribute('readonly', '');
+          el.style.position = 'absolute';
+          el.style.left = '-9999px';
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand('copy');
+          document.body.removeChild(el);
+        } catch (err) {}
+      }
+    }
+  }
+
   onMount(() => {
+    window.addEventListener('message', handleIframeMessage);
+
     // Fast poller while waiting for gateway to come online
     checkGateway();
     checkInterval = setInterval(() => {
@@ -21,6 +57,7 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('message', handleIframeMessage);
     if (checkInterval) clearInterval(checkInterval);
   });
 
@@ -107,7 +144,10 @@
           bind:this={iframeRef}
           src={explorerUrl}
           title="Membuss Web Explorer"
-          class="w-full h-full border-0 absolute inset-0 bg-[#0c1416]"
+          class="w-full h-full border-0 absolute inset-0 bg-[#0c1416] pointer-events-auto"
+          allow="clipboard-read; clipboard-write; fullscreen; cross-origin-isolated *"
+          allowfullscreen
+          loading="eager"
         ></iframe>
       {:else if app.nodeStatus.process_running}
         <!-- Gateway Initialization State (Prevents WebView2 Dead Cloud Error Page) -->

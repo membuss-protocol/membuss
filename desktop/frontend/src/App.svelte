@@ -16,7 +16,7 @@
   });
 
   function openGatewayExternal() {
-    const url = `http://${app.config?.gateway_addr || '127.0.0.1:8080'}/explorer/`;
+    const url = `http://${app.config?.gateway_addr || '127.0.0.1:8083'}/explorer/`;
     try {
       wailsRuntime.BrowserOpenURL(url);
     } catch (e) {
@@ -25,7 +25,7 @@
   }
 </script>
 
-<div class="flex w-screen h-screen premium-bg text-[#e9e2d2] overflow-hidden select-none font-sans">
+<div class="flex w-screen h-screen premium-bg text-[#e9e2d2] overflow-hidden font-sans">
   <!-- Left Engineering Rack Navigation Sidebar -->
   <aside class="w-64 min-w-[16rem] h-full bg-[#0c1416] border-r border-[rgba(233,226,210,0.08)] flex flex-col justify-between p-4 z-20 shadow-2xl">
     <!-- Top Brand & Navigation -->
@@ -35,7 +35,7 @@
         <div class="flex items-center justify-between">
           <span class="font-display text-lg leading-none text-[#e9e2d2]">MEMBUSS</span>
           <span class="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-[3px] bg-[rgba(233,226,210,0.06)] text-[#e8a33d] border border-[rgba(233,226,210,0.1)]">
-            {app.config?.installed_version || 'v2.8.3'}
+            {app.config?.installed_version || 'v2.8.4'}
           </span>
         </div>
         <span class="text-[9px] text-[#8c887a] font-mono tracking-[0.22em] uppercase mt-0.5">decentralized content network</span>
