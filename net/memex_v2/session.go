@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	corepeerstore "github.com/libp2p/go-libp2p/core/peerstore"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/nnlgsakib/membuss/core/dag"
@@ -145,6 +146,13 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	}
 	if len(cfg.Providers) == 0 {
 		return nil, errors.New("memex session: no providers")
+	}
+	if cfg.Engine.host != nil {
+		for _, p := range cfg.Providers {
+			if p.ID != "" && len(p.Addrs) > 0 {
+				cfg.Engine.host.Peerstore().AddAddrs(p.ID, p.Addrs, corepeerstore.TempAddrTTL)
+			}
+		}
 	}
 	sess := &Session{
 		cfg:             cfg,

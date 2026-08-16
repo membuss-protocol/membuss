@@ -140,26 +140,56 @@ func validateMembuss(key string, value []byte) error {
 	}
 
 	if key == "/membuss/anchors/v1" || key == "/membuss/relays/v1" {
+		// 1. Try Protobuf PeerAddrInfoProto
+		var pb membusspb.PeerAddrInfoProto
+		if err := proto.Unmarshal(value, &pb); err == nil && pb.Id != "" {
+			if _, err := peer.Decode(pb.Id); err != nil {
+				return fmt.Errorf("invalid peer ID: %w", err)
+			}
+			if len(pb.Addrs) == 0 {
+				return errors.New("no addresses provided")
+			}
+			for _, addrStr := range pb.Addrs {
+				if _, err := multiaddr.NewMultiaddr(addrStr); err != nil {
+					return fmt.Errorf("invalid multiaddr %q: %w", addrStr, err)
+				}
+			}
+			return nil
+		}
+
+		// 2. Try Protobuf AnchorRegistryProto (batch registry)
+		var reg membusspb.AnchorRegistryProto
+		if err := proto.Unmarshal(value, &reg); err == nil && len(reg.Anchors) > 0 {
+			for _, a := range reg.Anchors {
+				if _, err := peer.Decode(a.Id); err != nil {
+					return fmt.Errorf("invalid peer ID in registry: %w", err)
+				}
+			}
+			return nil
+		}
+
+		// 3. Fallback: JSON wire format
 		type wire struct {
 			ID    string   `json:"id"`
 			Addrs []string `json:"addrs"`
 		}
 		var w wire
-		if err := json.Unmarshal(value, &w); err != nil {
-			return fmt.Errorf("invalid json payload: %w", err)
-		}
-		if _, err := peer.Decode(w.ID); err != nil {
-			return fmt.Errorf("invalid peer ID: %w", err)
-		}
-		if len(w.Addrs) == 0 {
-			return errors.New("no addresses provided")
-		}
-		for _, addrStr := range w.Addrs {
-			if _, err := multiaddr.NewMultiaddr(addrStr); err != nil {
-				return fmt.Errorf("invalid multiaddr %q: %w", addrStr, err)
+		if err := json.Unmarshal(value, &w); err == nil && w.ID != "" {
+			if _, err := peer.Decode(w.ID); err != nil {
+				return fmt.Errorf("invalid peer ID: %w", err)
 			}
+			if len(w.Addrs) == 0 {
+				return errors.New("no addresses provided")
+			}
+			for _, addrStr := range w.Addrs {
+				if _, err := multiaddr.NewMultiaddr(addrStr); err != nil {
+					return fmt.Errorf("invalid multiaddr %q: %w", addrStr, err)
+				}
+			}
+			return nil
 		}
-		return nil
+
+		return fmt.Errorf("invalid anchor payload (neither valid protobuf nor JSON)")
 	}
 
 	return fmt.Errorf("unsupported key path: %q", key)

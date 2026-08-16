@@ -191,7 +191,7 @@ func (ps *pooledStream) readLoop() {
 		if ps.ctx.Err() != nil {
 			return
 		}
-		_ = ps.stream.SetReadDeadline(time.Now().Add(DefaultPeerTimeout))
+		_ = ps.stream.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		buf := readFrame(ps.stream)
 		if buf == nil {
 			return

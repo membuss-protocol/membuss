@@ -989,8 +989,8 @@ func (e *Explorer) handleResolveStream(w http.ResponseWriter, r *http.Request) {
 
 	type sseEvent struct {
 		State     string   `json:"state,omitempty"`
-		Blocks    uint64   `json:"blocks,omitempty"`
-		Total     uint64   `json:"total,omitempty"`
+		Blocks    uint64   `json:"blocks"`
+		Total     uint64   `json:"total"`
 		Done      bool     `json:"done,omitempty"`
 		MID       string   `json:"mid,omitempty"`
 		Error     string   `json:"error,omitempty"`

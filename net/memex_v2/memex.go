@@ -2,6 +2,7 @@ package memex_v2
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -475,38 +476,16 @@ func (e *Engine) GetPeerLatency(pid peer.ID) time.Duration {
 // readFrame reads length-prefixed protocol frames.
 func readFrame(s network.Stream) []byte {
 	var lenBuf [4]byte
-	n, err := s.Read(lenBuf[:])
-	if err != nil || n < 4 {
-		const max = 1 << 20
-		buf := make([]byte, 0, 4096)
-		tmp := make([]byte, 4096)
-		for {
-			k, e := s.Read(tmp[:])
-			if k > 0 {
-				buf = append(buf, tmp[:k]...)
-			}
-			if e != nil || len(buf) >= max {
-				if len(buf) == 0 {
-					return nil
-				}
-				return buf
-			}
-		}
+	if _, err := io.ReadFull(s, lenBuf[:]); err != nil {
+		return nil
 	}
-	l := uint32(lenBuf[0])<<24 | uint32(lenBuf[1])<<16 | uint32(lenBuf[2])<<8 | uint32(lenBuf[3])
+	l := binary.BigEndian.Uint32(lenBuf[:])
 	if l == 0 || l > maxFrameSize {
 		return nil
 	}
 	buf := make([]byte, l)
-	read := 0
-	for read < int(l) {
-		k, e := s.Read(buf[read:])
-		if k > 0 {
-			read += k
-		}
-		if e != nil {
-			return buf[:read]
-		}
+	if _, err := io.ReadFull(s, buf); err != nil {
+		return nil
 	}
 	return buf
 }
@@ -520,10 +499,7 @@ func writeFrame(s network.Stream, m *membusspb.MemexMessage) error {
 		return errors.New("memex: frame too large")
 	}
 	var lenBuf [4]byte
-	lenBuf[0] = byte(len(buf) >> 24)
-	lenBuf[1] = byte(len(buf) >> 16)
-	lenBuf[2] = byte(len(buf) >> 8)
-	lenBuf[3] = byte(len(buf))
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(buf)))
 	if _, err := s.Write(lenBuf[:]); err != nil {
 		return err
 	}

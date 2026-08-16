@@ -215,21 +215,23 @@
 			}
 
 			if (d.total > 0) {
-				statBlocksTotal = d.total;
-				statBlocksResolved = d.blocks;
+				const resolved = d.blocks ?? 0;
+				const total = d.total ?? 1;
+				statBlocksTotal = total;
+				statBlocksResolved = resolved;
 
-				const targetGridSize = d.total > 0 ? Math.min(MAX_BOXES, d.total) : 100;
+				const targetGridSize = total > 0 ? Math.min(MAX_BOXES, total) : 100;
 				if (!hasStartedScan || pieceGrid.length !== targetGridSize) {
 					hasStartedScan = true;
-					initPieceGrid(d.total);
+					initPieceGrid(total);
 				}
-				updateGridState(d.total, d.blocks, true);
+				updateGridState(total, resolved, true);
 
-				const pct = Math.round((d.blocks / d.total) * 100);
-				statAvailability = `${pct}% (${d.blocks}/${d.total} blocks)`;
-				statStatusText = d.blocks > 0
-					? `Downloading blocks (${d.blocks}/${d.total})...`
-					: `Requesting blocks (0/${d.total})...`;
+				const pct = Math.round((resolved / total) * 100);
+				statAvailability = `${pct}% (${resolved}/${total} blocks)`;
+				statStatusText = resolved > 0
+					? `Downloading blocks (${resolved}/${total})...`
+					: `Requesting blocks (0/${total})...`;
 				statusBadgeText = 'Downloading';
 			}
 		};

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	corepeerstore "github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
 )
@@ -310,6 +311,9 @@ func (s *Session) manageProviders(ctx context.Context, fanout int) {
 	}
 
 	for _, p := range toStart {
+		if p.ID != "" && len(p.Addrs) > 0 && s.cfg.Engine.host != nil {
+			s.cfg.Engine.host.Peerstore().AddAddrs(p.ID, p.Addrs, corepeerstore.TempAddrTTL)
+		}
 		// Unlock to avoid blocking other concurrent session events (e.g. cancels/resolves)
 		// during potentially slow network dialing.
 		s.provMu.Unlock()
@@ -335,6 +339,9 @@ func (s *Session) manageProviders(ctx context.Context, fanout int) {
 				}
 				s.provMu.Lock()
 				for _, np := range newProvs {
+					if np.ID != "" && len(np.Addrs) > 0 && s.cfg.Engine.host != nil {
+						s.cfg.Engine.host.Peerstore().AddAddrs(np.ID, np.Addrs, corepeerstore.TempAddrTTL)
+					}
 					exists := false
 					for _, lp := range s.liveProviders {
 						if lp.ID == np.ID {

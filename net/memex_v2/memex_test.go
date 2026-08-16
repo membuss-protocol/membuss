@@ -153,6 +153,7 @@ func TestMemex_ServerHandlesEmptyStream(t *testing.T) {
 		t.Fatalf("NewStream: %v", err)
 	}
 	defer stream.Close()
+	_ = stream.CloseWrite()
 
 	// Server should close cleanly or return EOF
 	buf := make([]byte, 1)
