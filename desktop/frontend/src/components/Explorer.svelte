@@ -7,6 +7,9 @@
 
   let iframeRef = $state(null);
   let isChecking = $state(false);
+  let explorerUrl = $derived(`http://${app.config?.gateway_addr || '127.0.0.1:8083'}/explorer/`);
+  let checkInterval = null;
+
   function handleIframeMessage(event) {
     if (!event || !event.data) return;
     const data = event.data;
