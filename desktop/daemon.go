@@ -739,11 +739,16 @@ func (dm *DaemonManager) InstallCustomRelease(targetDir string, opts InstallRele
 				_ = extractZip(desktopArchive, stagingDir)
 				_ = os.Remove(desktopArchive)
 
-				stagedDesktop := filepath.Join(stagingDir, "membuss-desktop"+exeExt)
-				if fi, err := os.Stat(stagedDesktop); err == nil && !fi.IsDir() {
+				stagedDesktop := findExtractedDesktopBinary(stagingDir)
+				if stagedDesktop != "" {
+					progressCb(92, "Applying desktop self-update...")
 					sum := NewSelfUpdateManager()
-					_ = sum.ApplySelfUpdate(stagedDesktop)
-					desktopUpdated = true
+					if err := sum.ApplySelfUpdate(stagedDesktop); err != nil {
+						slog.Error("failed to apply desktop self-update", "error", err)
+						progressCb(94, fmt.Sprintf("Warning: Desktop self-update failed: %v", err))
+					} else {
+						desktopUpdated = true
+					}
 				}
 				_ = os.RemoveAll(stagingDir)
 			}
@@ -825,6 +830,36 @@ func copyLocalCore(binDir string) error {
 	}
 	daemonSrc := filepath.Join(rootBin, "membuss"+exeExt)
 	return copyFile(daemonSrc, filepath.Join(binDir, "membuss"+exeExt))
+}
+
+func findExtractedDesktopBinary(dir string) string {
+	exeExt := ""
+	if runtime.GOOS == "windows" {
+		exeExt = ".exe"
+	}
+	candidates := []string{
+		filepath.Join(dir, "membuss-desktop"+exeExt),
+		filepath.Join(dir, "membuss-app"+exeExt),
+		filepath.Join(dir, "Membuss"+exeExt),
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return c
+		}
+	}
+	var found string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && info.Size() > 0 {
+			name := strings.ToLower(info.Name())
+			if (strings.HasPrefix(name, "membuss-desktop") || strings.HasPrefix(name, "membuss-app") || strings.HasPrefix(name, "membus-desktop")) &&
+				(strings.HasSuffix(name, exeExt) || exeExt == "") && !strings.Contains(name, "installer") {
+				found = path
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 // findLocalBinaries attempts to dynamically locate the directory containing

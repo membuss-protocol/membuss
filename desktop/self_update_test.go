@@ -221,3 +221,41 @@ func TestExtractZipWithDualBinaries(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanExecutablePath tests stripping .old from paths.
+func TestCleanExecutablePath(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`C:\Program Files\Membuss\membuss-app.exe.old`, `C:\Program Files\Membuss\membuss-app.exe`},
+		{`/usr/bin/membuss-desktop.old`, `/usr/bin/membuss-desktop`},
+		{`C:\path\membuss-desktop.exe`, `C:\path\membuss-desktop.exe`},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := cleanExecutablePath(c.in)
+		if got != c.want {
+			t.Errorf("cleanExecutablePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestFindExtractedDesktopBinary tests locating the desktop binary within an extracted directory.
+func TestFindExtractedDesktopBinary(t *testing.T) {
+	tempDir := t.TempDir()
+	exeExt := ""
+	if runtime.GOOS == "windows" {
+		exeExt = ".exe"
+	}
+
+	desktopPath := filepath.Join(tempDir, "membuss-desktop"+exeExt)
+	if err := os.WriteFile(desktopPath, []byte("desktop binary content"), 0755); err != nil {
+		t.Fatalf("failed to write mock desktop binary: %v", err)
+	}
+
+	found := findExtractedDesktopBinary(tempDir)
+	if found != desktopPath {
+		t.Fatalf("findExtractedDesktopBinary = %q, want %q", found, desktopPath)
+	}
+}

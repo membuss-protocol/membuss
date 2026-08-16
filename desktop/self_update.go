@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // SelfUpdateManager handles safe, cross-platform replacement and relaunch
@@ -19,18 +20,40 @@ func NewSelfUpdateManager() *SelfUpdateManager {
 	return &SelfUpdateManager{}
 }
 
+// cleanExecutablePath strips any .old suffix from an executable path.
+// On Windows NTFS, when an open process image is renamed to <name>.old,
+// GetModuleFileName / os.Executable() returns the renamed path ending in .old.
+func cleanExecutablePath(p string) string {
+	p = strings.TrimSpace(p)
+	lower := strings.ToLower(p)
+	if strings.HasSuffix(lower, ".old") {
+		return p[:len(p)-len(".old")]
+	}
+	return p
+}
+
 // CleanupOldExecutables cleans up any leftover .old executable files
-// from previous self-update cycles. This is called during app startup.
+// from previous self-update cycles. Retries asynchronously if the parent
+// process is still in the middle of exiting.
 func CleanupOldExecutables() {
 	currentExe, err := os.Executable()
 	if err != nil {
 		return
 	}
-	currentExe = resolveSymlinks(currentExe)
+	currentExe = cleanExecutablePath(resolveSymlinks(currentExe))
 	oldExe := currentExe + ".old"
-	if _, err := os.Stat(oldExe); err == nil {
-		_ = os.Remove(oldExe)
-	}
+
+	go func() {
+		for i := 0; i < 15; i++ {
+			if _, err := os.Stat(oldExe); os.IsNotExist(err) {
+				return
+			}
+			if err := os.Remove(oldExe); err == nil {
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}()
 }
 
 // resolveSymlinks follows symlinks to the canonical path if possible.
@@ -67,13 +90,14 @@ func (sum *SelfUpdateManager) ApplySelfUpdate(newBinaryPath string) error {
 		return fmt.Errorf("failed to locate current running executable: %w", err)
 	}
 	currentExe = resolveSymlinks(currentExe)
+	targetExe := cleanExecutablePath(currentExe)
 
 	// If the new binary is already at the target path, nothing to do
-	if filepath.Clean(currentExe) == filepath.Clean(newBinaryPath) {
+	if filepath.Clean(targetExe) == filepath.Clean(newBinaryPath) {
 		return nil
 	}
 
-	return sum.replaceExecutable(currentExe, newBinaryPath)
+	return sum.replaceExecutable(targetExe, newBinaryPath)
 }
 
 // replaceExecutable performs the atomic rename-aside and copy sequence.
@@ -84,8 +108,10 @@ func (sum *SelfUpdateManager) replaceExecutable(targetExe, newBinary string) err
 	_ = os.Remove(oldExe)
 
 	// 2. Rename current running executable to .old (NTFS allows renaming open files)
-	if err := os.Rename(targetExe, oldExe); err != nil {
-		return fmt.Errorf("failed to rename running binary to backup: %w", err)
+	if _, err := os.Stat(targetExe); err == nil {
+		if err := os.Rename(targetExe, oldExe); err != nil {
+			return fmt.Errorf("failed to rename running binary to backup: %w", err)
+		}
 	}
 
 	// 3. Copy the new binary to the target executable path
@@ -143,20 +169,23 @@ func (sum *SelfUpdateManager) RelaunchApp(args ...string) error {
 	}
 	currentExe = resolveSymlinks(currentExe)
 
-	cmd := exec.Command(currentExe, args...)
-	cmd.Dir = filepath.Dir(currentExe)
+	// CRITICAL FIX: Strip .old suffix so we launch the freshly written target binary,
+	// rather than the old renamed binary that the current process handle was bound to!
+	targetExe := cleanExecutablePath(currentExe)
+
+	cmd := exec.Command(targetExe, args...)
+	cmd.Dir = filepath.Dir(targetExe)
 
 	// Set OS-specific detachment flags so the child process outlives the parent
 	setupDetachedProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to spawn updated process: %w", err)
+		return fmt.Errorf("failed to spawn updated process at %s: %w", targetExe, err)
 	}
 
 	// Exit the current process cleanly
 	go func() {
 		// Give the OS 200ms to spawn the new window before exit
-		// (allows Wails IPC response to return to frontend if needed)
 		if runtime.GOOS != "windows" {
 			_ = cmd.Process.Release()
 		}

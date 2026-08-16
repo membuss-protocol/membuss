@@ -291,7 +291,7 @@
               <p class="eyebrow !text-[9px]">Upgrade, Downgrade, or Install Any Release via Tag or GitHub URL</p>
             </div>
           </div>
-          <span class="text-[10px] font-mono text-[#8c887a]">Current: {app.config?.installed_version || 'v2.8.5'}</span>
+          <span class="text-[10px] font-mono text-[#8c887a]">Current: {app.config?.installed_version || 'v2.8.6'}</span>
         </div>
 
         <div class="space-y-3">
