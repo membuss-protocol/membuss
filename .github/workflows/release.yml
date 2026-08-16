@@ -202,22 +202,22 @@ jobs:
         run: ls -la desktop/build/bin/
 
       - name: Rename installer and package portable desktop
-        shell: bash
+        shell: pwsh
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          INSTALLER=$(ls desktop/build/bin/Membuss-*-installer.exe 2>/dev/null | head -1)
-          if [ -z "$INSTALLER" ]; then
-            echo "ERROR: No installer found"
+          $tag = "${{ github.ref_name }}"
+          $installer = Get-ChildItem -Path "desktop/build/bin/Membuss-*-installer.exe" | Select-Object -First 1
+          if ($installer) {
+            Copy-Item $installer.FullName "Membuss-$tag-windows-amd64-installer.exe"
+          } else {
+            Write-Error "No installer found in desktop/build/bin/"
             exit 1
-          fi
-          cp "$INSTALLER" "Membuss-${TAG}-windows-amd64-installer.exe"
-          
-          # Find and package portable desktop binary
-          DESKTOP_EXE=$(ls desktop/build/bin/membuss-app.exe desktop/build/bin/membuss-desktop.exe desktop/build/bin/*.exe 2>/dev/null | grep -v installer | head -1)
-          if [ -n "$DESKTOP_EXE" ]; then
-            cp "$DESKTOP_EXE" membuss-desktop.exe
-            zip "membuss-desktop-${TAG}-windows-amd64.zip" membuss-desktop.exe
-          fi
+          }
+
+          $desktopExe = Get-ChildItem -Path "desktop/build/bin/*.exe" | Where-Object { $_.Name -notlike "*installer*" } | Select-Object -First 1
+          if ($desktopExe) {
+            Copy-Item $desktopExe.FullName "membuss-desktop.exe"
+            Compress-Archive -Path "membuss-desktop.exe" -DestinationPath "membuss-desktop-$tag-windows-amd64.zip" -Force
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
