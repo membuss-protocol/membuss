@@ -55,7 +55,7 @@
             <div>
               <span class="eyebrow !text-[9px] block">Installed</span>
               <span class="text-xs font-mono font-bold text-[#e9e2d2] mt-1 block">
-                {app.updateInfo?.current_version || app.config?.installed_version || 'v2.8.9'}
+                {app.updateInfo?.current_version || app.config?.installed_version || 'v2.9.0'}
               </span>
             </div>
             <div class="text-[#5a574f] font-mono">→</div>
