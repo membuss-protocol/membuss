@@ -26,6 +26,10 @@ export function ForceKillNode() {
   return window['go']['main']['App']['ForceKillNode']();
 }
 
+export function GetAvailableVersions() {
+  return window['go']['main']['App']['GetAvailableVersions']();
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -44,6 +48,10 @@ export function GetNodeConfigRaw() {
 
 export function InstallBinaries(arg1) {
   return window['go']['main']['App']['InstallBinaries'](arg1);
+}
+
+export function InstallVersion(arg1) {
+  return window['go']['main']['App']['InstallVersion'](arg1);
 }
 
 export function IsNodeRunningSystemWide() {

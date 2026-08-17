@@ -8,8 +8,11 @@ import {
   StopNode,
   CheckForUpdate,
   UpgradeBinaries,
+  GetAvailableVersions,
+  InstallVersion,
   GetDaemonLogs
 } from '../../wailsjs/go/main/App';
+import * as wailsRuntime from '../../wailsjs/runtime/runtime';
 
 export interface Toast {
   id: string;
@@ -50,6 +53,11 @@ class AppState {
   updateChecking = $state(false);
   updating = $state(false);
   updateInfo = $state<any>(null);
+  availableVersions = $state<any[]>([]);
+  loadingVersions = $state(false);
+  selectedVersionTag = $state<string>('');
+  updateProgress = $state<number>(0);
+  updateMessage = $state<string>('');
 
   // Modals
   showDownloaderModal = $state(false);
@@ -57,8 +65,31 @@ class AppState {
 
   private pollTimer: any = null;
   private logTimer: any = null;
+  private eventsBound = false;
+
+  initEvents() {
+    if (this.eventsBound) return;
+    try {
+      wailsRuntime.EventsOn('upgrade_progress', (data: any) => {
+        if (data) {
+          this.updateProgress = typeof data.percent === 'number' ? data.percent : 0;
+          this.updateMessage = data.message || '';
+        }
+      });
+      wailsRuntime.EventsOn('install_progress', (data: any) => {
+        if (data) {
+          this.updateProgress = typeof data.percent === 'number' ? data.percent : 0;
+          this.updateMessage = data.message || '';
+        }
+      });
+      this.eventsBound = true;
+    } catch (e) {
+      console.warn('Could not bind wails runtime events:', e);
+    }
+  }
 
   async loadApp() {
+    this.initEvents();
     this.loading = true;
     try {
       this.config = await GetConfig();
@@ -180,18 +211,43 @@ class AppState {
     }
   }
 
-  async upgradeBinariesAction() {
-    this.updating = true;
+  async loadAvailableVersions() {
+    this.loadingVersions = true;
     try {
-      await UpgradeBinaries();
-      this.addToast('success', 'Upgraded to ' + this.updateInfo?.latest_version);
+      this.availableVersions = await GetAvailableVersions();
+      if (this.availableVersions?.length > 0 && !this.selectedVersionTag) {
+        // Default select the latest or first
+        this.selectedVersionTag = this.availableVersions[0].tag_name;
+      }
+    } catch (e: any) {
+      console.warn('Failed to load available versions:', e);
+    } finally {
+      this.loadingVersions = false;
+    }
+  }
+
+  async installVersionAction(tag?: string) {
+    const targetTag = tag || this.selectedVersionTag || '';
+    this.updating = true;
+    this.updateProgress = 5;
+    this.updateMessage = 'Starting version download & installation...';
+    try {
+      await InstallVersion(targetTag);
+      this.addToast('success', 'Installation completed for ' + (targetTag || 'latest release'));
       this.showUpdateModal = false;
       await this.loadApp();
+      await this.loadAvailableVersions();
     } catch (e: any) {
-      this.addToast('error', 'Upgrade failed: ' + (e.message || e));
+      this.addToast('error', 'Installation failed: ' + (e.message || e));
     } finally {
       this.updating = false;
+      this.updateProgress = 0;
+      this.updateMessage = '';
     }
+  }
+
+  async upgradeBinariesAction() {
+    return this.installVersionAction(this.updateInfo?.latest_version || '');
   }
 
   addToast(type: 'info' | 'success' | 'warning' | 'error', message: string, duration = 4000) {

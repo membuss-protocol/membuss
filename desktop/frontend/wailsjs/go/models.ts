@@ -26,6 +26,28 @@ export namespace main {
 	        this.installed_version = source["installed_version"];
 	    }
 	}
+	export class ReleaseOption {
+	    tag_name: string;
+	    name: string;
+	    published_at: string;
+	    is_latest: boolean;
+	    is_current: boolean;
+	    type: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReleaseOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tag_name = source["tag_name"];
+	        this.name = source["name"];
+	        this.published_at = source["published_at"];
+	        this.is_latest = source["is_latest"];
+	        this.is_current = source["is_current"];
+	        this.type = source["type"];
+	    }
+	}
 	export class UpdateCheckResult {
 	    has_update: boolean;
 	    current_version: string;

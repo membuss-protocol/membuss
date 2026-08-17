@@ -455,35 +455,50 @@ func getInstalledBinaryVersion(cliPath string) string {
 	return ""
 }
 
-// UpgradeBinaries stops the node, removes the old binaries, downloads the latest release, and updates config.
-func (a *App) UpgradeBinaries() error {
+// GetAvailableVersions fetches all published releases from GitHub and computes their relationship to current version.
+func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
+	currentVer := a.config.InstalledVersion
+	if currentVer == "" {
+		exeExt := ""
+		if runtime.GOOS == "windows" {
+			exeExt = ".exe"
+		}
+		binPath := filepath.Join(a.config.DataDir, "bin", "membuss"+exeExt)
+		currentVer = getInstalledBinaryVersion(binPath)
+		if currentVer == "" {
+			currentVer = version.Version
+		}
+	}
+	currentVerClean := strings.TrimPrefix(strings.TrimSpace(currentVer), "v")
+
+	releases, err := fetchAvailableReleases()
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range releases {
+		tagClean := strings.TrimPrefix(strings.TrimSpace(releases[i].TagName), "v")
+		if tagClean == currentVerClean {
+			releases[i].IsCurrent = true
+			releases[i].Type = "current"
+		} else if isVersionNewer(currentVerClean, tagClean) {
+			releases[i].Type = "upgrade"
+		} else {
+			releases[i].Type = "downgrade"
+		}
+	}
+
+	return releases, nil
+}
+
+// InstallVersion downloads and atomically applies the specified release version tag (or latest if empty).
+func (a *App) InstallVersion(targetTag string) error {
 	if a.config.DataDir == "" {
 		return errors.New("no data directory configured")
 	}
 
-	// 1. Stop the node and force-kill system-wide to ensure files are not locked
-	wailsRuntime.LogInfo(a.ctx, "stopping node and force killing processes before upgrading...")
-	_ = a.daemonManager.Stop()
-	_ = killProcess("membuss*")
-	time.Sleep(1 * time.Second)
+	targetTag = strings.TrimSpace(targetTag)
 
-	// 2. Remove old binary
-	exeExt := ""
-	if runtime.GOOS == "windows" {
-		exeExt = ".exe"
-	}
-	daemonPath := filepath.Join(a.config.DataDir, "bin", "membuss"+exeExt)
-
-	wailsRuntime.LogInfo(a.ctx, "removing old binary...")
-	if err := os.Remove(daemonPath); err != nil && !os.IsNotExist(err) {
-		oldPath := daemonPath + ".old"
-		_ = os.Remove(oldPath) // remove previous old file if any
-		if renameErr := os.Rename(daemonPath, oldPath); renameErr != nil {
-			return fmt.Errorf("failed to remove or rename old daemon binary: %w", err)
-		}
-	}
-
-	// 3. Download and extract the latest release in a background goroutine
 	progressCallback := func(percent int, msg string) {
 		wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
 			"percent": percent,
@@ -491,28 +506,31 @@ func (a *App) UpgradeBinaries() error {
 		})
 	}
 
-	go func() {
-		versionTag, err := a.daemonManager.DownloadLatestRelease(a.config.DataDir, progressCallback)
-		if err != nil {
-			wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
-				"percent": -1,
-				"message": err.Error(),
-			})
-			return
-		}
-
-		// Update config with installed version
-		a.config.InstalledVersion = versionTag
-		_ = a.config.Save()
-
-		// Send success event
+	versionTag, err := a.daemonManager.DownloadReleaseVersion(a.config.DataDir, targetTag, progressCallback)
+	if err != nil {
 		wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
-			"percent": 100,
-			"message": "Upgrade complete!",
+			"percent": -1,
+			"message": err.Error(),
 		})
-	}()
+		return err
+	}
+
+	// Update config with installed version
+	a.config.InstalledVersion = versionTag
+	_ = a.config.Save()
+
+	// Send success event
+	wailsRuntime.EventsEmit(a.ctx, "upgrade_progress", map[string]any{
+		"percent": 100,
+		"message": fmt.Sprintf("Installed %s successfully!", versionTag),
+	})
 
 	return nil
+}
+
+// UpgradeBinaries safely downloads the latest release in an isolated sandbox, verifies it, and atomically promotes it.
+func (a *App) UpgradeBinaries() error {
+	return a.InstallVersion("")
 }
 
 // IsNodeRunningSystemWide checks if any membuss daemon process is running on the system.
@@ -628,7 +646,8 @@ func sanitizeDownloadName(name string) string {
 func (a *App) ForceKillNode() error {
 	wailsRuntime.LogInfo(a.ctx, "force killing node daemon processes...")
 	_ = a.daemonManager.Stop()
-	_ = killProcess("membuss*")
+	_ = killProcess("membuss")
+	_ = killProcess("membuss-cli")
 	time.Sleep(500 * time.Millisecond)
 	return nil
 }

@@ -617,28 +617,43 @@ func findNextFreePort(addr string) (string, error) {
 	return addr, fmt.Errorf("failed to find free port starting from %s", addr)
 }
 
-// DownloadLatestRelease queries GitHub releases and downloads the appropriate zip file.
-// If the latest release has no compatible asset compiled yet (common in local dev),
-// it will fall back to checking if the binaries are compiled in the local bin/ folder
-// and copying them to targetDir to simulate a download.
+// DownloadLatestRelease queries GitHub releases and downloads the latest release archive.
 func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func(percent int, msg string)) (string, error) {
-	progressCb(5, "Checking GitHub for latest releases...")
+	return dm.DownloadReleaseVersion(targetDir, "", progressCb)
+}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+// DownloadReleaseVersion queries GitHub for the specified release tag (or latest if empty)
+// and downloads, extracts, and promotes the binary into targetDir/bin using isolated staging.
+func (dm *DaemonManager) DownloadReleaseVersion(targetDir string, targetTag string, progressCb func(percent int, msg string)) (string, error) {
+	targetTag = strings.TrimSpace(targetTag)
+	if targetTag != "" {
+		progressCb(5, fmt.Sprintf("Resolving release %s from GitHub...", targetTag))
+	} else {
+		progressCb(5, "Checking GitHub for latest releases...")
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
 
 	var downloadUrl string
 	var versionTag string
 	var releaseErr error
 
-	info, err := fetchLatestRelease()
+	var info *latestReleaseInfo
+	var err error
+	if targetTag != "" {
+		info, err = fetchReleaseByTag(targetTag)
+	} else {
+		info, err = fetchLatestRelease()
+	}
+
 	if err != nil {
 		releaseErr = err
-		progressCb(10, "GitHub API unavailable; will try local binaries if needed...")
-	} else {
+		progressCb(10, "GitHub lookup failed; will check local binaries...")
+	} else if info != nil {
 		versionTag = info.TagName
 		downloadUrl = findPlatformAssetURL(info)
-		if !info.FromAPI {
-			progressCb(12, "Resolved latest tag via release page (API rate-limit fallback)...")
+		if !info.FromAPI && targetTag == "" {
+			progressCb(12, "Resolved latest tag via release feed...")
 		}
 	}
 
@@ -647,10 +662,16 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 		return "", err
 	}
 
+	exeExt := ""
+	if runtime.GOOS == "windows" {
+		exeExt = ".exe"
+	}
+	targetBinary := filepath.Join(binDir, "membuss"+exeExt)
+
 	// Fallback implementation: If download URL is empty, we look for locally built binaries.
 	if downloadUrl == "" {
 		progressCb(30, "No compatible asset found in GitHub release. Falling back to local binaries...")
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 
 		rootBin, err := findLocalBinaries()
 		if err != nil {
@@ -660,63 +681,97 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 			return "", fmt.Errorf("no compatible asset found in GitHub release (and local fallback failed: %w)", err)
 		}
 
-		exeExt := ""
-		if runtime.GOOS == "windows" {
-			exeExt = ".exe"
-		}
-		// Single unified binary: membuss is both node and CLI.
 		daemonSrc := filepath.Join(rootBin, "membuss"+exeExt)
 
 		progressCb(60, "Copying local development binary...")
 
-		err = copyFile(daemonSrc, filepath.Join(binDir, "membuss"+exeExt))
-		if err != nil {
-			return "", fmt.Errorf("failed to copy local membuss binary: %w", err)
+		// Atomic copy via temp file
+		tmpCopy := filepath.Join(binDir, fmt.Sprintf("membuss.tmp.%d", time.Now().UnixNano()))
+		if err := copyFile(daemonSrc, tmpCopy); err != nil {
+			return "", fmt.Errorf("failed to stage local membuss binary: %w", err)
 		}
+		_ = os.Chmod(tmpCopy, 0755)
+
+		// Stop running daemon before replacing binary
+		_ = dm.Stop()
+		_ = killProcess("membuss")
+		time.Sleep(300 * time.Millisecond)
+
+		// Backup existing binary if present
+		bakPath := targetBinary + ".bak"
+		_ = os.Remove(bakPath)
+		hasOld := false
+		if _, err := os.Stat(targetBinary); err == nil {
+			if err := os.Rename(targetBinary, bakPath); err == nil {
+				hasOld = true
+			}
+		}
+
+		if err := os.Rename(tmpCopy, targetBinary); err != nil {
+			_ = copyFile(tmpCopy, targetBinary)
+			_ = os.Remove(tmpCopy)
+		}
+
+		if _, err := os.Stat(targetBinary); err != nil && hasOld {
+			_ = os.Rename(bakPath, targetBinary)
+			return "", fmt.Errorf("failed to install local binary, restored backup: %w", err)
+		}
+		_ = os.Remove(bakPath)
 
 		progressCb(100, "Local installation complete!")
 		return version.Version, nil
 	}
 
-	// If downloadUrl is found, perform the actual download
+	// 1. Download to temporary archive file
 	progressCb(20, fmt.Sprintf("Downloading %s release...", versionTag))
 	archiveExt := ".zip"
 	if runtime.GOOS != "windows" {
 		archiveExt = ".tar.gz"
 	}
-	archivePath := filepath.Join(targetDir, "membuss-latest"+archiveExt)
-	
+	archivePath := filepath.Join(targetDir, fmt.Sprintf("membuss-update-%d%s", time.Now().UnixNano(), archiveExt))
+	defer func() {
+		_ = os.Remove(archivePath)
+	}()
+
 	out, err := os.Create(archivePath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create temp archive: %w", err)
 	}
-	defer out.Close()
 
-	dresp, err := client.Get(downloadUrl)
+	req, err := http.NewRequest(http.MethodGet, downloadUrl, nil)
 	if err != nil {
-		return "", err
+		out.Close()
+		return "", fmt.Errorf("download request creation failed: %w", err)
+	}
+	applyBrowserHeaders(req)
+
+	dresp, err := client.Do(req)
+	if err != nil {
+		out.Close()
+		return "", fmt.Errorf("download request failed: %w", err)
 	}
 	defer dresp.Body.Close()
 
 	if dresp.StatusCode != 200 {
-		return "", fmt.Errorf("download failed: status %s", dresp.Status)
+		out.Close()
+		return "", fmt.Errorf("download failed: status %s (asset may not exist for this platform)", dresp.Status)
 	}
 
-	// Copy and report progress
 	totalSize := dresp.ContentLength
 	var downloaded int64
-	buf := make([]byte, 32*1024)
-	
+	buf := make([]byte, 64*1024)
+
 	for {
 		n, rerr := dresp.Body.Read(buf)
 		if n > 0 {
 			_, werr := out.Write(buf[:n])
 			if werr != nil {
-				return "", werr
+				out.Close()
+				return "", fmt.Errorf("write archive failed: %w", werr)
 			}
 			downloaded += int64(n)
 			if totalSize > 0 {
-				percent := 20 + int(float64(downloaded)/float64(totalSize)*60.0) // Scale to 20-80% progress
+				percent := 20 + int(float64(downloaded)/float64(totalSize)*55.0) // 20-75%
 				progressCb(percent, fmt.Sprintf("Downloading... (%d%%)", percent))
 			}
 		}
@@ -724,17 +779,33 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 			break
 		}
 		if rerr != nil {
-			return "", rerr
+			out.Close()
+			return "", fmt.Errorf("download read error: %w", rerr)
 		}
 	}
 	out.Close()
 
-	progressCb(85, "Extracting binaries...")
+	// Verify downloaded archive size
+	archStat, err := os.Stat(archivePath)
+	if err != nil || archStat.Size() < 100*1024 {
+		return "", fmt.Errorf("downloaded archive is corrupted or too small (%d bytes)", downloaded)
+	}
+
+	// 2. Extract into isolated staging sandbox folder
+	progressCb(80, "Extracting binaries into staging sandbox...")
+	stagingDir := filepath.Join(binDir, fmt.Sprintf(".staging_%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(stagingDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create staging directory: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(stagingDir)
+	}()
+
 	var extractErr error
 	if strings.HasSuffix(downloadUrl, ".zip") {
-		extractErr = extractZip(archivePath, binDir)
+		extractErr = extractZip(archivePath, stagingDir)
 	} else if strings.HasSuffix(downloadUrl, ".tar.gz") {
-		extractErr = extractTarGz(archivePath, binDir)
+		extractErr = extractTarGz(archivePath, stagingDir)
 	} else {
 		extractErr = fmt.Errorf("unsupported archive format: %s", downloadUrl)
 	}
@@ -742,8 +813,65 @@ func (dm *DaemonManager) DownloadLatestRelease(targetDir string, progressCb func
 		return "", fmt.Errorf("failed to extract archive: %w", extractErr)
 	}
 
-	progressCb(95, "Cleaning up downloaded archive...")
-	_ = os.Remove(archivePath)
+	// 3. Locate & verify extracted binary in staging
+	stagedBinary := filepath.Join(stagingDir, "membuss"+exeExt)
+	if _, err := os.Stat(stagedBinary); os.IsNotExist(err) {
+		// Search recursively in stagingDir if the zip had an enclosing folder
+		_ = filepath.Walk(stagingDir, func(p string, fi os.FileInfo, err error) error {
+			if err == nil && !fi.IsDir() && fi.Name() == "membuss"+exeExt {
+				stagedBinary = p
+			}
+			return nil
+		})
+	}
+
+	binStat, err := os.Stat(stagedBinary)
+	if err != nil || binStat.Size() < 500*1024 {
+		return "", fmt.Errorf("extracted binary is missing or invalid (size: %v)", err)
+	}
+	_ = os.Chmod(stagedBinary, 0755)
+
+	// 4. Safe promotion & atomic swap
+	progressCb(90, "Applying new binary...")
+
+	// Stop running daemon immediately before file swap
+	_ = dm.Stop()
+	_ = killProcess("membuss")
+	time.Sleep(400 * time.Millisecond)
+
+	bakPath := targetBinary + ".bak"
+	_ = os.Remove(bakPath)
+	hasOld := false
+	if _, err := os.Stat(targetBinary); err == nil {
+		if err := os.Rename(targetBinary, bakPath); err == nil {
+			hasOld = true
+		}
+	}
+
+	// Move staged binary to target
+	swapErr := os.Rename(stagedBinary, targetBinary)
+	if swapErr != nil {
+		// Try copy if rename across volumes fails
+		if copyErr := copyFile(stagedBinary, targetBinary); copyErr != nil {
+			// Rollback to old binary
+			if hasOld {
+				_ = os.Rename(bakPath, targetBinary)
+			}
+			return "", fmt.Errorf("failed to install new binary (rolled back to previous): %w", copyErr)
+		}
+	}
+	_ = os.Chmod(targetBinary, 0755)
+
+	// Verify target binary exists and is valid
+	if finalStat, err := os.Stat(targetBinary); err != nil || finalStat.Size() < 500*1024 {
+		if hasOld {
+			_ = os.Rename(bakPath, targetBinary)
+		}
+		return "", fmt.Errorf("installed binary verification failed (restored previous binary)")
+	}
+
+	// Cleanup backup on success
+	_ = os.Remove(bakPath)
 
 	progressCb(100, "Installation complete!")
 	return versionTag, nil

@@ -14,6 +14,8 @@ export function DownloadContent(arg1:string,arg2:string):Promise<string>;
 
 export function ForceKillNode():Promise<void>;
 
+export function GetAvailableVersions():Promise<Array<main.ReleaseOption>>;
+
 export function GetConfig():Promise<main.DesktopConfig>;
 
 export function GetDaemonLogs():Promise<string>;
@@ -23,6 +25,8 @@ export function GetNodeConfig():Promise<Record<string, any>>;
 export function GetNodeConfigRaw():Promise<string>;
 
 export function InstallBinaries(arg1:string):Promise<void>;
+
+export function InstallVersion(arg1:string):Promise<void>;
 
 export function IsNodeRunningSystemWide():Promise<boolean>;
 

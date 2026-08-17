@@ -229,6 +229,88 @@
           </div>
         </div>
 
+        <!-- Release & Version Switcher -->
+        <div class="border-t border-[rgba(233,226,210,0.08)] pt-6 space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="eyebrow block">Node Daemon Version & Release Switcher</span>
+              <span class="text-xs text-[#8c887a] block mt-0.5">
+                Switch to any published Membuss release (upgrade or rollback/downgrade) with atomic staging.
+              </span>
+            </div>
+            <button
+              class="btn-rack text-xs"
+              onclick={() => app.loadAvailableVersions()}
+              disabled={app.loadingVersions || app.updating}
+            >
+              <Icon name="refresh" size={13} class={app.loadingVersions ? 'animate-spin text-[#e8a33d]' : ''} />
+              <span>{app.loadingVersions ? 'Fetching Releases...' : 'Fetch Releases'}</span>
+            </button>
+          </div>
+
+          <div class="p-3.5 bg-[#0c1416] rounded-[3px] border border-[rgba(233,226,210,0.08)] space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div class="flex-1">
+                <span class="text-[10px] text-[#8c887a] font-mono block mb-1.5">Target Release Tag</span>
+                {#if app.availableVersions && app.availableVersions.length > 0}
+                  <select
+                    bind:value={app.selectedVersionTag}
+                    disabled={app.updating}
+                    class="w-full bg-[#111d20] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2 outline-none focus:border-[#e8a33d]"
+                  >
+                    {#each app.availableVersions as rel}
+                      <option value={rel.tag_name}>
+                        {rel.tag_name} {rel.is_latest ? '★ Latest' : ''} {rel.is_current ? '✔ Current' : ''} {rel.type === 'downgrade' ? '▼ Older' : ''} ({rel.published_at})
+                      </option>
+                    {/each}
+                  </select>
+                {:else}
+                  <input
+                    type="text"
+                    bind:value={app.selectedVersionTag}
+                    disabled={app.updating}
+                    placeholder="e.g. v2.8.8, v2.8.9..."
+                    class="w-full bg-[#111d20] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2 outline-none focus:border-[#e8a33d]"
+                  />
+                {/if}
+              </div>
+
+              <div class="sm:self-end">
+                <button
+                  class="btn-ochre text-xs w-full sm:w-auto"
+                  onclick={() => app.installVersionAction()}
+                  disabled={app.updating || !app.selectedVersionTag}
+                >
+                  <Icon name="download" size={14} />
+                  <span>{app.updating ? 'Applying...' : 'Switch Version'}</span>
+                </button>
+              </div>
+            </div>
+
+            {#if app.updating}
+              <div class="p-3 bg-[rgba(232,163,61,0.08)] border border-[rgba(232,163,61,0.2)] rounded-[3px] text-xs text-[#f4cd8a] space-y-2 font-mono">
+                <div class="flex items-center justify-between">
+                  <span class="flex items-center gap-2">
+                    <Icon name="refresh" size={13} class="animate-spin text-[#e8a33d] shrink-0" />
+                    <span>{app.updateMessage || 'Applying version update...'}</span>
+                  </span>
+                  {#if app.updateProgress > 0}
+                    <span class="font-bold">{app.updateProgress}%</span>
+                  {/if}
+                </div>
+                {#if app.updateProgress > 0}
+                  <div class="w-full bg-[rgba(233,226,210,0.1)] h-1.5 rounded-full overflow-hidden">
+                    <div
+                      class="bg-[#e8a33d] h-full transition-all duration-300 rounded-full"
+                      style="width: {Math.max(5, Math.min(100, app.updateProgress))}%"
+                    ></div>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        </div>
+
         <!-- Supervisor / Keep-Alive -->
         <div class="border-t border-[rgba(233,226,210,0.08)] pt-6">
           <label class="flex items-start gap-3 cursor-pointer">

@@ -386,3 +386,228 @@ func abbreviate(s string, max int) string {
 	}
 	return s[:max-3] + "..."
 }
+
+// ReleaseOption represents an available release version from GitHub.
+type ReleaseOption struct {
+	TagName     string `json:"tag_name"`
+	Name        string `json:"name"`
+	PublishedAt string `json:"published_at"`
+	IsLatest    bool   `json:"is_latest"`
+	IsCurrent   bool   `json:"is_current"`
+	Type        string `json:"type"` // "current", "upgrade", "downgrade"
+}
+
+var (
+	releasesListCacheMu   sync.Mutex
+	releasesListCacheData []ReleaseOption
+	releasesListCacheAt   time.Time
+)
+
+// fetchAvailableReleases queries GitHub Atom feed (rate-limit safe) and REST API for all releases.
+func fetchAvailableReleases() ([]ReleaseOption, error) {
+	releasesListCacheMu.Lock()
+	if len(releasesListCacheData) > 0 && time.Since(releasesListCacheAt) < 10*time.Minute {
+		res := make([]ReleaseOption, len(releasesListCacheData))
+		copy(res, releasesListCacheData)
+		releasesListCacheMu.Unlock()
+		return res, nil
+	}
+	releasesListCacheMu.Unlock()
+
+	// 1. Try Atom feed (primary, free of API rate limits)
+	req, err := http.NewRequest(http.MethodGet, githubAtomFeed, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", desktopUserAgent())
+		req.Header.Set("Accept", "application/atom+xml, application/xml, text/xml, */*")
+		if resp, err := newGitHubHTTPClient(15 * time.Second).Do(req); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				if body, err := io.ReadAll(io.LimitReader(resp.Body, 512<<10)); err == nil {
+					list := parseAtomReleases(string(body))
+					if len(list) > 0 {
+						releasesListCacheMu.Lock()
+						releasesListCacheData = list
+						releasesListCacheAt = time.Now()
+						releasesListCacheMu.Unlock()
+						return list, nil
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Fallback to GitHub REST API /releases
+	apiURL := "https://api.github.com/repos/" + githubRepoOwner + "/" + githubRepoName + "/releases?per_page=30"
+	reqAPI, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	if err == nil {
+		applyGitHubAPIHeaders(reqAPI)
+		if resp, err := newGitHubHTTPClient(15 * time.Second).Do(reqAPI); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var rawReleases []map[string]any
+				if err := json.NewDecoder(resp.Body).Decode(&rawReleases); err == nil {
+					var list []ReleaseOption
+					for i, r := range rawReleases {
+						tag, _ := r["tag_name"].(string)
+						if tag == "" {
+							continue
+						}
+						name, _ := r["name"].(string)
+						if name == "" {
+							name = tag
+						}
+						pubDate, _ := r["published_at"].(string)
+						if t, err := time.Parse(time.RFC3339, pubDate); err == nil {
+							pubDate = t.Format("2006-01-02")
+						}
+						list = append(list, ReleaseOption{
+							TagName:     tag,
+							Name:        name,
+							PublishedAt: pubDate,
+							IsLatest:    i == 0,
+						})
+					}
+					if len(list) > 0 {
+						releasesListCacheMu.Lock()
+						releasesListCacheData = list
+						releasesListCacheAt = time.Now()
+						releasesListCacheMu.Unlock()
+						return list, nil
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Last fallback: return latest tag if known
+	if latest, err := fetchLatestRelease(); err == nil && latest != nil && latest.TagName != "" {
+		return []ReleaseOption{
+			{
+				TagName:     latest.TagName,
+				Name:        "Release " + latest.TagName,
+				PublishedAt: time.Now().Format("2006-01-02"),
+				IsLatest:    true,
+			},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("failed to fetch release history from GitHub")
+}
+
+func parseAtomReleases(atomXML string) []ReleaseOption {
+	var list []ReleaseOption
+	seen := make(map[string]bool)
+
+	entries := strings.Split(atomXML, "<entry>")
+	if len(entries) <= 1 {
+		return nil
+	}
+
+	for i, entry := range entries[1:] {
+		tag := ""
+		const marker = "/releases/tag/"
+		if idx := strings.Index(entry, marker); idx >= 0 {
+			rest := entry[idx+len(marker):]
+			end := strings.IndexAny(rest, `"'?# \t\n\r<`)
+			if end > 0 {
+				tag = strings.TrimSpace(rest[:end])
+			}
+		}
+		if tag == "" {
+			continue
+		}
+		if seen[tag] {
+			continue
+		}
+		seen[tag] = true
+
+		title := tag
+		if tIdx := strings.Index(entry, "<title>"); tIdx >= 0 {
+			rest := entry[tIdx+7:]
+			if tEnd := strings.Index(rest, "</title>"); tEnd > 0 {
+				title = strings.TrimSpace(rest[:tEnd])
+			}
+		}
+
+		updated := ""
+		if uIdx := strings.Index(entry, "<updated>"); uIdx >= 0 {
+			rest := entry[uIdx+9:]
+			if uEnd := strings.Index(rest, "</updated>"); uEnd > 0 {
+				rawDate := strings.TrimSpace(rest[:uEnd])
+				if t, err := time.Parse(time.RFC3339, rawDate); err == nil {
+					updated = t.Format("2006-01-02")
+				} else {
+					updated = rawDate
+				}
+			}
+		}
+
+		list = append(list, ReleaseOption{
+			TagName:     tag,
+			Name:        title,
+			PublishedAt: updated,
+			IsLatest:    i == 0,
+		})
+	}
+	return list
+}
+
+// fetchReleaseByTag returns the release info and download URL for a specific tag.
+func fetchReleaseByTag(tag string) (*latestReleaseInfo, error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return fetchLatestRelease()
+	}
+	if !strings.HasPrefix(tag, "v") && !strings.HasPrefix(tag, "V") {
+		tag = "v" + tag
+	}
+
+	// 1. Check if latest cached release matches
+	releaseCacheMu.Lock()
+	if releaseCacheInfo != nil && releaseCacheInfo.TagName == tag {
+		cp := *releaseCacheInfo
+		releaseCacheMu.Unlock()
+		return &cp, nil
+	}
+	releaseCacheMu.Unlock()
+
+	// 2. Try GitHub API for assets if reachable
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/%s", githubRepoOwner, githubRepoName, tag)
+	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	if err == nil {
+		applyGitHubAPIHeaders(req)
+		if resp, err := newGitHubHTTPClient(12 * time.Second).Do(req); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+				var release map[string]any
+				if err := json.Unmarshal(body, &release); err == nil {
+					info := &latestReleaseInfo{
+						TagName: tag,
+						Assets:  make(map[string]string),
+						FromAPI: true,
+					}
+					if assets, ok := release["assets"].([]any); ok {
+						for _, a := range assets {
+							if m, ok := a.(map[string]any); ok {
+								name, _ := m["name"].(string)
+								url, _ := m["browser_download_url"].(string)
+								if name != "" && url != "" {
+									info.Assets[name] = url
+								}
+							}
+						}
+					}
+					return info, nil
+				}
+			}
+		}
+	}
+
+	// 3. Fallback: constructed release asset URL
+	return &latestReleaseInfo{
+		TagName: tag,
+		Assets:  map[string]string{platformArchiveAssetName(tag): platformArchiveDownloadURL(tag)},
+		FromAPI: false,
+	}, nil
+}
