@@ -70,6 +70,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'operations-and-plugins/anchor-nodes',
+        'operations-and-plugins/relay-nodes',
         'operations-and-plugins/plugin-system',
         'operations-and-plugins/observability-and-metrics',
       ],

@@ -4,6 +4,9 @@
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
 
+[FIXED] BUG-036: Circuit relay v2 hop service deactivation on long-running nodes due to AutoNAT reachability fluctuation
+  Fixed: 2026-08-18 — Add ForcePublic configuration (and auto-apply for RelayService nodes), locking host reachability to ReachabilityPublic permanently. Prevents transient AutoNAT probe/observer drops after 10-24h from shutting down the Circuit Relay v2 hop service. Disables AutoRelay client on relay providers. Added unit tests in net/host/nat_test.go.
+
 [FIXED] TASK-P2-PERF-002: BitTorrent-Style Adaptive Procedural Block Sizing
   Fixed: 2026-08-07 — Implement AdaptiveBlockSize in core/chunk (256 KiB up to 4 MiB based on content size) and wire into core/ingest. Cuts DB write operations for multi-gigabyte files by ~90% (e.g. 71,000 writes down to 8,800 writes for 1.24 GB), eliminating BadgerDB WAL flushing freezes and disk thrashing. Added unit tests in core/chunk/adaptive_test.go.
 

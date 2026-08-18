@@ -27,6 +27,11 @@ bootstrap_peers:
 # DHT supplement this list; bootstrap peers are not assumed to be relays.
 relay_peers: []
 
+# Circuit Relay v2 service. Set to true on public bootnodes/anchor nodes to provide relaying for NATed peers.
+relay_service: false
+# Force public reachability to lock Circuit Relay v2 active 24/7 without AutoNAT observer timeouts.
+force_public: false
+
 # Enable only on trusted LANs or private clusters.
 enable_mdns: false
 

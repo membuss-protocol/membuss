@@ -101,6 +101,10 @@ type Config struct {
 	// ForceRelay forces private reachability so AutoRelay obtains relay
 	// reservations immediately. Direct dialing and DCUtR remain enabled.
 	ForceRelay bool
+	// ForcePublic forces public reachability so the host is treated as
+	// publicly accessible and the Circuit Relay v2 hop service remains active
+	// 24/7 without being deactivated by transient AutoNAT probe drops.
+	ForcePublic bool
 	// StaticRelays is the set of relay peers the AutoRelay
 	// subsystem uses as initial candidates. Bootstrap peers
 	// are a sensible default when this is empty.
@@ -360,21 +364,29 @@ func buildNATOptions(cfg Config) ([]libp2p.Option, error) {
 	// AutoRelay rewrites advertised addresses to include circuit addresses
 	// whenever no direct public address is known. A dynamic source takes
 	// precedence over the legacy static-only configuration.
-	if cfg.RelayPeerSource != nil {
-		opts = append(opts, libp2p.EnableAutoRelayWithPeerSource(
-			cfg.RelayPeerSource,
-			autorelay.WithMinCandidates(1),
-			autorelay.WithMaxCandidates(20),
-			autorelay.WithNumRelays(2),
-			autorelay.WithBootDelay(30*time.Second),
-			autorelay.WithBackoff(time.Minute),
-			autorelay.WithMaxCandidateAge(30*time.Minute),
-		))
-	} else if len(cfg.StaticRelays) > 0 {
-		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(cfg.StaticRelays))
+	// Relay service providers do not run AutoRelay as they provide relaying
+	// for the network rather than consuming it.
+	if !cfg.RelayService {
+		if cfg.RelayPeerSource != nil {
+			opts = append(opts, libp2p.EnableAutoRelayWithPeerSource(
+				cfg.RelayPeerSource,
+				autorelay.WithMinCandidates(1),
+				autorelay.WithMaxCandidates(20),
+				autorelay.WithNumRelays(2),
+				autorelay.WithBootDelay(30*time.Second),
+				autorelay.WithBackoff(time.Minute),
+				autorelay.WithMaxCandidateAge(30*time.Minute),
+			))
+		} else if len(cfg.StaticRelays) > 0 {
+			opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(cfg.StaticRelays))
+		}
 	}
 
-	if cfg.ForceRelay {
+	if cfg.ForcePublic || (cfg.RelayService && !cfg.ForceRelay) {
+		// Force public reachability so AutoNAT transient probe drops or peer
+		// churn cannot shut down the Circuit Relay v2 hop service.
+		opts = append(opts, libp2p.ForceReachabilityPublic())
+	} else if cfg.ForceRelay {
 		// Force private reachability so AutoRelay acquires reservations
 		// immediately. Direct dials and DCUtR remain enabled; libp2p has no
 		// supported option that forces every outbound stream through a relay.

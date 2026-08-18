@@ -97,6 +97,8 @@ func Run(args []string) error {
 	build := fs.String("build", "dev", "build identifier reported by Ping")
 	inMemory := fs.Bool("in-memory", false, "use an in-memory BadgerDB (no on-disk state)")
 	noAnchor := fs.Bool("no-anchor", false, "disable the anchor engine even if config enables it")
+	forcePublicFlag := fs.Bool("force-public", false, "force public reachability and keep circuit relay v2 active 24/7")
+	forceRelayFlag := fs.Bool("force-relay", false, "force private reachability and obtain relay reservations immediately")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -130,6 +132,22 @@ func Run(args []string) error {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		bootLogger.Error("config load failed", "err", err.Error())
+		os.Exit(1)
+	}
+	if *forcePublicFlag {
+		cfg.ForcePublic = true
+	}
+	if *forceRelayFlag {
+		cfg.ForceRelay = true
+	}
+	if os.Getenv("MEMBUSS_FORCE_PUBLIC") == "true" {
+		cfg.ForcePublic = true
+	}
+	if os.Getenv("MEMBUSS_FORCE_RELAY") == "true" {
+		cfg.ForceRelay = true
+	}
+	if cfg.ForcePublic && cfg.ForceRelay {
+		bootLogger.Error("force-public and force-relay cannot both be enabled")
 		os.Exit(1)
 	}
 	logger := logging.New(os.Stdout, cfg.LogLevel)
@@ -270,6 +288,7 @@ func Run(args []string) error {
 		RelayMaxReservations: cfg.RelayMaxReservations,
 		RelayBandwidthMB:     cfg.RelayBandwidthMB,
 		ForceRelay:           cfg.ForceRelay,
+		ForcePublic:          cfg.ForcePublic || os.Getenv("MEMBUSS_FORCE_PUBLIC") == "true",
 	}
 	h, err := host.NewHost(hostCfg)
 	if err != nil {

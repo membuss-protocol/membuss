@@ -117,6 +117,10 @@ type Config struct {
 	// ForceRelay forces private reachability so AutoRelay obtains relay
 	// reservations immediately. Direct dialing and DCUtR remain enabled.
 	ForceRelay bool `yaml:"force_relay"`
+	// ForcePublic forces public reachability on this node and permanently
+	// prevents AutoNAT from deactivating the Circuit Relay v2 hop service.
+	// Recommended for public bootnodes, anchor nodes, and relay providers.
+	ForcePublic bool `yaml:"force_public"`
 	// NATWaitSeconds is how long the daemon waits on startup
 	// for AutoNAT to resolve reachability before continuing.
 	// Default 10s.
@@ -368,6 +372,7 @@ func Default() *Config {
 		RelayMaxReservations: 128,
 		RelayBandwidthMB:     16,
 		ForceRelay:           false,
+		ForcePublic:          false,
 		NATWaitSeconds:       10,
 		BloomCapacity:                  10_000_000,
 		BloomFPRate:                    0.001,
@@ -493,6 +498,9 @@ func (c *Config) Validate() error {
 	}
 	if c.NATWaitSeconds < 0 {
 		return errors.New("nat_wait_seconds must be >= 0")
+	}
+	if c.ForcePublic && c.ForceRelay {
+		return errors.New("force_public and force_relay are mutually exclusive")
 	}
 
 	if c.BloomFPRate < 0 || c.BloomFPRate >= 1 {

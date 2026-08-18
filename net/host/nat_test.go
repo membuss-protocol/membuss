@@ -202,3 +202,41 @@ func TestBuildNATOptions_RejectsRelayBudgetOverflow(t *testing.T) {
 		t.Fatal("expected relay bandwidth overflow error")
 	}
 }
+
+func TestBuildNATOptions_RelayServiceForcesPublicReachability(t *testing.T) {
+	opts, err := buildNATOptions(Config{
+		RelayService: true,
+	})
+	if err != nil {
+		t.Fatalf("buildNATOptions: %v", err)
+	}
+	var cfg libp2p.Config
+	if err := cfg.Apply(opts...); err != nil {
+		t.Fatalf("apply NAT options: %v", err)
+	}
+	if !cfg.EnableRelayService {
+		t.Error("Circuit Relay v2 service is disabled")
+	}
+	if cfg.EnableAutoRelay {
+		t.Error("AutoRelay client should be disabled on RelayService providers")
+	}
+	if cfg.ForceReachability == nil || *cfg.ForceReachability != network.ReachabilityPublic {
+		t.Errorf("ForceReachability = %v, want Public", cfg.ForceReachability)
+	}
+}
+
+func TestBuildNATOptions_ForcePublic(t *testing.T) {
+	opts, err := buildNATOptions(Config{
+		ForcePublic: true,
+	})
+	if err != nil {
+		t.Fatalf("buildNATOptions: %v", err)
+	}
+	var cfg libp2p.Config
+	if err := cfg.Apply(opts...); err != nil {
+		t.Fatalf("apply NAT options: %v", err)
+	}
+	if cfg.ForceReachability == nil || *cfg.ForceReachability != network.ReachabilityPublic {
+		t.Errorf("ForceReachability = %v, want Public", cfg.ForceReachability)
+	}
+}

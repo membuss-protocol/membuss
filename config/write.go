@@ -109,6 +109,7 @@ relay_max_conns: <<RELAY_MAX_CONNS>>
 relay_max_reservations: <<RELAY_MAX_RESERVATIONS>>
 relay_bandwidth_mb: <<RELAY_BANDWIDTH_MB>>
 force_relay: <<FORCE_RELAY>>
+force_public: <<FORCE_PUBLIC>>
 nat_wait_seconds: <<NAT_WAIT_SECONDS>>
 
 # -----------------------------------------------------------------------------
@@ -281,6 +282,7 @@ func writeTemplate(cfg *Config) (string, error) {
 		"<<RELAY_MAX_RESERVATIONS>>",       intString(cfg.RelayMaxReservations),
 		"<<RELAY_BANDWIDTH_MB>>",           intString(cfg.RelayBandwidthMB),
 		"<<FORCE_RELAY>>",                  boolString(cfg.ForceRelay),
+		"<<FORCE_PUBLIC>>",                 boolString(cfg.ForcePublic),
 		"<<NAT_WAIT_SECONDS>>",             intString(cfg.NATWaitSeconds),
 		"<<REPROVIDE_INTERVAL>>",           durationString(cfg.ReprovideInterval),
 		"<<REPROVIDE_GROUPS>>",             intString(cfg.ReprovideGroups),
