@@ -20,30 +20,29 @@ Membuss lets applications store data, stream media, and execute serverless workl
 ## 🌐 Network Overview
 
 ```
-                      Membuss Distributed Network
-
-     ┌──────────────┐                       ┌──────────────┐
-     │   Device A   ├───────────────────────┤   Device B   │
-     └──────┬───────┘                       └──────┬───────┘
-            │                                      │
-            │          libp2p / Mem-DHT            │
-            └──────────────────┬───────────────────┘
-                               │
-                         ┌─────▼─────┐
-                         │  Membuss  │
-                         │  Network  │
-                         └─────┬─────┘
-                               │
-            ┌──────────────────┴──────────────────┐
-            ▼                                     ▼
-   Distributed Storage                       Edge Compute
- ┌──────────────────────┐              ┌──────────────────────┐
- │ • Content Addressed  │              │ • MemEdge Serverless │
- │ • Reed-Solomon 10+4  │              │ • Go / WASI Preview1 │
- │ • Merkle DAGs (MIDs) │              │ • JavaScript (Goja)  │
- │ • Pebble LSM Store   │              │ • 3-Tier Scheduling  │
- └──────────────────────┘              └──────────────────────┘
+                         ┌──────────────────────────────┐
+                         │   P2P Swarm (libp2p + DHT)   │
+                         │  Device A ◄───► Device B     │
+                         └──────────────┬───────────────┘
+                                        │
+                                        ▼
+                         ┌──────────────────────────────┐
+                         │   Membuss Network Engine     │
+                         └──────┬────────────────┬──────┘
+                                │                │
+           ┌────────────────────┴───┐        ┌───┴────────────────────┐
+           ▼                        ▼        ▼                        ▼
+┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
+│ Content-Addressed    │ │ Reed-Solomon 10+4    │ │ MemEdge Serverless   │
+│ Merkle DAGs (MIDs)   │ │ Mathematical Parity  │ │ Go (WASI) & JS Engine│
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘
 ```
+
+| Subsystem | Core Technologies | Primary Capability |
+|---|---|---|
+| **🌐 Swarm Networking** | `libp2p` · `Mem-DHT` · `PEX` | Multi-transport mesh (TCP, QUIC, WebSocket) with autonomous peer discovery |
+| **📦 Resilient Storage** | `Pebble LSM` · `Reed-Solomon 10+4` · `BLAKE3` | Content-addressed Merkle DAGs surviving 40% simultaneous peer loss |
+| **⚡ Serverless Compute** | `MemEdge` · `Wazero (WASI)` · `Goja (JS)` | Microsecond cold starts (`<0.5ms`) with 3-Tier Fair Compute Scheduling |
 
 ---
 
@@ -79,25 +78,12 @@ Membuss is a modular, decentralized infrastructure layer built in Go. It provide
 ## ⚙️ How It Works
 
 ```
-[ Input Payload ]
-       │
-       ▼
- [ Adaptive Chunking ] ──► 256 KiB to 4 MiB based on payload size
-       │
-       ▼
-  [ BLAKE3 Hashing ]   ──► Parallel SIMD multihash generation (0x1e)
-       │
-       ▼
-  [ Merkle DAG Build ] ──► Streaming UnixFS-style hierarchy (Fanout: 174)
-       │
-       ▼
- [ Reed-Solomon 10+4 ] ──► 10 Data + 4 Parity shards computed in-memory
-       │
-       ▼
-  [ Pebble LSM Store ] ──► Sub-millisecond block ingestion with Counting Bloom Filters
-       │
-       ▼
-   [ Distribution ]    ──► Announced to Mem-DHT (Kademlia) + Transferred via Memex v2
+1. Ingestion & Chunking ──► Adaptive procedural sizing (256 KiB to 4 MiB)
+2. Hashing & Merkle DAG ──► BLAKE3 parallel multihashing (0x1e) into UnixFS hierarchy
+3. Erasure Coding       ──► 10 Data + 4 Parity shards generated in-memory (RAM)
+4. Local Blockstore     ──► Pebble LSM SSTables with Counting Bloom Filter index
+5. P2P Swarm Exchange   ──► Announced to Mem-DHT & transferred via Memex v2 streams
+6. Serverless Compute   ──► Stateless on-demand execution via MemEdge (WASI / JS)
 ```
 
 ---
@@ -232,29 +218,25 @@ curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
 ## 🏛️ System Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                       Applications                        │
-│          Web Explorer · Desktop GUI · Custom dApps        │
-├───────────────────────────────────────────────────────────┤
-│                     Compute Layer                         │
-│       MemEdge Engine (Wazero WASI / Goja JavaScript)      │
-│            3-Tier Fair Compute Scheduling (FCS)           │
-├───────────────────────────────────────────────────────────┤
-│                    Application APIs                       │
-│    Mem-Gate HTTP CDN (:8080) · Node Control API (:5001)   │
-│             gRPC Daemon Stream Socket (:50051)            │
-├───────────────────────────────────────────────────────────┤
-│                   Data Routing & Exchange                 │
-│      Memex v2 Block Transfer · Peer Exchange (PEX)        │
-│          Mem-DHT (Kademlia with Protobuf Validation)      │
-├───────────────────────────────────────────────────────────┤
-│                     Networking Layer                      │
-│        libp2p (TCP, QUIC, WebSocket Transports)           │
-├───────────────────────────────────────────────────────────┤
-│                   Storage & Encoding                      │
-│    Pebble LSM Blockstore · Counting Bloom Filters         │
-│   Reed-Solomon 10+4 Erasure Coding · Merkle DAG Engine    │
-└───────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Applications & Interfaces                       │
+│           Web Explorer (SvelteKit)  ·  Desktop GUI (Wails v2)          │
+├────────────────────────────────────────────────────────────────────────┤
+│                       Serverless Compute Layer                         │
+│       MemEdge Engine: Wazero (WASI Preview 1) & Goja (JavaScript)      │
+├────────────────────────────────────────────────────────────────────────┤
+│                           Application APIs                             │
+│      Mem-Gate HTTP CDN (:8080)  ·  Node API (:5001)  ·  gRPC (:50051)  │
+├────────────────────────────────────────────────────────────────────────┤
+│                       Routing & Block Exchange                         │
+│           Memex v2 Protocol  ·  Mem-DHT Kademlia  ·  PEX Gossip        │
+├────────────────────────────────────────────────────────────────────────┤
+│                           Networking Layer                             │
+│                libp2p (TCP, QUIC, WebSocket Transports)                │
+├────────────────────────────────────────────────────────────────────────┤
+│                      Storage & Cryptographic Core                      │
+│        Pebble LSM Blockstore  ·  Reed-Solomon 10+4  ·  BLAKE3 DAG      │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
