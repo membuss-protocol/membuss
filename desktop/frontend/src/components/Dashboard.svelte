@@ -168,7 +168,7 @@
                 Node Daemon is in Standby
               </h2>
               <span class="eyebrow !text-[9px] px-2 py-0.5 rounded-[3px] bg-[rgba(233,226,210,0.04)] border border-[rgba(233,226,210,0.08)]">
-                {app.config?.installed_version || 'v2.9.0'}
+                {app.config?.installed_version || 'v2.9.1'}
               </span>
             </div>
 
@@ -348,7 +348,7 @@
                   Local Node Online & Active
                 </h2>
                 <span class="eyebrow !text-[9px] px-2 py-0.5 rounded-[3px] bg-[rgba(233,226,210,0.04)] border border-[rgba(233,226,210,0.08)]">
-                  {app.nodeStatus.info?.version ? `v${app.nodeStatus.info.version}` : (app.config?.installed_version || 'v2.9.0')}
+                  {app.nodeStatus.info?.version ? `v${app.nodeStatus.info.version}` : (app.config?.installed_version || 'v2.9.1')}
                 </span>
               </div>
 

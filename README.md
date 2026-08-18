@@ -11,7 +11,7 @@ Membuss lets applications store data, stream media, and execute serverless workl
 [![Release](https://img.shields.io/github/v/release/membuss-protocol/membuss)](https://github.com/membuss-protocol/membuss/releases)
 [![Docs Website](https://img.shields.io/badge/Documentation-Live_Docs_Hub-c8956c?logo=docusaurus&logoColor=white)](https://membuss-docs.vercel.app/)
 
-[Website](https://membuss-docs.vercel.app/) · [Documentation](https://membuss-docs.vercel.app/docs/getting-started/introduction) · [Download Releases](https://github.com/membuss-protocol/membuss/releases) · [Desktop App](https://github.com/membuss-protocol/membuss/releases/tag/v2.9.0)
+[Website](https://membuss-docs.vercel.app/) · [Documentation](https://membuss-docs.vercel.app/docs/getting-started/introduction) · [Download Releases](https://github.com/membuss-protocol/membuss/releases) · [Desktop App](https://github.com/membuss-protocol/membuss/releases/tag/v2.9.1)
 
 </div>
 
