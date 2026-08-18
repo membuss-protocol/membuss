@@ -55,10 +55,10 @@ FRONTEND_DIR  := explorer-web
 NPM           ?= npm
 
 # Docker knobs. Override on the command line, e.g.
-#   make docker-push IMAGE=ghcr.io/nnlgsakib/membuss:latest
+#   make docker-push IMAGE=ghcr.io/membuss-protocol/membuss:latest
 DOCKER        ?= docker
-REGISTRY      ?= ghcr.io/nnlgsakib
-IMAGE         ?= ghcr.io/nnlgsakib/membuss:latest
+REGISTRY      ?= ghcr.io/membuss-protocol
+IMAGE         ?= ghcr.io/membuss-protocol/membuss:latest
 CONTAINER     ?= membuss
 COMPOSE       ?= docker compose
 

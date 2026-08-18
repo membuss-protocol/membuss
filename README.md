@@ -8,10 +8,10 @@ Membuss lets applications store data, stream media, and execute serverless workl
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/nnlgsakib/membuss)](https://github.com/nnlgsakib/membuss/releases)
+[![Release](https://img.shields.io/github/v/release/membuss-protocol/membuss)](https://github.com/membuss-protocol/membuss/releases)
 [![Docs Website](https://img.shields.io/badge/Documentation-Live_Docs_Hub-c8956c?logo=docusaurus&logoColor=white)](https://membuss-docs.vercel.app/)
 
-[Website](https://membuss-docs.vercel.app/) · [Documentation](https://membuss-docs.vercel.app/docs/getting-started/introduction) · [Download Releases](https://github.com/nnlgsakib/membuss/releases) · [Desktop App](https://github.com/nnlgsakib/membuss/releases/tag/v2.9.0)
+[Website](https://membuss-docs.vercel.app/) · [Documentation](https://membuss-docs.vercel.app/docs/getting-started/introduction) · [Download Releases](https://github.com/membuss-protocol/membuss/releases) · [Desktop App](https://github.com/membuss-protocol/membuss/releases/tag/v2.9.0)
 
 </div>
 
@@ -123,7 +123,7 @@ Membuss is a modular, decentralized infrastructure layer built in Go. It provide
 
 Membuss includes an all-in-one graphical desktop application for Windows, Linux, and macOS powered by Wails v2:
 
-1. Download the latest installer from [GitHub Releases](https://github.com/nnlgsakib/membuss/releases/latest).
+1. Download the latest installer from [GitHub Releases](https://github.com/membuss-protocol/membuss/releases/latest).
 2. Launch **Membuss Desktop** — the local daemon, gateway, and visual explorer start automatically.
 
 ---
@@ -134,7 +134,7 @@ Membuss includes an all-in-one graphical desktop application for Windows, Linux,
 
 ```bash
 # Clone repository
-git clone https://github.com/nnlgsakib/membuss.git
+git clone https://github.com/membuss-protocol/membuss.git
 cd membuss
 
 # Build unified executable

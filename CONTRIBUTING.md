@@ -48,7 +48,7 @@ membuss/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/nnlgsakib/membuss.git
+git clone https://github.com/membuss-protocol/membuss.git
 cd membuss
 ```
 

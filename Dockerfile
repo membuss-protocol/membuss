@@ -66,7 +66,7 @@ FROM gcr.io/distroless/base-debian12
 
 LABEL org.opencontainers.image.title="membuss" \
       org.opencontainers.image.description="Decentralized, content-addressed storage and delivery network (daemon + CLI)" \
-      org.opencontainers.image.source="https://github.com/nnlgsakib/membuss" \
+      org.opencontainers.image.source="https://github.com/membuss-protocol/membuss" \
       org.opencontainers.image.licenses="MIT"
 
 COPY --from=builder /out/membuss     /usr/local/bin/membuss

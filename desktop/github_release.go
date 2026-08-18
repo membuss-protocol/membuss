@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	githubRepoOwner  = "nnlgsakib"
+	githubRepoOwner  = "membuss-protocol"
 	githubRepoName   = "membuss"
 	githubAPILatest  = "https://api.github.com/repos/" + githubRepoOwner + "/" + githubRepoName + "/releases/latest"
 	githubHTMLLatest = "https://github.com/" + githubRepoOwner + "/" + githubRepoName + "/releases/latest"
