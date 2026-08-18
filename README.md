@@ -1,112 +1,336 @@
 <div align="center">
 
-# 🌌 Membuss Network
+# Membuss
 
-### A Decentralized, Content-Addressed Storage & Delivery Infrastructure
+### A peer-to-peer network for decentralized storage, networking, and edge compute.
 
-Decentralized storage and high-speed streaming built on protocol-level Reed-Solomon erasure coding, parallel BLAKE3 Merkle DAGs, and automatic content persistence.
+Membuss lets applications store data, stream media, and execute serverless workloads directly across a distributed, content-addressed network.
 
-[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/nnlgsakib/membuss)](https://github.com/nnlgsakib/membuss/releases)
 [![Docs Website](https://img.shields.io/badge/Documentation-Live_Docs_Hub-c8956c?logo=docusaurus&logoColor=white)](https://membuss-docs.vercel.app/)
 
-[🌐 Interactive Documentation Hub](https://membuss-docs.vercel.app/) • [📦 Precompiled Releases](https://github.com/nnlgsakib/membuss/releases) • [🖥️ Desktop GUI App](#desktop-gui-recommended)
+[Website](https://membuss-docs.vercel.app/) · [Documentation](https://membuss-docs.vercel.app/docs/getting-started/introduction) · [Download Releases](https://github.com/nnlgsakib/membuss/releases) · [Desktop App](https://github.com/nnlgsakib/membuss/releases/tag/v2.9.0)
 
 </div>
 
 ---
 
-## ⚡ What is Membuss?
-
-**Membuss** is a next-generation decentralized content storage and streaming protocol designed to solve the **data availability crisis** inherent in peer-to-peer file networks.
-
-Traditional decentralized networks externalize content persistence entirely to end-users:
-- **IPFS**: Files vanish permanently as soon as origin providers stop pinning CIDs.
-- **BitTorrent**: Torrents die the moment the last seeder goes offline.
-
-**Membuss solves this at the protocol layer**: Every payload is automatically sharded into **Reed-Solomon 10+4 erasure pieces** at ingestion, and dedicated **Anchor Nodes** automatically mirror announced content. Data survives not because someone remembered to pin it, but because disappearance is mathematically impossible.
+## 🌐 Network Overview
 
 ```
-Ingest (256KB) ──► BLAKE3 Parallel Pool ──► MemFS DAG ──► Reed-Solomon 10+4 ──► Pebble LSM Store ──► Memex Streaming
+                      Membuss Distributed Network
+
+     ┌──────────────┐                       ┌──────────────┐
+     │   Device A   ├───────────────────────┤   Device B   │
+     └──────┬───────┘                       └──────┬───────┘
+            │                                      │
+            │          libp2p / Mem-DHT            │
+            └──────────────────┬───────────────────┘
+                               │
+                         ┌─────▼─────┐
+                         │  Membuss  │
+                         │  Network  │
+                         └─────┬─────┘
+                               │
+            ┌──────────────────┴──────────────────┐
+            ▼                                     ▼
+   Distributed Storage                       Edge Compute
+ ┌──────────────────────┐              ┌──────────────────────┐
+ │ • Content Addressed  │              │ • MemEdge Serverless │
+ │ • Reed-Solomon 10+4  │              │ • Go / WASI Preview1 │
+ │ • Merkle DAGs (MIDs) │              │ • JavaScript (Goja)  │
+ │ • Pebble LSM Store   │              │ • 3-Tier Scheduling  │
+ └──────────────────────┘              └──────────────────────┘
 ```
 
 ---
 
-## 🚀 Key Problems Solved
+## 💡 Why Membuss?
 
-| Problem in Legacy P2P | The Membuss Protocol Solution | Operational Benefit |
-|---|---|---|
-| ❌ **Data Loss on Disconnect** | Protocol-level **Reed-Solomon 10+4** erasure coding + **Anchor Auto-Mirroring** | Payloads survive even if 40% of storing peers go offline simultaneously |
-| ❌ **Slow Write Ingestion** | **Pebble DB Hybrid SSTable Storage** ($<1$ MiB blocks stored directly in LSM SSTables) | **50x–100x write throughput boost** by eliminating OS filesystem inode exhaustion |
-| ❌ **High DHT Overhead** | **Mem-Herald 16-Group Incremental Announce Protocol** | **90% reduction in DHT network gossip traffic** compared to full re-announce bursts |
-| ❌ **Slow Deletion & Scans** | In-memory 8-bit saturating **Counting Bloom Filter** | **$O(1)$ constant-time additions and deletions** without DB compaction scans |
-| ❌ **CPU Hashing Bottlenecks** | Multi-threaded `BuildParallel` worker pool using **BLAKE3 (`0x1e`)** | Full hardware utilization of AVX-512 / NEON vector CPU instructions |
+Modern web and mobile applications depend almost exclusively on centralized cloud servers. This architecture introduces:
 
----
+- **Single Points of Failure**: Outages in centralized cloud regions take down thousands of services at once.
+- **Data Availability Crises**: In legacy P2P networks (like IPFS or BitTorrent), files vanish the moment seeders or origin pinners disconnect.
+- **Bandwidth & Infrastructure Costs**: Centralized bandwidth and compute pricing scale exponentially with data throughput.
+- **Rigid Edge Options**: Running serverless functions close to users usually requires vendor lock-in to proprietary cloud edges.
 
-## 📖 Deep Dive Documentation Hub
+**Membuss takes a unified approach.** It turns ordinary connected devices into a shared substrate of resilient storage and distributed computation:
 
-Explore the full interactive documentation website featuring deep-dive technical architecture blueprints, mathematical proofs, sequence flowcharts, protocol specifications, and API references:
-
-> 🔗 **[Explore Full Interactive Documentation Website](https://membuss-docs.vercel.app/)**
-
-### Highlights in the Documentation
-- **[Executive System Thesis](https://membuss-docs.vercel.app/docs/getting-started/introduction)** — Core protocol philosophy, problem analysis, and market comparison.
-- **[System Architecture Blueprint](https://membuss-docs.vercel.app/docs/architecture/overview)** — Interactive Mermaid sequence diagrams & end-to-end data pipelines.
-- **[Reed-Solomon Erasure Coding](https://membuss-docs.vercel.app/docs/architecture/erasure-coding)** — SIMD Galois Field $GF(2^8)$ matrix arithmetic specifications.
-- **[Pebble Hybrid Store & Bloom Filter](https://membuss-docs.vercel.app/docs/low-level-specs/pebble-hybrid-store)** — LSM SSTable engine & $O(1)$ saturating counter math.
-- **[Memex v2 Protocol Spec](https://membuss-docs.vercel.app/docs/core-protocols/memex)** — Multiplexed libp2p block transfer & AIMD sliding window flow control.
-- **[APIs & Protobuf Specs](https://membuss-docs.vercel.app/docs/apis-and-interfaces/grpc-api)** — gRPC contracts, Node REST API (`/api/v1`), and Mem-Gate HTTP CDN (`:8080`).
+- **Protocol-Level Data Survival**: Every piece of data is split into **Reed-Solomon 10+4 erasure shards** at ingestion. Even if 40% of the nodes storing a file disconnect simultaneously, the data is mathematically reconstructed without loss.
+- **Stateless Edge Execution**: Serverless functions run directly on the P2P edge with microsecond cold starts using pure-Go WebAssembly (Wazero) and JavaScript (Goja) engines.
 
 ---
 
-## ⚡ Quick Start & Installation
+## 📦 What is Membuss?
 
-### Desktop GUI (Recommended)
+Membuss is a modular, decentralized infrastructure layer built in Go. It provides the core building blocks for:
 
-Membuss includes a cross-platform graphical desktop application powered by **Wails v2** (Go + React / TypeScript).
-
-- **Windows**: Download `Membuss-v2.3.0-windows-amd64-installer.exe` or `.zip`.
-- **Linux**: Download `Membuss-v2.3.0-linux-amd64.AppImage` or `.tar.gz`.
-
-👉 **[Download Precompiled Executables](https://membuss-docs.vercel.app/downloads)**
+- **Content-Addressed Storage**: Files and directories are chunked, hashed with BLAKE3, and structured into cryptographic Merkle DAGs identified by a **MID** (e.g. `mem1z4a2...`).
+- **Resilient Erasure Coding**: Single-pass Reed-Solomon 10+4 encoding protects data against peer churn and drive failures without requiring full duplicates.
+- **High-Throughput Block Exchange (Memex v2)**: Multiplexed block transfer protocol over libp2p streams featuring AIMD sliding window flow control and peer wantlist negotiation.
+- **Serverless Edge Compute (MemEdge)**: Stateless execution of Go/WASI and JavaScript functions with 3-Tier Fair Compute Scheduling (Publisher $\rightarrow$ Peer $\rightarrow$ Gateway).
+- **Mutable Pointers (MemNS)**: Cryptographically signed Ed25519 pointers allowing dynamic naming (`memns://my-app`) without changing content addresses.
+- **Public Gateway & CDN (MemGate)**: Built-in HTTP gateway supporting RFC 7233 byte-range streaming, live Web Explorer, and edge function execution over standard web ports.
 
 ---
 
-### Single-Binary CLI & Node Daemon
+## ⚙️ How It Works
 
-For server deployments, Docker containers, or command-line power users:
+```
+[ Input Payload ]
+       │
+       ▼
+ [ Adaptive Chunking ] ──► 256 KiB to 4 MiB based on payload size
+       │
+       ▼
+  [ BLAKE3 Hashing ]   ──► Parallel SIMD multihash generation (0x1e)
+       │
+       ▼
+  [ Merkle DAG Build ] ──► Streaming UnixFS-style hierarchy (Fanout: 174)
+       │
+       ▼
+ [ Reed-Solomon 10+4 ] ──► 10 Data + 4 Parity shards computed in-memory
+       │
+       ▼
+  [ Pebble LSM Store ] ──► Sub-millisecond block ingestion with Counting Bloom Filters
+       │
+       ▼
+   [ Distribution ]    ──► Announced to Mem-DHT (Kademlia) + Transferred via Memex v2
+```
+
+---
+
+## ✨ Features
+
+- **Decentralized P2P Networking**: Built on libp2p with TCP, QUIC, and WebSocket transports.
+- **Content Addressing (MID)**: Cryptographically verifiable, multihash-based identifiers.
+- **Adaptive Block Sizing**: BitTorrent-style procedural chunk sizing (256 KiB up to 4 MiB) to eliminate database write freezes on multi-gigabyte files.
+- **Reed-Solomon 10+4 Erasure Coding**: Transparent shard fetch and background self-healing repair workers.
+- **Pebble LSM Storage Engine**: High-throughput storage with in-memory Counting Bloom Filters for $O(1)$ additions and deletions.
+- **MemEdge Serverless Compute**: Microsecond cold starts ($<0.5\text{ms}$) running WebAssembly (WASI) and ECMAScript 5.1/6.
+- **3-Tier Fair Compute Scheduling**: Routes execution to the content publisher first, then connected edge peers, and finally local gateway sandboxes.
+- **Public HTTP CDN Gateway**: Stream 4K video, audio, and web assets via standard HTTP with full byte-range seek support.
+- **Built-in Web Explorer**: SvelteKit-powered dashboard for inspecting DAG blocks, peer topology, network telemetry, and node status.
+- **Cross-Platform Desktop Application**: Native desktop GUI with automatic multi-version upgrades/downgrades and rollback safety.
+
+---
+
+## 🚀 Quick Start
+
+### Option 1: Desktop GUI (Recommended for Users)
+
+Membuss includes an all-in-one graphical desktop application for Windows, Linux, and macOS powered by Wails v2:
+
+1. Download the latest installer from [GitHub Releases](https://github.com/nnlgsakib/membuss/releases/latest).
+2. Launch **Membuss Desktop** — the local daemon, gateway, and visual explorer start automatically.
+
+---
+
+### Option 2: CLI & Node Daemon (For Developers & Servers)
+
+#### 1. Build from Source
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/nnlgsakib/membuss
+# Clone repository
+git clone https://github.com/nnlgsakib/membuss.git
 cd membuss
 
-# 2. Build single executable (daemon + CLI + bundled Web Explorer)
-make build
+# Build unified executable
+go build -o membuss ./cmd/membuss
+```
 
-# 3. Initialize data directory & start node daemon
-./bin/membuss init
-./bin/membuss daemon start
+#### 2. Initialize and Start Node
 
-# 4. Ingest content & receive MID (Content Identifier)
-./bin/membuss add ./video.mp4
-# -> membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm
+```bash
+# Initialize data directory (~/.membuss)
+./membuss init
+
+# Start local daemon & HTTP gateway
+./membuss daemon
+```
+
+#### 3. Store and Retrieve Content
+
+```bash
+# Ingest a file into the network
+./membuss add ./video.mp4
+# Output: membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm (MID)
+
+# Retrieve content by MID
+./membuss get membafzbeidr5pk22uidyjnsay6lgrlkcdx7dcrvuimfnl4t5v4otdmbyfiugm ./downloaded.mp4
+
+# Stream directly to stdout
+./membuss cat <MID> | ffplay -
 ```
 
 ---
 
-## 🏛️ Ecosystem & Future Capabilities
+## 📖 Practical Examples
 
-- **MemEdge Serverless Compute**: Decentralized edge execution engine for **Go (WebAssembly / Wazero)** and **JavaScript (Goja)** with 3-Tier Fair Compute Scheduling (Publisher $\rightarrow$ Peer $\rightarrow$ Local Gateway).
-- **Mem-Gate HTTP CDN Gateway**: Built-in HTTP gateway (`:8080`) supporting RFC 7233 byte-range streaming for seamless 4K video playbacks.
-- **MemNS Cryptographic Mutable Pointers**: Ed25519 signed pointers allowing dynamic updates without altering root content MIDs.
-- **Mem-Git Version Control**: Content-addressed Merkle DAGs enabling native Git-style snapshotting and diff tracking.
-- **Universal Plugin System**: Custom storage lifecycle hooks (`StorageHooks`) and dynamic API extensions without modifying protocol core code.
+### 1. Media Streaming via Mem-Gate HTTP CDN
+
+Every node includes an HTTP gateway (default port `:8080`). You can stream video or host websites directly from a content address:
+
+```bash
+# Stream 4K video with seek/range support in any browser:
+http://localhost:8080/mem/<MID>/video.mp4
+
+# Inspect the Merkle DAG structure in the Web Explorer:
+http://localhost:8080/explorer/mid/<MID>
+```
+
+---
+
+### 2. Writing a MemEdge Serverless Function
+
+Deploy an edge function that executes on-demand across the network without managing servers:
+
+#### JavaScript (`router.js`)
+
+```javascript
+export default function handler(req) {
+    const { method, path, query } = req;
+
+    if (path === "/healthz") {
+        return {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "healthy", runtime: "MemEdge-Goja" })
+        };
+    }
+
+    if (path === "/convert" && method === "GET") {
+        const usd = parseFloat(query.usd || "100");
+        const eur = usd * 0.92;
+        return {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ usd, eur, rate: 0.92 })
+        };
+    }
+
+    return { status: 404, body: "Route Not Found" };
+}
+```
+
+#### Deploy & Execute
+
+```bash
+# 1. Add function to Membuss
+./membuss add router.js
+# Output: mem1z4a2... (MID)
+
+# 2. Execute via HTTP Gateway
+curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
+# Output: {"usd":250,"eur":230,"rate":0.92}
+```
+
+---
+
+## 🏛️ System Architecture
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                       Applications                        │
+│          Web Explorer · Desktop GUI · Custom dApps        │
+├───────────────────────────────────────────────────────────┤
+│                     Compute Layer                         │
+│       MemEdge Engine (Wazero WASI / Goja JavaScript)      │
+│            3-Tier Fair Compute Scheduling (FCS)           │
+├───────────────────────────────────────────────────────────┤
+│                    Application APIs                       │
+│    Mem-Gate HTTP CDN (:8080) · Node Control API (:5001)   │
+│             gRPC Daemon Stream Socket (:50051)            │
+├───────────────────────────────────────────────────────────┤
+│                   Data Routing & Exchange                 │
+│      Memex v2 Block Transfer · Peer Exchange (PEX)        │
+│          Mem-DHT (Kademlia with Protobuf Validation)      │
+├───────────────────────────────────────────────────────────┤
+│                     Networking Layer                      │
+│        libp2p (TCP, QUIC, WebSocket Transports)           │
+├───────────────────────────────────────────────────────────┤
+│                   Storage & Encoding                      │
+│    Pebble LSM Blockstore · Counting Bloom Filters         │
+│   Reed-Solomon 10+4 Erasure Coding · Merkle DAG Engine    │
+└───────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ⚖️ Membuss vs Existing Systems
+
+| Feature | BitTorrent | IPFS (Kubo) | Cloud (AWS / Cloudflare) | Membuss |
+|---|---|---|---|---|
+| **P2P Swarm Distribution** | ✅ Yes | ✅ Yes | ❌ No (Centralized) | ✅ **Yes (Memex v2)** |
+| **Cryptographic Content Addressing** | ⚠️ Torrent InfoHash | ✅ Yes (CID) | ❌ No (URL / DNS) | ✅ **Yes (MID)** |
+| **Data Survives Offline Seeders** | ❌ No (Dead Torrents) | ❌ No (Vanishes without Pin) | ✅ Yes (SLA) | ✅ **Yes (Reed-Solomon 10+4 + Anchors)** |
+| **Single-Pass Erasure Coding** | ❌ No | ❌ No | ⚠️ Internal Only | ✅ **Yes (SIMD Galois Field)** |
+| **Native HTTP Video Streaming (RFC 7233)** | ⚠️ Requires Torrent Client | ⚠️ High Gateway Latency | ✅ Yes | ✅ **Yes (Instant Range Seek)** |
+| **Serverless Edge Compute** | ❌ No | ❌ No | ✅ Yes (Cloud Functions) | ✅ **Yes (MemEdge WASI & JS)** |
+| **Sub-millisecond Cold Starts** | N/A | N/A | ❌ 50–300ms | ✅ **< 0.5ms (Goja / Wazero)** |
+| **Zero Infrastructure Invoices** | ✅ Yes | ✅ Yes | ❌ High Bandwidth Costs | ✅ **Yes (100% Permissionless)** |
+
+---
+
+## 💼 Real-World Use Cases
+
+Membuss unifies the swarm distribution of **BitTorrent**, the content-addressing of **IPFS**, the low-latency caching of **Cloudflare**, and the serverless execution of **AWS Lambda** into a single, cohesive P2P protocol:
+
+### 1. ⚡ Swarm-Assisted Media Streaming & Content Delivery (Decentralized CDN)
+Deliver 4K/8K video, audio, gaming patches, and multi-gigabyte files directly across a peer swarm without cloud bandwidth invoices. With built-in **RFC 7233 byte-range seek** on the HTTP gateway (`Mem-Gate`), any standard web browser or video player can stream content instantly from a cryptographic MID.
+
+### 2. 🛡️ Permanent Disaster-Resilient Archiving (The "Immortal Seeder")
+Unlike BitTorrent (where torrents die when seeders leave) or IPFS (where unpinned data vanishes), Membuss encodes all data with **Reed-Solomon 10+4 erasure coding** and Anchor Node mirroring. Scientific datasets, legal records, open-source repositories, and digital archives survive even if 40% of the network goes offline simultaneously.
+
+### 3. 🚀 Full-Stack Decentralized Web Applications (dApps)
+Host entire modern web applications (React, Svelte, Vue, WASM) and their dynamic backend APIs from a single content address. With **MemNS mutable naming** (`memns://my-app`), you can update your code and frontend without breaking consumer URLs or relying on centralized DNS/hosting providers.
+
+### 4. 🧠 Decentralized AI & Foundation Model Distribution
+Shard and distribute multi-gigabyte AI weights (LLMs, Whisper, Stable Diffusion) across edge nodes. Edge devices can fetch verified shards over high-speed **Memex v2 streams** and execute lightweight preprocessing, tokenization, or vector similarity math using **MemEdge WebAssembly (WASI)**.
+
+### 5. ⚙️ Serverless Edge Microservices & Dynamic Webhooks
+Replace centralized cloud functions with decentralized edge compute. Run API gateways, currency converters, cryptographic signature verifiers, image transforms, and webhook handlers with sub-millisecond cold starts (`<0.5ms`) and zero recurring infrastructure bills.
+
+### 6. 🔄 Censorship-Resistant P2P File Sharing & Collaboration
+Share massive file collections, source code archives, and multimedia libraries peer-to-peer. Downloads automatically pull simultaneously from DHT providers, local LAN peers, and network anchors at wire speed with cryptographic BLAKE3 verification on every chunk.
+
+---
+
+## 🗺️ Project Roadmap
+
+- [x] Content-addressed Merkle DAG storage with BLAKE3 multihashes
+- [x] Single-pass Reed-Solomon 10+4 erasure coding and background repair worker
+- [x] Adaptive procedural block sizing (256 KiB up to 4 MiB)
+- [x] Memex v2 multiplexed block exchange protocol with AIMD flow control
+- [x] MemEdge Serverless Engine (Go/WASI via Wazero & JS via Goja)
+- [x] Mem-Gate HTTP gateway with RFC 7233 byte-range streaming
+- [x] Cross-platform desktop application with atomic multi-version installer
+- [x] SvelteKit-powered Web Explorer
+- [ ] Distributed storage provider incentive economics
+- [ ] Dynamic WebAssembly WASI socket extension support
+- [ ] Browser-native WebRTC transport gateway bridge
+
+---
+
+## 🔬 Project Status
+
+> [!NOTE]
+> Membuss is under active development. While the core storage engine, erasure coding, Memex v2, and MemEdge runtimes are feature-complete and tested across multiple operating systems, network APIs and protocol specifications may continue to evolve before `v3.0.0`.
+
+---
+
+## 🤝 Contributing
+
+Contributions, bug reports, and architectural proposals are welcome!
+
+Please check out our [Contribution Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md) for local setup, development workflows, testing rules, and Pull Request guidelines.
+
+For technical specifications and protocol architecture blueprints, visit our [Documentation Hub](https://membuss-docs.vercel.app/).
 
 ---
 
 ## 📜 License
 
-Membuss is open-source software licensed under the [Apache 2.0 License](LICENSE).
+Membuss is open-source software released under the [Apache 2.0 License](LICENSE).
