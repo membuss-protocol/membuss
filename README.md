@@ -19,6 +19,12 @@ Membuss lets applications store data, stream media, and execute serverless workl
 
 ## 🌐 Network Overview
 
+<div align="center">
+
+<table align="center">
+<tr>
+<td align="center">
+
 ```
                          ┌──────────────────────────────┐
                          │   P2P Swarm (libp2p + DHT)   │
@@ -37,6 +43,12 @@ Membuss lets applications store data, stream media, and execute serverless workl
 │ Merkle DAGs (MIDs)   │ │ Mathematical Parity  │ │ Go (WASI) & JS Engine│
 └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
 ```
+
+</td>
+</tr>
+</table>
+
+</div>
 
 | Subsystem | Core Technologies | Primary Capability |
 |---|---|---|
@@ -217,6 +229,12 @@ curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
 
 ## 🏛️ System Architecture
 
+<div align="center">
+
+<table align="center">
+<tr>
+<td align="center">
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Applications & Interfaces                       │
@@ -238,6 +256,12 @@ curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
 │        Pebble LSM Blockstore  ·  Reed-Solomon 10+4  ·  BLAKE3 DAG      │
 └────────────────────────────────────────────────────────────────────────┘
 ```
+
+</td>
+</tr>
+</table>
+
+</div>
 
 ---
 
