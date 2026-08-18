@@ -19,36 +19,9 @@ Membuss lets applications store data, stream media, and execute serverless workl
 
 ## 🌐 Network Overview
 
-<div align="center">
-
-<table align="center">
-<tr>
-<td align="center">
-
-```
-                         ┌──────────────────────────────┐
-                         │   P2P Swarm (libp2p + DHT)   │
-                         │  Device A ◄───► Device B     │
-                         └──────────────┬───────────────┘
-                                        │
-                                        ▼
-                         ┌──────────────────────────────┐
-                         │   Membuss Network Engine     │
-                         └──────┬────────────────┬──────┘
-                                │                │
-           ┌────────────────────┴───┐        ┌───┴────────────────────┐
-           ▼                        ▼        ▼                        ▼
-┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
-│ Content-Addressed    │ │ Reed-Solomon 10+4    │ │ MemEdge Serverless   │
-│ Merkle DAGs (MIDs)   │ │ Mathematical Parity  │ │ Go (WASI) & JS Engine│
-└──────────────────────┘ └──────────────────────┘ └──────────────────────┘
-```
-
-</td>
-</tr>
-</table>
-
-</div>
+<p align="center">
+  <img src="assets/network-overview.svg" alt="Membuss Network Overview" width="880" />
+</p>
 
 | Subsystem | Core Technologies | Primary Capability |
 |---|---|---|
@@ -229,39 +202,9 @@ curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
 
 ## 🏛️ System Architecture
 
-<div align="center">
-
-<table align="center">
-<tr>
-<td align="center">
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Applications & Interfaces                       │
-│           Web Explorer (SvelteKit)  ·  Desktop GUI (Wails v2)          │
-├────────────────────────────────────────────────────────────────────────┤
-│                       Serverless Compute Layer                         │
-│       MemEdge Engine: Wazero (WASI Preview 1) & Goja (JavaScript)      │
-├────────────────────────────────────────────────────────────────────────┤
-│                           Application APIs                             │
-│      Mem-Gate HTTP CDN (:8080)  ·  Node API (:5001)  ·  gRPC (:50051)  │
-├────────────────────────────────────────────────────────────────────────┤
-│                       Routing & Block Exchange                         │
-│           Memex v2 Protocol  ·  Mem-DHT Kademlia  ·  PEX Gossip        │
-├────────────────────────────────────────────────────────────────────────┤
-│                           Networking Layer                             │
-│                libp2p (TCP, QUIC, WebSocket Transports)                │
-├────────────────────────────────────────────────────────────────────────┤
-│                      Storage & Cryptographic Core                      │
-│        Pebble LSM Blockstore  ·  Reed-Solomon 10+4  ·  BLAKE3 DAG      │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-</td>
-</tr>
-</table>
-
-</div>
+<p align="center">
+  <img src="assets/architecture-stack.svg" alt="Membuss System Architecture" width="880" />
+</p>
 
 ---
 

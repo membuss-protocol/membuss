@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="100%" height="100%">
+  <defs>
+    <linearGradient id="arch-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="layer-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1c2128"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="bar-1" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#58a6ff"/><stop offset="100%" stop-color="#79c0ff"/></linearGradient>
+    <linearGradient id="bar-2" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#bc8cff"/><stop offset="100%" stop-color="#d2a8ff"/></linearGradient>
+    <linearGradient id="bar-3" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#3fb950"/><stop offset="100%" stop-color="#56d364"/></linearGradient>
+    <linearGradient id="bar-4" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#f0883e"/><stop offset="100%" stop-color="#ffa657"/></linearGradient>
+    <linearGradient id="bar-5" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#2ea043"/><stop offset="100%" stop-color="#3fb950"/></linearGradient>
+    <linearGradient id="bar-6" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#1f6feb"/><stop offset="100%" stop-color="#388bfd"/></linearGradient>
+  </defs>
+
+  <style>
+    .layer-num { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 11px; font-weight: 700; fill: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+    .layer-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 600; fill: #ffffff; }
+    .layer-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #8b949e; }
+  </style>
+
+  <!-- Background -->
+  <rect width="880" height="340" rx="12" fill="url(#arch-bg)" stroke="#30363d" stroke-width="1.5"/>
+
+  <!-- Layer 1 -->
+  <rect x="24" y="20" width="832" height="44" rx="6" fill="url(#layer-grad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="24" y="20" width="4" height="44" rx="2" fill="url(#bar-1)"/>
+  <text x="44" y="46" class="layer-title">1. Applications &amp; Interfaces</text>
+  <text x="280" y="46" class="layer-desc">Web Explorer (SvelteKit)  ·  Desktop GUI (Wails v2)  ·  Custom dApps &amp; HTTP APIs</text>
+
+  <!-- Layer 2 -->
+  <rect x="24" y="70" width="832" height="44" rx="6" fill="url(#layer-grad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="24" y="70" width="4" height="44" rx="2" fill="url(#bar-2)"/>
+  <text x="44" y="96" class="layer-title">2. Serverless Compute Layer</text>
+  <text x="280" y="96" class="layer-desc">MemEdge Engine: Wazero (WASI Preview 1) &amp; Goja (JS)  ·  3-Tier Fair Compute Scheduling</text>
+
+  <!-- Layer 3 -->
+  <rect x="24" y="120" width="832" height="44" rx="6" fill="url(#layer-grad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="24" y="120" width="4" height="44" rx="2" fill="url(#bar-3)"/>
+  <text x="44" y="146" class="layer-title">3. Application APIs &amp; Gateways</text>
+  <text x="280" y="146" class="layer-desc">Mem-Gate HTTP CDN (:8080)  ·  Node Control API (:5001)  ·  gRPC Daemon Socket (:50051)</text>
+
+  <!-- Layer 4 -->
+  <rect x="24" y="170" width="832" height="44" rx="6" fill="url(#layer-grad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="24" y="170" width="4" height="44" rx="2" fill="url(#bar-4)"/>
+  <text x="44" y="196" class="layer-title">4. Routing &amp; Block Exchange</text>
+  <text x="280" y="196" class="layer-desc">Memex v2 Multiplexed Stream Transfer  ·  Mem-DHT (Kademlia Protobuf)  ·  PEX Gossip</text>
+
+  <!-- Layer 5 -->
+  <rect x="24" y="220" width="832" height="44" rx="6" fill="url(#layer-grad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="24" y="220" width="4" height="44" rx="2" fill="url(#bar-5)"/>
+  <text x="44" y="246" class="layer-title">5. Transport &amp; Mesh Layer</text>
+  <text x="280" y="246" class="layer-desc">libp2p (TCP, QUIC, WebSocket Transports)  ·  NAT Traversal &amp; Relay Routing</text>
+
+  <!-- Layer 6 -->
+  <rect x="24" y="270" width="832" height="44" rx="6" fill="url(#layer-grad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="24" y="270" width="4" height="44" rx="2" fill="url(#bar-6)"/>
+  <text x="44" y="296" class="layer-title">6. Storage &amp; Cryptography</text>
+  <text x="280" y="296" class="layer-desc">Pebble LSM Blockstore  ·  Counting Bloom Filters  ·  Reed-Solomon 10+4  ·  BLAKE3 Merkle DAG</text>
+</svg>
