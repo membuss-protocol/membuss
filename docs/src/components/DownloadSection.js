@@ -1,17 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import Link from '@docusaurus/Link';
 
-const RELEASES_API = 'https://api.github.com/repos/nnlgsakib/membuss/releases/latest';
-const RELEASES_PAGE = 'https://github.com/nnlgsakib/membuss/releases';
-const DEFAULT_VERSION = 'v2.4.0';
+const RELEASES_API = 'https://api.github.com/repos/membuss-protocol/membuss/releases/latest';
+const RELEASES_PAGE = 'https://github.com/membuss-protocol/membuss/releases';
+const DEFAULT_VERSION = 'v2.9.1';
 
 const HARDCODED_ASSETS = {
   version: DEFAULT_VERSION,
-  windowsExe: `https://github.com/nnlgsakib/membuss/releases/download/${DEFAULT_VERSION}/Membuss-${DEFAULT_VERSION}-windows-amd64-installer.exe`,
-  windowsZip: `https://github.com/nnlgsakib/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-windows-amd64.zip`,
-  linuxAppImage: `https://github.com/nnlgsakib/membuss/releases/download/${DEFAULT_VERSION}/Membuss-${DEFAULT_VERSION}-linux-amd64.AppImage`,
-  linuxTarAmd: `https://github.com/nnlgsakib/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-linux-amd64.tar.gz`,
-  linuxTarArm: `https://github.com/nnlgsakib/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-linux-arm64.tar.gz`,
+  windowsExe: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/Membuss-${DEFAULT_VERSION}-windows-amd64-installer.exe`,
+  windowsZip: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-windows-amd64.zip`,
+  linuxAppImage: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/Membuss-${DEFAULT_VERSION}-linux-amd64.AppImage`,
+  linuxTarAmd: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-linux-amd64.tar.gz`,
+  linuxTarArm: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-linux-arm64.tar.gz`,
+  darwinTarArm: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-darwin-arm64.tar.gz`,
+  darwinTarAmd: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/membuss-${DEFAULT_VERSION}-darwin-amd64.tar.gz`,
+  darwinArmDmg: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/Membuss-${DEFAULT_VERSION}-darwin-arm64.dmg`,
+  darwinAmdDmg: `https://github.com/membuss-protocol/membuss/releases/download/${DEFAULT_VERSION}/Membuss-${DEFAULT_VERSION}-darwin-amd64.dmg`,
 };
 
 export default function DownloadSection() {
@@ -51,6 +55,10 @@ export default function DownloadSection() {
             else if (name.includes('linux-amd64.AppImage')) assetsMap.linuxAppImage = url;
             else if (name.includes('linux-amd64.tar.gz')) assetsMap.linuxTarAmd = url;
             else if (name.includes('linux-arm64.tar.gz')) assetsMap.linuxTarArm = url;
+            else if (name.includes('darwin-arm64.tar.gz')) assetsMap.darwinTarArm = url;
+            else if (name.includes('darwin-amd64.tar.gz')) assetsMap.darwinTarAmd = url;
+            else if (name.includes('darwin-arm64.dmg')) assetsMap.darwinArmDmg = url;
+            else if (name.includes('darwin-amd64.dmg')) assetsMap.darwinAmdDmg = url;
           });
           setReleaseInfo(assetsMap);
         }
@@ -84,10 +92,27 @@ export default function DownloadSection() {
         altUrl: releaseInfo.linuxTarAmd,
         altLabel: 'Headless CLI (.tar.gz)',
       };
+    } else if (os === 'macos') {
+      if (arch === 'arm64') {
+        return {
+          label: `Membuss Desktop for Apple Silicon (${releaseInfo.version})`,
+          sublabel: 'Universal macOS app (M1/M2/M3/M4/M5)',
+          url: releaseInfo.darwinArmDmg || releaseInfo.darwinTarArm,
+          altUrl: releaseInfo.darwinTarArm,
+          altLabel: 'Darwin ARM64 CLI (.tar.gz)',
+        };
+      }
+      return {
+        label: `Membuss Desktop for Intel Mac (${releaseInfo.version})`,
+        sublabel: 'Standalone GUI for Intel x64 Macs',
+        url: releaseInfo.darwinAmdDmg || releaseInfo.darwinTarAmd,
+        altUrl: releaseInfo.darwinTarAmd,
+        altLabel: 'Darwin x64 CLI (.tar.gz)',
+      };
     }
     return {
       label: `Download Membuss ${releaseInfo.version}`,
-      sublabel: 'Precompiled binaries for Windows & Linux',
+      sublabel: 'Precompiled binaries for macOS, Windows & Linux',
       url: RELEASES_PAGE,
       altUrl: releaseInfo.windowsZip,
       altLabel: 'Windows Zip Archive',
@@ -144,8 +169,32 @@ export default function DownloadSection() {
           </thead>
           <tbody>
             <tr>
+              <td className="assetTablePlatform">macOS Apple Silicon</td>
+              <td><code>Membuss-{releaseInfo.version}-darwin-arm64.dmg</code></td>
+              <td>Desktop App (M1–M5)</td>
+              <td><a href={releaseInfo.darwinArmDmg || releaseInfo.darwinTarArm}>Download</a></td>
+            </tr>
+            <tr>
+              <td className="assetTablePlatform">macOS Apple Silicon</td>
+              <td><code>membuss-{releaseInfo.version}-darwin-arm64.tar.gz</code></td>
+              <td>Darwin ARM64 CLI</td>
+              <td><a href={releaseInfo.darwinTarArm}>Download</a></td>
+            </tr>
+            <tr>
+              <td className="assetTablePlatform">macOS Intel</td>
+              <td><code>Membuss-{releaseInfo.version}-darwin-amd64.dmg</code></td>
+              <td>Desktop App (x64)</td>
+              <td><a href={releaseInfo.darwinAmdDmg || releaseInfo.darwinTarAmd}>Download</a></td>
+            </tr>
+            <tr>
+              <td className="assetTablePlatform">macOS Intel</td>
+              <td><code>membuss-{releaseInfo.version}-darwin-amd64.tar.gz</code></td>
+              <td>Darwin x64 CLI</td>
+              <td><a href={releaseInfo.darwinTarAmd}>Download</a></td>
+            </tr>
+            <tr>
               <td className="assetTablePlatform">Windows x64</td>
-              <td><code>membuss-{releaseInfo.version}-windows-amd64-installer.exe</code></td>
+              <td><code>Membuss-{releaseInfo.version}-windows-amd64-installer.exe</code></td>
               <td>Desktop GUI Installer</td>
               <td><a href={releaseInfo.windowsExe}>Download</a></td>
             </tr>
@@ -157,7 +206,7 @@ export default function DownloadSection() {
             </tr>
             <tr>
               <td className="assetTablePlatform">Linux x64</td>
-              <td><code>membuss-{releaseInfo.version}-linux-amd64.AppImage</code></td>
+              <td><code>Membuss-{releaseInfo.version}-linux-amd64.AppImage</code></td>
               <td>AppImage GUI Desktop</td>
               <td><a href={releaseInfo.linuxAppImage}>Download</a></td>
             </tr>

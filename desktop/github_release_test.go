@@ -10,9 +10,9 @@ func TestTagFromReleaseLocation(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"https://github.com/nnlgsakib/membuss/releases/tag/v1.2.5", "v1.2.5"},
-		{"https://github.com/nnlgsakib/membuss/releases/tag/v1.2.5?foo=1", "v1.2.5"},
-		{"/nnlgsakib/membuss/releases/tag/v0.9.0", "v0.9.0"},
+		{"https://github.com/membuss-protocol/membuss/releases/tag/v1.2.5", "v1.2.5"},
+		{"https://github.com/membuss-protocol/membuss/releases/tag/v1.2.5?foo=1", "v1.2.5"},
+		{"/membuss-protocol/membuss/releases/tag/v0.9.0", "v0.9.0"},
 		{"https://example.com/nope", ""},
 	}
 	for _, c := range cases {
@@ -29,7 +29,7 @@ func TestExtractTagFromAtom(t *testing.T) {
   <title>Releases</title>
   <entry>
     <title>v1.2.5</title>
-    <link rel="alternate" type="text/html" href="https://github.com/nnlgsakib/membuss/releases/tag/v1.2.5"/>
+    <link rel="alternate" type="text/html" href="https://github.com/membuss-protocol/membuss/releases/tag/v1.2.5"/>
   </entry>
 </feed>`
 	got := extractTagFromAtom(xml)
@@ -82,6 +82,22 @@ func TestFindPlatformAssetURL_Constructed(t *testing.T) {
 	}
 	if !strings.Contains(url, "/releases/download/v1.2.5/") {
 		t.Fatalf("unexpected URL: %s", url)
+	}
+}
+
+func TestFindPlatformAssetURL_Darwin(t *testing.T) {
+	info := &latestReleaseInfo{
+		TagName: "v2.9.1",
+		Assets: map[string]string{
+			"membuss-v2.9.1-darwin-arm64.tar.gz": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.1/membuss-v2.9.1-darwin-arm64.tar.gz",
+			"membuss-v2.9.1-darwin-amd64.tar.gz": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.1/membuss-v2.9.1-darwin-amd64.tar.gz",
+		},
+	}
+	if u := info.Assets["membuss-v2.9.1-darwin-arm64.tar.gz"]; !strings.Contains(u, "darwin-arm64.tar.gz") {
+		t.Fatalf("unexpected arm64 asset: %s", u)
+	}
+	if u := info.Assets["membuss-v2.9.1-darwin-amd64.tar.gz"]; !strings.Contains(u, "darwin-amd64.tar.gz") {
+		t.Fatalf("unexpected amd64 asset: %s", u)
 	}
 }
 

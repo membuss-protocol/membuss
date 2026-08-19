@@ -107,8 +107,20 @@ jobs:
             goarch: arm64
             ext: ""
             archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+            archive: tar.gz
           - goos: windows
             goarch: amd64
+            ext: ".exe"
+            archive: zip
+          - goos: windows
+            goarch: arm64
             ext: ".exe"
             archive: zip
     steps:
@@ -303,9 +315,71 @@ jobs:
           path: Membuss-*-linux-amd64.AppImage
           retention-days: 1
 
+  build-desktop-macos:
+    name: Build Desktop (macOS ${{ matrix.arch }})
+    needs: generate-notes
+    runs-on: macos-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin/arm64
+            arch: arm64
+          - platform: darwin/amd64
+            arch: amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build desktop app (macOS)
+        working-directory: desktop
+        run: |
+          wails build --platform ${{ matrix.platform }}
+
+      - name: Package macOS App (.zip & .dmg)
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          cd desktop/build/bin
+          APP_DIR=$(ls -d *.app 2>/dev/null | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "No .app directory found in desktop/build/bin"
+            exit 1
+          fi
+          echo "Found application: $APP_DIR"
+          zip -r -y "../../../Membuss-${TAG}-darwin-${{ matrix.arch }}.zip" "$APP_DIR"
+          hdiutil create -volname "Membuss" -srcfolder "$APP_DIR" -ov -format UDZO "../../../Membuss-${TAG}-darwin-${{ matrix.arch }}.dmg" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-darwin-${{ matrix.arch }}
+          path: |
+            Membuss-*-darwin-${{ matrix.arch }}.zip
+            Membuss-*-darwin-${{ matrix.arch }}.dmg
+          retention-days: 1
+
   release:
     name: Create Release
-    needs: [generate-notes, build-binaries, build-desktop-windows, build-desktop-linux]
+    needs: [generate-notes, build-binaries, build-desktop-windows, build-desktop-linux, build-desktop-macos]
+    if: always() && !cancelled() && !contains(needs.build-binaries.result, 'failure') && !contains(needs.generate-notes.result, 'failure')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -335,6 +409,9 @@ jobs:
             artifacts/membuss-*.tar.gz
             artifacts/Membuss-*-installer.exe
             artifacts/Membuss-*.AppImage
+            artifacts/Membuss-*-darwin-*.dmg
+            artifacts/Membuss-*-darwin-*.zip
+          fail_on_unmatched_files: false
           draft: false
           prerelease: false
 

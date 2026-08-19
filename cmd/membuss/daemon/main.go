@@ -328,6 +328,16 @@ func Run(args []string) error {
 		os.Exit(1)
 	}
 	relaySource.SetFinder(mdht.FindRelays)
+
+	// Filter out local node's own PeerID from bootstrap peer set to avoid dial-to-self warnings.
+	var activeBootstrap []peer.AddrInfo
+	for _, p := range bootstrapPeers {
+		if p.ID != h.ID() {
+			activeBootstrap = append(activeBootstrap, p)
+		}
+	}
+	bootstrapPeers = activeBootstrap
+
 	if err := mdht.Bootstrap(ctx, bootstrapPeers); err != nil {
 		logger.Debug("dht bootstrap", "err", err.Error())
 	}
