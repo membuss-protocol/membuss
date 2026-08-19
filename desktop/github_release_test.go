@@ -54,7 +54,7 @@ func TestReleaseCache(t *testing.T) {
 
 func TestPlatformArchiveAssetName(t *testing.T) {
 	name := platformArchiveAssetName("v1.2.5")
-	if !strings.HasPrefix(name, "membuss-v1.2.5-") {
+	if !strings.HasPrefix(name, "membuss-core-v1.2.5-") {
 		t.Fatalf("unexpected asset name prefix: %s", name)
 	}
 	if !strings.HasSuffix(name, ".zip") && !strings.HasSuffix(name, ".tar.gz") {
@@ -80,23 +80,24 @@ func TestFindPlatformAssetURL_Constructed(t *testing.T) {
 	if url == "" {
 		t.Fatal("expected constructed download URL")
 	}
-	if !strings.Contains(url, "/releases/download/v1.2.5/") {
+	if !strings.Contains(url, "/releases/download/v1.2.5/membuss-core-v1.2.5-") {
 		t.Fatalf("unexpected URL: %s", url)
 	}
 }
 
 func TestFindPlatformAssetURL_Darwin(t *testing.T) {
 	info := &latestReleaseInfo{
-		TagName: "v2.9.2",
+		TagName: "v2.9.3",
 		Assets: map[string]string{
-			"membuss-v2.9.2-darwin-arm64.tar.gz": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.2/membuss-v2.9.2-darwin-arm64.tar.gz",
-			"membuss-v2.9.2-darwin-amd64.tar.gz": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.2/membuss-v2.9.2-darwin-amd64.tar.gz",
+			"membuss-core-v2.9.3-darwin-arm64.tar.gz": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.3/membuss-core-v2.9.3-darwin-arm64.tar.gz",
+			"membuss-core-v2.9.3-darwin-amd64.tar.gz": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.3/membuss-core-v2.9.3-darwin-amd64.tar.gz",
+			"Membuss-Desktop-v2.9.3-darwin-arm64.zip": "https://github.com/membuss-protocol/membuss/releases/download/v2.9.3/Membuss-Desktop-v2.9.3-darwin-arm64.zip",
 		},
 	}
-	if u := info.Assets["membuss-v2.9.2-darwin-arm64.tar.gz"]; !strings.Contains(u, "darwin-arm64.tar.gz") {
+	if u := info.Assets["membuss-core-v2.9.3-darwin-arm64.tar.gz"]; !strings.Contains(u, "darwin-arm64.tar.gz") {
 		t.Fatalf("unexpected arm64 asset: %s", u)
 	}
-	if u := info.Assets["membuss-v2.9.2-darwin-amd64.tar.gz"]; !strings.Contains(u, "darwin-amd64.tar.gz") {
+	if u := info.Assets["membuss-core-v2.9.3-darwin-amd64.tar.gz"]; !strings.Contains(u, "darwin-amd64.tar.gz") {
 		t.Fatalf("unexpected amd64 asset: %s", u)
 	}
 }

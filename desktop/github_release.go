@@ -339,8 +339,18 @@ func extractTagFromHTML(html string) string {
 }
 
 // platformArchiveAssetName returns the expected release asset file name for
-// the current OS/arch, matching CI naming: membuss-<tag>-<os>-<arch>.(zip|tar.gz)
+// the core daemon binary for the current OS/arch: membuss-core-<tag>-<os>-<arch>.(zip|tar.gz)
 func platformArchiveAssetName(tag string) string {
+	tag = strings.TrimSpace(tag)
+	ext := "zip"
+	if runtime.GOOS != "windows" {
+		ext = "tar.gz"
+	}
+	return fmt.Sprintf("membuss-core-%s-%s-%s.%s", tag, runtime.GOOS, runtime.GOARCH, ext)
+}
+
+// legacyPlatformArchiveAssetName returns the legacy asset file name: membuss-<tag>-<os>-<arch>.(zip|tar.gz)
+func legacyPlatformArchiveAssetName(tag string) string {
 	tag = strings.TrimSpace(tag)
 	ext := "zip"
 	if runtime.GOOS != "windows" {
@@ -357,21 +367,36 @@ func platformArchiveDownloadURL(tag string) string {
 }
 
 // findPlatformAssetURL returns the browser download URL for this platform from
-// a release info (API assets first, then constructed public URL).
+// a release info (core assets first, then fallback legacy assets, then constructed public URL).
 func findPlatformAssetURL(info *latestReleaseInfo) string {
 	if info == nil {
 		return ""
 	}
-	wantSuffix := fmt.Sprintf("-%s-%s.", runtime.GOOS, runtime.GOARCH)
+	wantGeneralSuffix := fmt.Sprintf("-%s-%s.", runtime.GOOS, runtime.GOARCH)
+
+	// 1. Prefer membuss-core archive
 	for name, url := range info.Assets {
 		lower := strings.ToLower(name)
-		if strings.Contains(lower, wantSuffix) && (strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz")) {
+		if strings.Contains(lower, "membuss-core") && strings.Contains(lower, wantGeneralSuffix) && (strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz")) {
 			return url
 		}
 	}
+
+	// 2. Fallback to legacy membuss archive (excluding desktop app archives)
+	for name, url := range info.Assets {
+		lower := strings.ToLower(name)
+		if !strings.Contains(lower, "desktop") && strings.Contains(lower, wantGeneralSuffix) && (strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz")) {
+			return url
+		}
+	}
+
 	if info.TagName != "" {
 		exact := platformArchiveAssetName(info.TagName)
 		if u, ok := info.Assets[exact]; ok {
+			return u
+		}
+		legacyExact := legacyPlatformArchiveAssetName(info.TagName)
+		if u, ok := info.Assets[legacyExact]; ok {
 			return u
 		}
 		return platformArchiveDownloadURL(info.TagName)

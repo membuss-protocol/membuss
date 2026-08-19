@@ -151,20 +151,20 @@ jobs:
         if: matrix.archive == 'zip'
         run: |
           cd bin
-          zip -r ../membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.zip membuss${{ matrix.ext }}
+          zip -r ../membuss-core-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.zip membuss${{ matrix.ext }}
 
       - name: Package binaries (tar.gz)
         if: matrix.archive == 'tar.gz'
         run: |
           cd bin
-          tar -czf ../membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz membuss${{ matrix.ext }}
+          tar -czf ../membuss-core-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz membuss${{ matrix.ext }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: release-core-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            membuss-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
+            membuss-core-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
           retention-days: 1
 
   build-desktop-windows:
@@ -222,13 +222,13 @@ jobs:
             echo "ERROR: No installer found"
             exit 1
           fi
-          cp "$INSTALLER" "Membuss-${TAG}-windows-amd64-installer.exe"
+          cp "$INSTALLER" "Membuss-Desktop-${TAG}-windows-amd64-installer.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-windows-installer
-          path: Membuss-*-windows-amd64-installer.exe
+          path: Membuss-Desktop-*-windows-amd64-installer.exe
           retention-days: 1
 
   build-desktop-linux:
@@ -306,13 +306,13 @@ jobs:
       - name: Build AppImage
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          /opt/appimagetool/AppRun Membuss.AppDir "Membuss-${TAG}-linux-amd64.AppImage"
+          /opt/appimagetool/AppRun Membuss.AppDir "Membuss-Desktop-${TAG}-linux-amd64.AppImage"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-appimage
-          path: Membuss-*-linux-amd64.AppImage
+          path: Membuss-Desktop-*-linux-amd64.AppImage
           retention-days: 1
 
   build-desktop-macos:
@@ -364,16 +364,16 @@ jobs:
             exit 1
           fi
           echo "Found application: $APP_DIR"
-          zip -r -y "../../../Membuss-${TAG}-darwin-${{ matrix.arch }}.zip" "$APP_DIR"
-          hdiutil create -volname "Membuss" -srcfolder "$APP_DIR" -ov -format UDZO "../../../Membuss-${TAG}-darwin-${{ matrix.arch }}.dmg" || true
+          zip -r -y "../../../Membuss-Desktop-${TAG}-darwin-${{ matrix.arch }}.zip" "$APP_DIR"
+          hdiutil create -volname "Membuss" -srcfolder "$APP_DIR" -ov -format UDZO "../../../Membuss-Desktop-${TAG}-darwin-${{ matrix.arch }}.dmg" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-darwin-${{ matrix.arch }}
           path: |
-            Membuss-*-darwin-${{ matrix.arch }}.zip
-            Membuss-*-darwin-${{ matrix.arch }}.dmg
+            Membuss-Desktop-*-darwin-${{ matrix.arch }}.zip
+            Membuss-Desktop-*-darwin-${{ matrix.arch }}.dmg
           retention-days: 1
 
   release:
@@ -405,12 +405,12 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
-            artifacts/membuss-*.zip
-            artifacts/membuss-*.tar.gz
-            artifacts/Membuss-*-installer.exe
-            artifacts/Membuss-*.AppImage
-            artifacts/Membuss-*-darwin-*.dmg
-            artifacts/Membuss-*-darwin-*.zip
+            artifacts/membuss-core-*.zip
+            artifacts/membuss-core-*.tar.gz
+            artifacts/Membuss-Desktop-*-installer.exe
+            artifacts/Membuss-Desktop-*.AppImage
+            artifacts/Membuss-Desktop-*-darwin-*.dmg
+            artifacts/Membuss-Desktop-*-darwin-*.zip
           fail_on_unmatched_files: false
           draft: false
           prerelease: false
