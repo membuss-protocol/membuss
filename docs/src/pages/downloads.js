@@ -4,7 +4,7 @@ import Layout from '@theme/Layout';
 
 const RELEASES_API = 'https://api.github.com/repos/membuss-protocol/membuss/releases/latest';
 const RELEASES_PAGE = 'https://github.com/membuss-protocol/membuss/releases';
-const DEFAULT_VERSION = 'v2.9.1';
+const DEFAULT_VERSION = 'v2.9.2';
 
 const HARDCODED_ASSETS = {
   version: DEFAULT_VERSION,
