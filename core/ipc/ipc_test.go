@@ -14,6 +14,18 @@ func TestIPCListenerAndDialer(t *testing.T) {
 	tempDir := t.TempDir()
 	sockPath := filepath.Join(tempDir, "test_membuss.sock")
 
+	// macOS caps unix-socket paths at 104 bytes; the per-test TempDir
+	// under /var/folders can exceed it and bind fails with EINVAL.
+	// /tmp is short enough everywhere.
+	if runtime.GOOS != "windows" && len(sockPath) >= 100 {
+		shortDir, err := os.MkdirTemp("/tmp", "mb-ipc")
+		if err != nil {
+			t.Fatalf("short temp dir: %v", err)
+		}
+		t.Cleanup(func() { os.RemoveAll(shortDir) })
+		sockPath = filepath.Join(shortDir, "test_membuss.sock")
+	}
+
 	lis, err := Listen(sockPath)
 	if err != nil {
 		t.Fatalf("Listen failed: %v", err)
