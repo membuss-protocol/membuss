@@ -33,6 +33,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/nnlgsakib/membuss/config"
+	"github.com/nnlgsakib/membuss/core/audit"
 	"github.com/nnlgsakib/membuss/core/descriptor"
 	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/mid"
@@ -333,6 +334,9 @@ type MemFSEntry struct {
 type Config struct {
 	// Backend serves the data. Required.
 	Backend Backend
+	// Audit, if non-nil, records destructive admin operations
+	// (delete / flash / keyring rm) in <datadir>/logs/audit.jsonl.
+	Audit *audit.Logger
 	// ReadTimeout is the per-request read timeout.
 	ReadTimeout time.Duration
 	// WriteTimeout is the per-request write timeout.
@@ -766,16 +770,16 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 type midData struct {
-	Title         string
-	MID           string
-	NotFound      bool
-	MemFSType     string
-	MemFSEntries  []MemFSEntry
-	SymlinkTarget string
-	Size          uint64
-	Blocks        uint64
-	Sealed        bool
-	Codec         uint64
+	Title           string
+	MID             string
+	NotFound        bool
+	MemFSType       string
+	MemFSEntries    []MemFSEntry
+	SymlinkTarget   string
+	Size            uint64
+	Blocks          uint64
+	Sealed          bool
+	Codec           uint64
 	ContentType     string
 	DataShards      int
 	ParityShards    int
@@ -785,11 +789,11 @@ type midData struct {
 	ShardMIDs       []string
 	Health          string
 	HealthLabel     string
-	Providers     []string
-	Name          string
-	MimeType      string
-	Sealers       int
-	AnchorSealers int
+	Providers       []string
+	Name            string
+	MimeType        string
+	Sealers         int
+	AnchorSealers   int
 	// ResolveStatus reports what the explorer's
 	// background fetch attempt did when the MID was
 	// not local. The four interesting values are
@@ -824,11 +828,11 @@ func (e *Explorer) handleMID(w http.ResponseWriter, r *http.Request) {
 	present := info.Present
 	size, blocks, sealed, codec := info.Size, info.Blocks, info.Sealed, info.Codec
 	data := midData{
-		Title:    "MID " + midStr,
-		MID:      midStr,
-		NotFound: !present,
-		Name:     info.Name,
-		MimeType: info.MimeType,
+		Title:         "MID " + midStr,
+		MID:           midStr,
+		NotFound:      !present,
+		Name:          info.Name,
+		MimeType:      info.MimeType,
 		Sealers:       info.Sealers,
 		AnchorSealers: info.AnchorSealers,
 	}
@@ -1087,6 +1091,7 @@ func (e *Explorer) handleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "delete: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	e.audit(r, "delete", midStr, nil)
 	http.Redirect(w, r, "/explorer/", http.StatusSeeOther)
 }
 
@@ -1096,6 +1101,7 @@ func (e *Explorer) handleNodeFlash(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "flashnode failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	e.audit(r, "drop_all", "", nil)
 	if r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok","message":"flashnode complete"}`))
@@ -1103,7 +1109,6 @@ func (e *Explorer) handleNodeFlash(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/explorer/node", http.StatusSeeOther)
 }
-
 
 type peersData struct {
 	Title     string
@@ -1216,7 +1221,7 @@ func (e *Explorer) handleNode(w http.ResponseWriter, r *http.Request) {
 	sealed, _ := b.SealedMIDs(ctx)
 	keys, _ := b.KeyringKeys(ctx)
 	e.render(w, r, "node.html", map[string]any{
-		"Title":       "Node",
+		"Title": "Node",
 		"NodeInfo": nodeInfoView{
 			PeerID:     b.LocalPeerID(ctx),
 			Addrs:      b.LocalAddrs(ctx),
@@ -1628,17 +1633,17 @@ func humanBytes(n any) string {
 }
 
 type liveStats struct {
-	PeerCount     int              `json:"peerCount"`
-	StoreBytes    uint64           `json:"storeBytes"`
-	SealedCount   int              `json:"sealedCount"`
-	BlockCount    uint64           `json:"blockCount"`
-	Uptime        int64            `json:"uptime"`
-	BandwidthIn   float64          `json:"bandwidthIn"`
-	BandwidthOut  float64          `json:"bandwidthOut"`
-	TotalBytesIn  int64            `json:"totalBytesIn"`
-	TotalBytesOut int64            `json:"totalBytesOut"`
-	NodeInfo      nodeInfoView     `json:"nodeInfo"`
-	SealedList    []sealedMIDView  `json:"sealedList"`
+	PeerCount     int             `json:"peerCount"`
+	StoreBytes    uint64          `json:"storeBytes"`
+	SealedCount   int             `json:"sealedCount"`
+	BlockCount    uint64          `json:"blockCount"`
+	Uptime        int64           `json:"uptime"`
+	BandwidthIn   float64         `json:"bandwidthIn"`
+	BandwidthOut  float64         `json:"bandwidthOut"`
+	TotalBytesIn  int64           `json:"totalBytesIn"`
+	TotalBytesOut int64           `json:"totalBytesOut"`
+	NodeInfo      nodeInfoView    `json:"nodeInfo"`
+	SealedList    []sealedMIDView `json:"sealedList"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -1792,6 +1797,7 @@ func (e *Explorer) handleKeyringRm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	e.audit(r, "key_delete", name, nil)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "deleted": name})

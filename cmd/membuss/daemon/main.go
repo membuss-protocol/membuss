@@ -49,6 +49,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/nnlgsakib/membuss/core/audit"
 	"github.com/nnlgsakib/membuss/core/db"
 	"github.com/nnlgsakib/membuss/core/ipc"
 
@@ -58,12 +59,12 @@ import (
 	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
-	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/shard"
 	"github.com/nnlgsakib/membuss/core/store"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/dht"
+	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/net/herald"
 	"github.com/nnlgsakib/membuss/net/host"
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
@@ -162,6 +163,16 @@ func Run(args []string) error {
 	if cfg.MetricsEnabled {
 		mtrx = metrics.New()
 	}
+
+	// XC-008: append-only audit trail for destructive admin
+	// operations (delete / flash / keyring rm), served via the
+	// API /audit endpoint.
+	aud, err := audit.Open(cfg.DataDir)
+	if err != nil {
+		logger.Error("audit", "err", err.Error())
+		os.Exit(1)
+	}
+	defer aud.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -263,9 +274,9 @@ func Run(args []string) error {
 	}
 
 	hostCfg := host.Config{
-		ListenAddrs:     cfg.ListenAddrs,
-		AnnounceAddrs:   cfg.AnnounceAddrs,
-		DataDir:         cfg.DataDir,
+		ListenAddrs:   cfg.ListenAddrs,
+		AnnounceAddrs: cfg.AnnounceAddrs,
+		DataDir:       cfg.DataDir,
 		UserAgent: func() string {
 			ua := "membuss/v" + version.Version
 			commit := version.GitCommit
@@ -693,7 +704,7 @@ func Run(args []string) error {
 
 	var gateSrv *httpServer
 	if cfg.Servers.Gateway.Enabled {
-		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, tunMgr, gateHTTPReg, cfg.MetricsToken, edgeEngine, edgeSvc)
+		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, aud, tunMgr, gateHTTPReg, cfg.MetricsToken, edgeEngine, edgeSvc)
 		if err != nil {
 			logger.Error("gateway", "err", err.Error())
 			os.Exit(1)
@@ -708,7 +719,7 @@ func Run(args []string) error {
 	// 10) Node API: local control plane over HTTP/JSON.
 	var apiSrv *httpServer
 	if cfg.Servers.NodeAPI.Enabled {
-		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, nodeHTTPReg, edgeEngine, edgeSvc, httpIPCLis)
+		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, aud, nodeHTTPReg, edgeEngine, edgeSvc, httpIPCLis)
 		if err != nil {
 			logger.Error("api", "err", err.Error())
 			os.Exit(1)
@@ -1094,11 +1105,11 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, aud *audit.Logger, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
-		ExplorerHandler: buildExplorer(exp, tunMgr, edgeEngine, edgeSvc),
+		ExplorerHandler: buildExplorer(exp, aud, tunMgr, edgeEngine, edgeSvc),
 		RateLimitPerMin: rateLimitPerMin,
 		MemNSResolver:   memnsRes,
 		LogLevel:        logLevel,
@@ -1130,12 +1141,13 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 // startNodeAPI brings up the local Node control API. mtrx
 // exposes Prometheus at /metrics; apiKey enables X-Membuss-Key
 // auth on every /api/v1 endpoint; tls enables HTTPS.
-func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, pluginReg *plugin.MapHTTPRegistry, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, extraLis ...net.Listener) (*httpServer, error) {
+func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, aud *audit.Logger, pluginReg *plugin.MapHTTPRegistry, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, extraLis ...net.Listener) (*httpServer, error) {
 	nodeAPI, err := api.New(api.Config{
 		Backend:        b,
 		MaxUploadBytes: 1 << 30, // 1 GiB
 		APIKey:         apiKey,
 		Metrics:        mtrx,
+		Audit:          aud,
 		KeyRing:        keyring,
 		MemNSResolver:  memnsRes,
 		LogLevel:       logLevel,
@@ -1278,12 +1290,13 @@ func (h *httpServer) Addr() string {
 // buildExplorer constructs the explorer http.Handler.
 // It returns nil when exp is nil so the gateway can be
 // constructed without an explorer for tests.
-func buildExplorer(exp *explorerAdapter, tunMgr *tunnel.Manager, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) http.Handler {
+func buildExplorer(exp *explorerAdapter, aud *audit.Logger, tunMgr *tunnel.Manager, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) http.Handler {
 	if exp == nil {
 		return nil
 	}
 	h, err := explorerPkg.New(explorerPkg.Config{
 		Backend:       exp,
+		Audit:         aud,
 		TunnelManager: tunMgr,
 		EdgeEngine:    edgeEngine,
 		EdgeService:   edgeSvc,
