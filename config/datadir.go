@@ -1,4 +1,4 @@
-﻿// Phase 16: data-directory resolution and the YAML-with-comments
+// Phase 16: data-directory resolution and the YAML-with-comments
 // serializer used by `membuss init`.
 //
 // The data directory is the single place a node keeps its

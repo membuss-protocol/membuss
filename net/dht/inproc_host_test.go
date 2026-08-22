@@ -1,4 +1,4 @@
-﻿package dht
+package dht
 
 import (
 	"crypto/rand"
