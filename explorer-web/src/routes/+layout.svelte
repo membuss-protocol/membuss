@@ -9,6 +9,7 @@
 	import Icon from '@iconify/svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import UploadWidget from '$lib/components/UploadWidget.svelte';
+	import { t } from '$lib/i18n';
 
 	let { children } = $props();
 
@@ -17,14 +18,14 @@
 
 	// Ordered by priority, clustered by domain: overview → content → network → system
 	const navItems = [
-		{ name: 'Status', path: '/', icon: 'ph:gauge-light', group: 'overview' },
-		{ name: 'Files', path: '/files', icon: 'ph:folder-open-light', group: 'content' },
-		{ name: 'Explore', path: '/explore', icon: 'ph:git-branch-light', group: 'content' },
-		{ name: 'MemNS', path: '/memns', icon: 'ph:identification-card-light', group: 'content' },
-		{ name: 'Edge', path: '/edge', icon: 'ph:lightning-light', group: 'compute' },
-		{ name: 'Peers', path: '/peers', icon: 'ph:circle-notch-light', group: 'network' },
-		{ name: 'Tunnel', path: '/tunnel', icon: 'ph:link-light', group: 'network' },
-		{ name: 'Node Info', path: '/node', icon: 'ph:gear-six-light', group: 'system' }
+		{ key: 'nav.status', path: '/', icon: 'ph:gauge-light', group: 'overview' },
+		{ key: 'nav.files', path: '/files', icon: 'ph:folder-open-light', group: 'content' },
+		{ key: 'nav.explore', path: '/explore', icon: 'ph:git-branch-light', group: 'content' },
+		{ key: 'nav.memns', path: '/memns', icon: 'ph:identification-card-light', group: 'content' },
+		{ key: 'nav.edge', path: '/edge', icon: 'ph:lightning-light', group: 'compute' },
+		{ key: 'nav.peers', path: '/peers', icon: 'ph:circle-notch-light', group: 'network' },
+		{ key: 'nav.tunnel', path: '/tunnel', icon: 'ph:link-light', group: 'network' },
+		{ key: 'nav.node', path: '/node', icon: 'ph:gear-six-light', group: 'system' }
 	];
 
 	function handleSearch(e: Event) {
@@ -89,6 +90,13 @@
 </svelte:head>
 
 <div class="min-h-screen premium-bg text-slate-100 flex flex-col font-sans selection:bg-cyan-400/25 selection:text-slate-50">
+	<a
+		href="#main-content"
+		class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 z-50 bg-cyan-500 text-slate-950 px-3 py-1.5 rounded-sm text-xs font-mono font-bold"
+	>
+		Skip to content
+	</a>
+
 	<!-- Top Bar / Navigation -->
 	<header class="sticky top-0 z-40 bg-slate-950/70 backdrop-blur-xl border-b border-slate-700 px-6 md:px-12 py-4 flex items-center justify-between transition-all duration-500">
 		<div class="flex items-center gap-10">
@@ -109,6 +117,7 @@
 					{/if}
 					<a
 						href={`${base}${item.path}`}
+						aria-current={isActive ? 'page' : undefined}
 						class={`relative px-3 py-2 text-xs font-medium transition-colors duration-300 flex items-center gap-2 ${
 							isActive
 								? 'text-cyan-400'
@@ -116,7 +125,7 @@
 						}`}
 					>
 						<Icon icon={item.icon} class="w-4 h-4" />
-						<span>{item.name}</span>
+						<span>{$t(item.key)}</span>
 						{#if isActive}
 							<span class="absolute -bottom-[17px] left-0 right-0 h-[2px] bg-cyan-400"></span>
 						{/if}
@@ -132,6 +141,7 @@
 				<input
 					type="text"
 					bind:value={searchQuery}
+					aria-label="Search MIDs, MemNS names, or domains"
 					placeholder="Resolve MID · MemNS · domain"
 					class="w-56 lg:w-72 h-full bg-slate-950/50 border border-slate-700 rounded-[4px] text-slate-200 placeholder-slate-500 text-xs pl-9 pr-3 focus:outline-none focus:border-cyan-400/60 transition-colors duration-300 font-mono"
 				/>
@@ -157,6 +167,7 @@
 				: page.url.pathname.startsWith(`${base}${item.path}`)}
 			<a
 				href={`${base}${item.path}`}
+				aria-current={isActive ? 'page' : undefined}
 				class={`px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors duration-200 flex items-center gap-1.5 border-b-2 ${
 					isActive
 						? 'text-cyan-400 border-cyan-400'
@@ -164,7 +175,7 @@
 				}`}
 			>
 				<Icon icon={item.icon} class="w-4 h-4" />
-				<span>{item.name}</span>
+				<span>{$t(item.key)}</span>
 			</a>
 		{/each}
 	</div>
@@ -175,17 +186,18 @@
 			<input
 				type="text"
 				bind:value={searchQuery}
+				aria-label="Search MIDs, MemNS names, or domains"
 				placeholder="Jump to MID, MemNS, or domain..."
 				class="w-full bg-slate-950/60 border border-slate-700 text-slate-200 placeholder-slate-500 text-xs px-3.5 py-2.5 rounded-sm focus:outline-none focus:border-cyan-400/70 font-mono"
 			/>
-			<button type="submit" class="absolute right-3.5 top-3 text-slate-500">
+			<button type="submit" aria-label="Search" class="absolute right-3.5 top-3 text-slate-500">
 				<Icon icon="ph:magnifying-glass-light" class="w-4 h-4" />
 			</button>
 		</form>
 	</div>
 
 	<!-- Main Content Area -->
-	<main class="flex-grow max-w-7xl w-full mx-auto p-6 md:p-12 flex flex-col gap-12">
+	<main id="main-content" tabindex="-1" class="flex-grow max-w-7xl w-full mx-auto p-6 md:p-12 flex flex-col gap-12 focus:outline-none">
 		{@render children()}
 	</main>
 

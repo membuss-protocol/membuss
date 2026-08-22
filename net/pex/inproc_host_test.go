@@ -1,4 +1,4 @@
-﻿package pex
+package pex
 
 import (
 	"crypto/rand"

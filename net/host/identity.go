@@ -1,4 +1,4 @@
-﻿// Phase 16: identity persistence helpers used by
+// Phase 16: identity persistence helpers used by
 // `membuss-cli init` and (as a fallback) by NewHost.
 //
 // The host package has always been able to load or create the

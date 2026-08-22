@@ -199,6 +199,7 @@
 			<g
 				role="button"
 				tabindex="-1"
+				aria-label={`${c.kind} cluster, ${c.peers.length} peer${c.peers.length === 1 ? '' : 's'}`}
 				class="cursor-pointer"
 				onmouseenter={() => enter(c)}
 				onmouseleave={scheduleClose}

@@ -28,16 +28,21 @@ type Metrics struct {
 	noop     bool
 	registry *prometheus.Registry
 
-	storedMIDs           prometheus.Gauge
-	storedBytes          prometheus.Gauge
-	peersConnected       prometheus.Gauge
-	dhtProvides          prometheus.Counter
-	dhtProvidesFailed    prometheus.Counter
-	memexBlocksSent      prometheus.Counter
-	memexBlocksReceived  prometheus.Counter
-	gcRuns               prometheus.Counter
+	storedMIDs            prometheus.Gauge
+	storedBytes           prometheus.Gauge
+	peersConnected        prometheus.Gauge
+	dhtProvides           prometheus.Counter
+	dhtProvidesFailed     prometheus.Counter
+	memexBlocksSent       prometheus.Counter
+	memexBlocksReceived   prometheus.Counter
+	gcRuns                prometheus.Counter
 	memexTransferDuration prometheus.Histogram
-	addRequestDuration   prometheus.Histogram
+	addRequestDuration    prometheus.Histogram
+
+	// Erasure repair observability (XC-009).
+	erasureRepairAuditedLastCycle prometheus.Gauge
+	erasureRepairShardsRepaired   prometheus.Counter
+	erasureRepairUnrecoverable    prometheus.Counter
 }
 
 // noopGuard returns true when the Metrics value is either nil
@@ -93,12 +98,27 @@ func New() *Metrics {
 		Help:    "Time spent ingesting a new piece of content (chunking + DAG + store).",
 		Buckets: prometheus.DefBuckets,
 	})
+	m.erasureRepairAuditedLastCycle = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "membuss_erasure_repair_audited_last_cycle",
+		Help: "MIDs audited by the most recent erasure repair cycle (0 = worker idle/not running).",
+	})
+	m.erasureRepairShardsRepaired = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "membuss_erasure_repair_shards_repaired_total",
+		Help: "Cumulative RS shards reconstructed by background repair.",
+	})
+	m.erasureRepairUnrecoverable = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "membuss_erasure_repair_unrecoverable_total",
+		Help: "Cumulative MIDs declared unrecoverable by repair audit.",
+	})
 	reg.MustRegister(
 		m.storedMIDs, m.storedBytes, m.peersConnected,
 		m.dhtProvides, m.dhtProvidesFailed,
 		m.memexBlocksSent, m.memexBlocksReceived,
 		m.gcRuns,
 		m.memexTransferDuration, m.addRequestDuration,
+		m.erasureRepairAuditedLastCycle,
+		m.erasureRepairShardsRepaired,
+		m.erasureRepairUnrecoverable,
 	)
 	// Standard process collectors give operators free Go runtime
 	// and process metrics.
@@ -113,62 +133,107 @@ func Noop() *Metrics { return &Metrics{noop: true} }
 
 // SetStoredMIDs updates the gauge of locally stored MIDs.
 func (m *Metrics) SetStoredMIDs(n int64) {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.storedMIDs.Set(float64(n))
 }
 
 // SetStoredBytes updates the gauge of locally stored bytes.
 func (m *Metrics) SetStoredBytes(n uint64) {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.storedBytes.Set(float64(n))
 }
 
 // SetPeersConnected updates the gauge of currently connected peers.
 func (m *Metrics) SetPeersConnected(n int) {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.peersConnected.Set(float64(n))
 }
 
 // IncDHTProvide records one DHT provider announcement.
 func (m *Metrics) IncDHTProvide() {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.dhtProvides.Inc()
 }
 
 // IncDHTProvideFailed records one failed DHT provider announcement.
 func (m *Metrics) IncDHTProvideFailed() {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.dhtProvidesFailed.Inc()
 }
 
 // IncMemexBlocksSent records n blocks pushed outbound via Memex.
 func (m *Metrics) IncMemexBlocksSent(n int) {
-	if m.noopGuard() || n <= 0 { return }
+	if m.noopGuard() || n <= 0 {
+		return
+	}
 	m.memexBlocksSent.Add(float64(n))
 }
 
 // IncMemexBlocksReceived records n blocks received inbound via Memex.
 func (m *Metrics) IncMemexBlocksReceived(n int) {
-	if m.noopGuard() || n <= 0 { return }
+	if m.noopGuard() || n <= 0 {
+		return
+	}
 	m.memexBlocksReceived.Add(float64(n))
 }
 
 // IncGCRuns records one garbage-collection run.
 func (m *Metrics) IncGCRuns() {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.gcRuns.Inc()
 }
 
 // ObserveMemexTransfer records a single Memex transfer duration.
 func (m *Metrics) ObserveMemexTransfer(seconds float64) {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.memexTransferDuration.Observe(seconds)
 }
 
 // ObserveAddRequest records a single Add (ingest) request duration.
 func (m *Metrics) ObserveAddRequest(seconds float64) {
-	if m.noopGuard() { return }
+	if m.noopGuard() {
+		return
+	}
 	m.addRequestDuration.Observe(seconds)
+}
+
+// SetErasureRepairAuditedLastCycle records how many MIDs the most
+// recent repair cycle audited (XC-009).
+func (m *Metrics) SetErasureRepairAuditedLastCycle(n int64) {
+	if m.noopGuard() {
+		return
+	}
+	m.erasureRepairAuditedLastCycle.Set(float64(n))
+}
+
+// AddErasureRepairShardsRepaired records n reconstructed RS shards.
+func (m *Metrics) AddErasureRepairShardsRepaired(n int) {
+	if m.noopGuard() {
+		return
+	}
+	m.erasureRepairShardsRepaired.Add(float64(n))
+}
+
+// AddErasureRepairUnrecoverable records n unrecoverable MIDs.
+func (m *Metrics) AddErasureRepairUnrecoverable(n int) {
+	if m.noopGuard() || n <= 0 {
+		return
+	}
+	m.erasureRepairUnrecoverable.Add(float64(n))
 }
 
 // Handler returns an http.Handler that serves the registry in the
@@ -186,6 +251,8 @@ func (m *Metrics) Handler() http.Handler {
 // Registry returns the underlying registry, for tests that want to
 // gather values directly. nil for noop metrics.
 func (m *Metrics) Registry() *prometheus.Registry {
-	if m == nil { return nil }
+	if m == nil {
+		return nil
+	}
 	return m.registry
 }

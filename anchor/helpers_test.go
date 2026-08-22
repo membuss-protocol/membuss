@@ -1,4 +1,4 @@
-﻿package anchor
+package anchor
 
 import (
 	"crypto/rand"

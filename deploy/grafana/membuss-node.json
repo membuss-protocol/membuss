@@ -1,0 +1,95 @@
+{
+  "title": "Membuss Node",
+  "uid": "membuss-node",
+  "tags": ["membuss"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": [
+    {
+      "name": "DS_PROMETHEUS", "label": "Data source",
+      "type": "datasource", "query": "prometheus"
+    }
+  ]},
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Stored bytes",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "membuss_stored_bytes_total"}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Stored MIDs",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "membuss_stored_mids_total"}]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Connected peers",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "membuss_peers_connected"}]
+    },
+    {
+      "id": 4, "type": "stat", "title": "GC runs (5m rate)",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "sum(rate(membuss_gc_runs_total[5m]))"}]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "DHT provides / failures (per sec)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops", "custom":{"lineWidth":2,"fillOpacity":10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "expr": "sum(rate(membuss_dht_provides_total[5m]))", "legendFormat": "provides/s"},
+        {"refId": "B", "expr": "sum(rate(membuss_dht_provides_failed_total[5m]))", "legendFormat": "failures/s"}
+      ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Memex block flow (per sec)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "targets": [
+        {"refId": "A", "expr": "sum(rate(membuss_memex_blocks_sent_total[5m]))", "legendFormat": "sent/s"},
+        {"refId": "B", "expr": "sum(rate(membuss_memex_blocks_received_total[5m])", "legendFormat": "received/s"}
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Memex transfer latency p50/p95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.5, sum by (le) (rate(membuss_memex_transfer_duration_seconds_bucket[5m])))", "legendFormat": "p50"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(membuss_memex_transfer_duration_seconds_bucket[5m])))", "legendFormat": "p95"}
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Add ingest latency p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(membuss_add_request_duration_seconds_bucket[5m])))", "legendFormat": "p95"}
+      ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Erasure repair activity",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [
+        {"refId": "A", "expr": "membuss_erasure_repair_audited_last_cycle", "legendFormat": "MIDs audited (last cycle)"},
+        {"refId": "B", "expr": "sum(rate(membuss_erasure_repair_shards_repaired_total[5m]))", "legendFormat": "shards repaired/s"},
+        {"refId": "C", "expr": "sum(increase(membuss_erasure_repair_unrecoverable_total[1h]))", "legendFormat": "unrecoverable MIDs (1h)"}
+      ]
+    }
+  ]
+}

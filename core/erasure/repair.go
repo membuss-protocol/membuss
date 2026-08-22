@@ -10,14 +10,15 @@ import (
 
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/store"
+	"github.com/nnlgsakib/membuss/obs/metrics"
 )
 
 // RepairStats tracks background repair worker progress.
 type RepairStats struct {
-	AuditedMIDs   int
-	DegradedMIDs  int
+	AuditedMIDs    int
+	DegradedMIDs   int
 	RepairedShards int
-	Unrecoverable int
+	Unrecoverable  int
 }
 
 // RepairMID inspects the erasure shards of a MID and reconstructs missing shards.
@@ -110,6 +111,7 @@ type RepairWorker struct {
 	interval time.Duration
 	mu       sync.RWMutex
 	stats    RepairStats
+	metrics  *metrics.Metrics
 }
 
 // NewRepairWorker creates a new RepairWorker.
@@ -121,6 +123,13 @@ func NewRepairWorker(s store.Blockstore, interval time.Duration) *RepairWorker {
 		store:    s,
 		interval: interval,
 	}
+}
+
+// WithMetrics attaches the Prometheus handle (XC-009). Returns the
+// worker so daemon wiring can chain: NewRepairWorker(...).WithMetrics(m).
+func (w *RepairWorker) WithMetrics(m *metrics.Metrics) *RepairWorker {
+	w.metrics = m
+	return w
 }
 
 // Run executes the background repair loop until ctx is canceled.
@@ -192,6 +201,12 @@ func (w *RepairWorker) AuditAndRepair(ctx context.Context) RepairStats {
 	w.stats.RepairedShards += stats.RepairedShards
 	w.stats.Unrecoverable += stats.Unrecoverable
 	w.mu.Unlock()
+
+	if w.metrics != nil {
+		w.metrics.SetErasureRepairAuditedLastCycle(int64(stats.AuditedMIDs))
+		w.metrics.AddErasureRepairShardsRepaired(stats.RepairedShards)
+		w.metrics.AddErasureRepairUnrecoverable(stats.Unrecoverable)
+	}
 
 	return stats
 }

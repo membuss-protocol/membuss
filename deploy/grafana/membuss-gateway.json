@@ -1,0 +1,59 @@
+{
+  "title": "Membuss Gateway",
+  "uid": "membuss-gateway",
+  "tags": ["membuss"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": [
+    {
+      "name": "DS_PROMETHEUS", "label": "Data source",
+      "type": "datasource", "query": "prometheus"
+    }
+  ]},
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Request rate (5m)",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "sum(rate(membuss_gateway_requests_total[5m]))"}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Cache hit ratio",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "sum(membuss_gateway_cache_hits_total) / clamp_min(sum(membuss_gateway_cache_hits_total) + sum(membuss_gateway_cache_misses_total), 1)"}]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Rate-limit drops (5m rate)",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "sum(rate(membuss_gateway_rate_limit_drops_total[5m]))"}]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Requests by status code (per sec)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "sum by (code) (rate(membuss_gateway_requests_total[5m]))", "legendFormat": "{{code}}"}]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Request latency p95 by method",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, method) (rate(membuss_gateway_request_duration_seconds_bucket[5m])))", "legendFormat": "{{method}}"}]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Active SSE status streams",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "membuss_gateway_active_sse_streams"}]
+    }
+  ]
+}

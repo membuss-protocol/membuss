@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/nnlgsakib/membuss/core/audit"
 	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memns"
@@ -204,6 +205,9 @@ type Config struct {
 	APIKey string
 	// Metrics, if non-nil, is exposed at GET /metrics.
 	Metrics *metrics.Metrics
+	// Audit, if non-nil, serves GET /audit (last 100 entries of the
+	// destructive-operation trail).
+	Audit *audit.Logger
 
 	// Phase 18: MemNS and KeyRing fields
 	KeyRing       *keyring.KeyRing
@@ -299,6 +303,7 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		r.Get("/peers", a.handlePeers)
 		r.Get("/node/info", a.handleNodeInfo)
 		r.Post("/gc", a.handleGC)
+		r.Get("/audit", a.handleAudit)
 		r.Delete("/delete/{mid}", a.handleDelete)
 		r.Get("/healthz", a.handleHealthz)
 
@@ -712,6 +717,24 @@ func (a *NodeAPI) handleGC(w http.ResponseWriter, r *http.Request) {
 		"bytes_freed": info.BytesFreed,
 		"blocks_kept": info.BlocksKept,
 	})
+}
+
+// handleAudit serves the last 100 entries of the destructive-operation
+// audit trail (XC-008).
+func (a *NodeAPI) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.Audit == nil {
+		fail(w, http.StatusNotImplemented, fmt.Errorf("audit log not configured"))
+		return
+	}
+	entries, err := a.cfg.Audit.Tail(100)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if entries == nil {
+		entries = []audit.Entry{}
+	}
+	ok(w, entries)
 }
 
 func (a *NodeAPI) handleDelete(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,63 @@
+# Prometheus alert rules for Membuss (finding.txt XC-009).
+# Load via: rule_files: ["deploy/prometheus/rules.yml"]
+groups:
+  - name: membuss-node
+    rules:
+      - alert: MembussDHTProvideFailureRatioHigh
+        expr: >
+          sum(rate(membuss_dht_provides_failed_total[15m]))
+          / clamp_min(sum(rate(membuss_dht_provides_total[15m])), 1e-9) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DHT provide failure ratio above 20% on {{ $labels.job }}"
+          description: "Provider announcements are failing; check connectivity, bootstrap peers, and DHT routing table health."
+      - alert: MembussPeersDisconnected
+        expr: membuss_peers_connected < 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Membuss node has no connected peers for 30m"
+          description: "Node is isolated from the swarm; content exchange and provides will fail."
+      - alert: MembussRepairUnrecoverableMIDs
+        expr: increase(membuss_erasure_repair_unrecoverable_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Erasure repair declared MIDs unrecoverable on {{ $labels.job }}"
+          description: "Too many RS shards missing to reconstruct; data loss risk. Re-seed from a healthy source."
+  - name: membuss-gateway
+    rules:
+      - alert: MembussGateway5xxRatioHigh
+        expr: >
+          sum(rate(membuss_gateway_requests_total{code=~"5.."}[10m]))
+          / clamp_min(sum(rate(membuss_gateway_requests_total[10m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Mem-Gate 5xx ratio above 5% for 10m"
+          description: "Gateway error budget burning; inspect backend store and upstream fetch errors."
+      - alert: MembussGatewayCacheHitRatioLow
+        expr: >
+          sum(rate(membuss_gateway_requests_total[10m])) > 1
+          and (sum(membuss_gateway_cache_hits_total)
+               / clamp_min(sum(membuss_gateway_cache_hits_total)
+                           + sum(membuss_gateway_cache_misses_total), 1)) < 0.2
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Gateway LRU cache hit ratio below 20% under load"
+          description: "Consider raising MaxCacheBytes or checking for one-shot large-object traffic."
+      - alert: MembussGatewayRateLimitDrops
+        expr: increase(membuss_gateway_rate_limit_drops_total[10m]) > 100
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "More than 100 gateway requests dropped by rate limiting in 10m"
+          description: "Either abuse or RateLimitPerMin set too low for legitimate traffic."
