@@ -932,7 +932,7 @@ type dagTreeNodeJSON struct {
 }
 
 type dagTreeResponseJSON struct {
-	Root  string                      `json:"root"`
+	Root  string                     `json:"root"`
 	Nodes map[string]dagTreeNodeJSON `json:"nodes"`
 }
 
@@ -1290,6 +1290,9 @@ func parseRange(s string, size int64) (int64, int64, error) {
 		}
 		start = uint64(size) - n
 		end = uint64(size)
+		if end <= start {
+			return 0, 0, fmt.Errorf("range out of bounds")
+		}
 		return int64(start), int64(end), nil
 	}
 	start, err = strconv.ParseUint(startStr, 10, 64)
@@ -1925,7 +1928,7 @@ func (m *MemGate) checkBaseRedirect(r *http.Request, root mid.MID, innerPath str
 		if strings.HasSuffix(redirectPath, "index.html") {
 			redirectPath = strings.TrimSuffix(redirectPath, "index.html")
 		}
-		
+
 		// Clean and compare path to see if base path prefix is already at the end
 		cleanedPath := strings.TrimSuffix(redirectPath, "/")
 		if strings.HasSuffix(cleanedPath, "/"+relBase) || cleanedPath == relBase || strings.HasSuffix(cleanedPath, "/"+base) {
@@ -2727,4 +2730,3 @@ func (m *MemGate) executeEdgeFunction(w http.ResponseWriter, r *http.Request, co
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(resp.Body))
 }
-
