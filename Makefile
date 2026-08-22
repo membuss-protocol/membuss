@@ -9,6 +9,9 @@
 #                       (set RACE=1 to enable the race detector where a
 #                        C toolchain is available, e.g. `make test RACE=1`)
 #   make lint           run golangci-lint (skipped if not installed)
+#   make fuzz           replay fuzz seed corpora + saved counterexamples
+#   make fuzz-all       fuzz every target FUZZTIME each (default 30s)
+#   make fuzz-one       fuzz one target: PKG=./net/pex/ FUZZ=FuzzPEXReadMsg
 #   make run-daemon     run the daemon with ./membuss.yaml
 #   make tidy           go mod tidy
 #   make clean          remove bin/, proto outputs, and frontend build artifacts
@@ -30,22 +33,21 @@ else
 endif
 
 GO            ?= go
+# Exported to child processes; RACE=1 flips it to 1 below (race
+# detector needs cgo).
 export CGO_ENABLED=0
 PKG           := ./...
 
-# Race detector toggle. The project has no cgo dependency, so it
-# builds and tests fine with CGO_ENABLED=0 everywhere. The one thing
-# that needs cgo is `go test -race`, which requires a working C
-# toolchain. Default is OFF so the suite runs on any machine; opt in
-# with `make test RACE=1` where a C compiler is available.
+# Race detector toggle. Default OFF so the suite runs on any machine;
+# opt in with `make test RACE=1` where a C compiler is available.
 RACE          ?= 0
 ifeq ($(RACE),1)
     TEST_FLAGS   := -race -count=1
-    TEST_CGO     := 1
+    CGO_ENABLED  := 1
 else
     TEST_FLAGS   := -count=1
-    TEST_CGO     := 0
 endif
+
 BUILD_DIR     := bin
 # Single unified binary: membuss is both the node daemon and the
 # operator CLI (run the node with `membuss daemon start`).
@@ -62,7 +64,7 @@ IMAGE         ?= ghcr.io/membuss-protocol/membuss:latest
 CONTAINER     ?= membuss
 COMPOSE       ?= docker compose
 
-.PHONY: build frontend frontend-dev proto test lint run-daemon tidy clean \
+.PHONY: build frontend frontend-dev proto test lint fuzz fuzz-all fuzz-one run-daemon tidy clean \
         docker-build docker-run docker-stop docker-logs docker-push \
         docker-compose-up docker-compose-down docker-compose-logs
 
@@ -93,7 +95,7 @@ else
 endif
 
 test:
-	CGO_ENABLED=$(TEST_CGO) $(GO) test $(PKG) $(TEST_FLAGS)
+	$(GO) test $(PKG) $(TEST_FLAGS)
 
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
@@ -156,3 +158,60 @@ docker-compose-down:
 
 docker-compose-logs:
 	$(COMPOSE) logs -f
+
+# ---------------------------------------------------------------------------
+# Fuzzing (finding.txt XC-001)
+# ---------------------------------------------------------------------------
+#
+# Go runs ONE fuzz target per command, so fuzz-all chains one rule
+# per target. Targets:
+#
+#   make fuzz                       replay seed corpus + saved
+#                                   counterexamples (fast, no mutation)
+#   make fuzz-all                   actually fuzz every target for
+#                                   FUZZTIME each (default 30s)
+#   make fuzz-one PKG=... FUZZ=...  fuzz a single target
+#
+# A crash writes a counterexample to <pkg>/testdata/fuzz/<Name>/<hash>;
+# `make fuzz` then replays it forever after as a regression test.
+
+FUZZTIME ?= 30s
+
+.PHONY: fuzz fuzz-all fuzz-one \
+        fuzz-parse-range fuzz-pex fuzz-memex-frame fuzz-descriptor fuzz-dht-ns fuzz-keyring
+
+fuzz:
+	$(GO) test -run 'Fuzz' ./gateway/memgate_v2/ ./net/pex/ ./net/memex_v2/ ./core/descriptor/ ./net/dht/ ./core/keyring/
+
+# One rule per target (Go fuzzes one function per process). Plain
+# single-line recipes so they run identically under sh and cmd.exe
+# (PowerShell-spawned make has no sh).
+fuzz-all: fuzz-parse-range fuzz-pex fuzz-memex-frame fuzz-descriptor fuzz-dht-ns fuzz-keyring
+
+fuzz-parse-range:
+	@echo == FuzzParseRange gateway/memgate_v2 $(FUZZTIME) ==
+	$(GO) test -run '^FuzzParseRange$$' -fuzz '^FuzzParseRange$$' -fuzztime $(FUZZTIME) ./gateway/memgate_v2/
+
+fuzz-pex:
+	@echo == FuzzPEXReadMsg net/pex $(FUZZTIME) ==
+	$(GO) test -run '^FuzzPEXReadMsg$$' -fuzz '^FuzzPEXReadMsg$$' -fuzztime $(FUZZTIME) ./net/pex/
+
+fuzz-memex-frame:
+	@echo == FuzzMemexReadFrame net/memex_v2 $(FUZZTIME) ==
+	$(GO) test -run '^FuzzMemexReadFrame$$' -fuzz '^FuzzMemexReadFrame$$' -fuzztime $(FUZZTIME) ./net/memex_v2/
+
+fuzz-descriptor:
+	@echo == FuzzDescriptorParse core/descriptor $(FUZZTIME) ==
+	$(GO) test -run '^FuzzDescriptorParse$$' -fuzz '^FuzzDescriptorParse$$' -fuzztime $(FUZZTIME) ./core/descriptor/
+
+fuzz-dht-ns:
+	@echo == FuzzMemNSValidate net/dht $(FUZZTIME) ==
+	$(GO) test -run '^FuzzMemNSValidate$$' -fuzz '^FuzzMemNSValidate$$' -fuzztime $(FUZZTIME) ./net/dht/
+
+fuzz-keyring:
+	@echo == FuzzKeyImportParse core/keyring $(FUZZTIME) ==
+	$(GO) test -run '^FuzzKeyImportParse$$' -fuzz '^FuzzKeyImportParse$$' -fuzztime $(FUZZTIME) ./core/keyring/
+
+# Single target, e.g.: make fuzz-one PKG=./net/pex/ FUZZ=FuzzPEXReadMsg
+fuzz-one:
+	$(GO) test -run '^$(FUZZ)$$' -fuzz '^$(FUZZ)$$' -fuzztime $(FUZZTIME) $(PKG)
