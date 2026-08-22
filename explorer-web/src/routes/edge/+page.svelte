@@ -1102,6 +1102,7 @@ fn main() -> io::Result<()> {
 									<input
 										type="file"
 										accept=".wasm"
+										aria-label="Upload compiled WASM binary"
 										onchange={(e) => {
 											const target = e.target as HTMLInputElement;
 											if (target.files?.[0]) handleWasmFileUpload(target.files[0]);
