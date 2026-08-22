@@ -38,10 +38,13 @@ jobs:
 
   govulncheck:
     name: Vulnerabilities (govulncheck)
-    # Reporting-only until the 14 called vulnerabilities (5 modules +
-    # stdlib, found 2026-08-22) are triaged: Go toolchain bump to
-    # 1.25.13, grpc v1.82.1, x/text v0.39.0, pion/dtls v3.1.4,
-    # webtransport-go v0.11.1. One finding has no fix available yet.
+    # Reporting-only because of exactly one remaining finding,
+    # GO-2024-3218 (Kademlia DHT censorship): no upstream fix exists
+    # ("Fixed in: N/A") — it is an architectural property of Kad DHTs.
+    # Everything else was cleared by the 2026-08-22 dependency bumps
+    # (toolchain 1.25.13, grpc v1.82.1, x/text v0.39.0, pion/dtls
+    # v3.1.4, webtransport-go v0.11.1). Flip to enforcing if upstream
+    # ships a fix and we take it.
     continue-on-error: true
     runs-on: ubuntu-latest
     steps:
