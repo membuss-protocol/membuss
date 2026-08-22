@@ -188,6 +188,16 @@ jobs:
           cache: 'npm'
           cache-dependency-path: desktop/frontend/package-lock.json
 
+      # wails generates bindings and compiles main.go, which embeds
+      # all:frontend/dist - the bundle must exist before wails runs.
+      - name: Build desktop frontend
+        working-directory: desktop/frontend
+        run: npm ci
+
+      - name: Build desktop frontend bundle
+        working-directory: desktop/frontend
+        run: npm run build
+
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
@@ -251,6 +261,16 @@ jobs:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: desktop/frontend/package-lock.json
+
+      # wails generates bindings and compiles main.go, which embeds
+      # all:frontend/dist - the bundle must exist before wails runs.
+      - name: Build desktop frontend
+        working-directory: desktop/frontend
+        run: npm ci
+
+      - name: Build desktop frontend bundle
+        working-directory: desktop/frontend
+        run: npm run build
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -344,6 +364,16 @@ jobs:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: desktop/frontend/package-lock.json
+
+      # wails generates bindings and compiles main.go, which embeds
+      # all:frontend/dist - the bundle must exist before wails runs.
+      - name: Build desktop frontend
+        working-directory: desktop/frontend
+        run: npm ci
+
+      - name: Build desktop frontend bundle
+        working-directory: desktop/frontend
+        run: npm run build
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
