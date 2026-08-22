@@ -1,0 +1,66 @@
+# XC-007: multi-node chaos/e2e matrix (nightly).
+# v1 chaos = node-kill mid-transfer on a 3-node swarm.
+# Network-level packet loss/latency (toxiproxy) tracked in finding.txt.
+name: Chaos E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 3 * * *'  # nightly
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    name: 3-node swarm survives node kill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build daemon binary (linux/amd64)
+        run: go build -trimpath -o membuss ./cmd/membuss
+
+      - name: Build container image
+        run: docker build -t membuss:local .
+
+      - name: Start 3-node swarm
+        run: docker compose -f docker-compose.multi.yml up -d --wait || docker compose -f docker-compose.multi.yml ps
+
+      - name: Wait for nodes to settle
+        run: sleep 20
+
+      - name: Seed content on node 1, fetch from node 2
+        id: happy
+        run: |
+          set -e
+          head -c 1048576 /dev/urandom > /tmp/chaos.bin
+          docker cp /tmp/chaos.bin membuss-1:/tmp/chaos.bin
+          OUT=$(docker exec membuss-1 /usr/local/bin/membuss add /tmp/chaos.bin)
+          MID=$(echo "$OUT" | grep -oE '[a-z0-9]{59,}' | head -1)
+          echo "mid=$MID" >> "$GITHUB_OUTPUT"
+          sleep 10   # announce + propagation
+          docker exec membuss-2 /usr/local/bin/membuss cat "$MID" > /tmp/out.bin
+          cmp /tmp/out.bin /tmp/chaos.bin
+
+
+      - name: Chaos — kill node 1 (seed node)
+        if: steps.happy.outcome == 'success'
+        run: docker stop membuss-1
+
+      - name: Refetch from node 2 after seed death
+        if: steps.happy.outcome == 'success'
+        run: |
+          set -e
+          MID="${{ steps.happy.outputs.mid }}"
+          docker exec membuss-2 /usr/local/bin/membuss cat "$MID" > /tmp/out2.bin
+          cmp /tmp/out2.bin /tmp/chaos.bin
+
+      - name: Teardown (always)
+        if: always()
+        run: docker compose -f docker-compose.multi.yml down -v || true
