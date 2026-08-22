@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [master, features]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (golangci-lint)
+    # Reporting-only until the pre-existing staticcheck/unused debt
+    # is burned down (finding.txt XC-004 burn-down list).
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build explorer frontend
+        uses: ./.github/actions/build-frontend
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          args: --timeout=10m
+
+  govulncheck:
+    name: Vulnerabilities (govulncheck)
+    # Reporting-only until the 14 called vulnerabilities (5 modules +
+    # stdlib, found 2026-08-22) are triaged: Go toolchain bump to
+    # 1.25.13, grpc v1.82.1, x/text v0.39.0, pion/dtls v3.1.4,
+    # webtransport-go v0.11.1. One finding has no fix available yet.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run govulncheck
+        # @latest: outside-module invocation; plain `go run pkg` would
+        # error "no required module provides package".
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build explorer frontend
+        uses: ./.github/actions/build-frontend
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test (race on unix, plain on windows)
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            go test ./...
+          else
+            CGO_ENABLED=1 go test -race -timeout 20m ./...
+          fi
+
+  coverage:
+    name: Coverage report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build explorer frontend
+        uses: ./.github/actions/build-frontend
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with coverage
+        run: go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        if: always()
+        run: go run golang.org/x/tools/cmd/cover@latest -html=coverage.out -o coverage.html; go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            coverage.html
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build explorer frontend
+        uses: ./.github/actions/build-frontend
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build daemon binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -trimpath -ldflags "-s -w" -o "bin/membuss$( [ "${{ matrix.goos }}" = "windows" ] && echo '.exe' )" ./cmd/membuss
+
+      - name: Smoke-test cross-compiled binary (native only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: ./bin/membuss --help > /dev/null && echo "binary runs"
+
+  modules:
+    name: Build submodule ${{ matrix.module }}
+    # XC-005: root API changes must not silently break the desktop
+    # module (replace => ../). memgit/memploy are separate projects,
+    # NOT part of this repo — never add them here.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [desktop]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache: true
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Build desktop frontend (wails embed target)
+        working-directory: ${{ matrix.module }}/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - run: go build ./...
+      - run: go vet ./...

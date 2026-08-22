@@ -1,0 +1,25 @@
+name: Build explorer frontend
+description: >-
+  Builds the explorer-web SvelteKit app into gateway/explorer/web/dist,
+  which gateway/explorer embeds via //go:embed all:web/dist.
+  Required before any `go build`/`go test` of the root module in CI,
+  because dist/ is gitignored.
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: explorer-web/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: explorer-web
+      run: npm ci
+
+    - name: Build frontend
+      shell: bash
+      working-directory: explorer-web
+      run: npm run build
