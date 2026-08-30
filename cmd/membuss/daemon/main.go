@@ -67,7 +67,9 @@ import (
 	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/net/herald"
 	"github.com/nnlgsakib/membuss/net/host"
+	"github.com/nnlgsakib/membuss/net/manifest_rpc"
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
+	"github.com/nnlgsakib/membuss/net/memplace"
 	"github.com/nnlgsakib/membuss/net/pex"
 	"github.com/nnlgsakib/membuss/net/tunnel"
 	"github.com/nnlgsakib/membuss/obs/logging"
@@ -477,20 +479,26 @@ func Run(args []string) error {
 		},
 	})
 
+	var shardSetAnnouncer herald.ShardSetAnnouncer
+	if heraldStrat == herald.StrategyShards {
+		shardSetAnnouncer = mdht
+	}
+
 	hd, err := herald.New(herald.Config{
-		Store:           heraldStoreWrapper{bs},
-		DHT:             mdht,
-		Strategy:        heraldStrat,
-		ShardRing:       shardRing,
-		PeerID:          h.ID().String(),
-		Replicas:        cfg.ShardReplicas,
-		Interval:        cfg.ReprovideInterval,
-		Rate:            100,
-		Burst:           8,
-		KeyRing:         kr,
-		MemDHT:          mdht,
-		Metrics:         mtrx,
-		ReprovideGroups: cfg.ReprovideGroups,
+		Store:             heraldStoreWrapper{bs},
+		DHT:               mdht,
+		Strategy:          heraldStrat,
+		ShardRing:         shardRing,
+		PeerID:            h.ID().String(),
+		Replicas:          cfg.ShardReplicas,
+		Interval:          cfg.ReprovideInterval,
+		Rate:              100,
+		Burst:             8,
+		ShardSetAnnouncer: shardSetAnnouncer,
+		KeyRing:           kr,
+		MemDHT:            mdht,
+		Metrics:           mtrx,
+		ReprovideGroups:   cfg.ReprovideGroups,
 	})
 	if err != nil {
 		logger.Error("herald", "err", err.Error())
@@ -573,6 +581,11 @@ func Run(args []string) error {
 	}
 
 	// 8) gRPC server.
+	var placer *memplace.Placer
+	if cfg.ShardPlacement {
+		placer = memplace.New(memplace.Config{Replicas: cfg.ShardReplicas}, shardRing, h.ID(), mx, mdht, logger)
+		logger.Info("shard placement enabled", "replicas", cfg.ShardReplicas)
+	}
 	backend := &daemonBackend{
 		dataDir:      cfg.DataDir,
 		host:         h,
@@ -585,6 +598,7 @@ func Run(args []string) error {
 		metrics:      mtrx,
 		retryBackoff: cfg.MemexRetryBackoff,
 		logger:       logger,
+		placer:       placer,
 	}
 
 	// 8) IPC Socket & gRPC / Node API multiplexer.
@@ -700,6 +714,17 @@ func Run(args []string) error {
 		}
 	} else {
 		fmt.Fprintf(os.Stdout, "  edge_compute:   disabled\n")
+	}
+
+	// Manifest RPC: serves erasure manifests to peers so k-of-n
+	// reconstruction works off-origin. Runs whenever a host and store
+	// exist, independent of edge_compute.
+	if h != nil && bs != nil {
+		manifestSvc := manifest_rpc.NewService(h, bs)
+		defer manifestSvc.Close()
+		fmt.Fprintf(os.Stdout, "  manifest_rpc:   enabled\n")
+	} else {
+		fmt.Fprintf(os.Stdout, "  manifest_rpc:   disabled\n")
 	}
 
 	var gateSrv *httpServer

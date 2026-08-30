@@ -32,6 +32,7 @@ import (
 	"github.com/nnlgsakib/membuss/net/dht"
 	"github.com/nnlgsakib/membuss/net/herald"
 	memex "github.com/nnlgsakib/membuss/net/memex_v2"
+	"github.com/nnlgsakib/membuss/net/memplace"
 	"github.com/nnlgsakib/membuss/net/pex"
 	"github.com/nnlgsakib/membuss/obs/metrics"
 	membusspb "github.com/nnlgsakib/membuss/proto"
@@ -80,6 +81,11 @@ type daemonBackend struct {
 	// statCache caches StatInfo for sealed MIDs to eliminate 4800+ BadgerDB block walks per Stat call.
 	statMu    sync.RWMutex
 	statCache map[string]serverpkg.StatInfo
+
+	// placer is the optional shard-placement engine. nil = disabled
+	// (config shard_placement: false); Add-path ingest then never
+	// pushes shards to ring owners.
+	placer *memplace.Placer
 }
 
 // slogAnchorLogger adapts *slog.Logger to anchor.Logger.
@@ -134,8 +140,6 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 		totalBytes = uint64(fi.Size())
 	}
 
-
-
 	if name == "" {
 		name = filepath.Base(path)
 	}
@@ -176,6 +180,14 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 	}
 	_ = erasure.SetManifest(b.store, root, rootManifest)
 
+	// Link erasure leaves to this root so shard-set discovery (keyed
+	// on the root) can serve manifests keyed on leaf MIDs. Erasure
+	// runs whenever the ingest sealed, matching ingest's
+	// EnableErasure || Seal rule.
+	if sealRoot {
+		linkLeavesToRoot(b.store, root)
+	}
+
 	if sealRoot {
 		if err := b.store.Seal(root, false); err != nil {
 			return serverpkg.AddResult{}, fmt.Errorf("add: seal: %w", err)
@@ -189,6 +201,21 @@ func (b *daemonBackend) AddWithProgress(ctx context.Context, path, chunker strin
 				announceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				provideRecursive(announceCtx, b.dht, b.store, r)
+			}(root)
+		}
+		// Push erasure shards to their ring owners when the
+		// placement engine is enabled.
+		if b.placer != nil {
+			go func(r mid.MID) {
+				shards := collectShardBlocks(b.store, r)
+				if len(shards) == 0 {
+					return
+				}
+				pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if n, err := b.placer.PlaceShards(pctx, r, shards); err == nil && n > 0 && b.logger != nil {
+					b.logger.Info("placement", "root", r.String(), "remote_shards", n)
+				}
 			}(root)
 		}
 	}
