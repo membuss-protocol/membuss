@@ -43,8 +43,8 @@ During ingestion (`AddWithProgress` / `AddDirectory`):
 When a client requests a MID via `fetchingBlockstore`:
 1. **Direct Fetch**: Attempts to retrieve the primary block directly.
 2. **Erasure Fallback**: If the primary block is missing or storing peers go offline:
-   - Reads the `ErasureManifest` from store metadata.
-   - Fetches available shards from connected swarm peers.
+   - Reads the `ErasureManifest` from store metadata; if absent, fetches it from peers over the [manifest RPC](../03-core-protocols/shard-placement.md#3-manifest-rpc-membussmanifestv1).
+   - Fetches available shards from connected swarm peers and placement holders (discovered via shard-set records on the DHT).
    - As soon as at least `K = DataShards` valid shards arrive, executes `encoder.Decode(shards, manifest)`.
    - Verifies reconstructed bytes match the expected BLAKE3 hash.
    - Restores the block locally and streams it seamlessly to the caller.
@@ -53,8 +53,10 @@ When a client requests a MID via `fetchingBlockstore`:
 
 ## 4. Background Shard Repair Worker
 
-The background repair worker (`core/erasure/repair.go`) continuously audits sealed MIDs:
-1. **Health Audit**: Checks presence of all 14 shards across the network.
+The repair worker (`core/erasure/repair.go`) audits sealed MIDs:
+1. **Health Audit**: Checks presence of all `N = DataShards + ParityShards` shards for manifest-bearing blocks.
 2. **Degraded Detection**: Identifies MIDs with `K ≤ present < N` shards available.
-3. **Shard Reconstruction**: Reconstructs missing data/parity shards via matrix inversion.
-4. **Re-distribution**: Writes missing shards back to disk/peers and re-announces them to restore full 10+4 redundancy.
+3. **Shard Reconstruction**: Reconstructs missing shards via matrix inversion and writes them back locally.
+4. **Graceful Skip**: MIDs whose manifests carry no shard list (e.g. root summaries) are skipped without error.
+
+See [Shard Placement](../03-core-protocols/shard-placement.md) for how shards are distributed to peers in the first place.
