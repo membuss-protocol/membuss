@@ -382,10 +382,12 @@ type UpdateCheckResult struct {
 	HasUpdate      bool   `json:"has_update"`
 	CurrentVersion string `json:"current_version"`
 	LatestVersion  string `json:"latest_version"`
+	IsBeta         bool   `json:"is_beta"`
+	InstallerURL   string `json:"installer_url,omitempty"`
 }
 
-// CheckForUpdate queries GitHub for the latest release and compares with the installed version.
-// Uses the REST API with an automatic /releases/latest redirect fallback so anonymous
+// CheckForUpdate queries GitHub for the latest release (including beta/pre-releases) and compares with the installed version.
+// Uses the Atom feed and REST API with automatic HTML redirect fallback so anonymous
 // clients still work after API rate limits (HTTP 403).
 func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	// 1. Determine current version
@@ -403,7 +405,7 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	}
 	currentVer = strings.TrimPrefix(currentVer, "v")
 
-	// 2. Fetch latest release (API → HTML redirect fallback)
+	// 2. Fetch latest release (Atom feed / API → HTML redirect fallback)
 	info, err := fetchLatestRelease()
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for updates: %w", err)
@@ -414,7 +416,8 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 		return nil, fmt.Errorf("failed to check for updates: empty release tag")
 	}
 	latestVerClean := strings.TrimPrefix(latestVer, "v")
-	hasUpdate := isVersionNewer(currentVer, latestVerClean)
+	hasUpdate := IsVersionNewer(currentVer, latestVerClean)
+	isBeta := IsPrerelease(latestVer)
 
 	// Normalize latest for display (always v-prefixed).
 	displayLatest := latestVer
@@ -422,10 +425,14 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 		displayLatest = "v" + displayLatest
 	}
 
+	installerURL := findDesktopInstallerAssetURL(info)
+
 	return &UpdateCheckResult{
 		HasUpdate:      hasUpdate,
 		CurrentVersion: "v" + currentVer,
 		LatestVersion:  displayLatest,
+		IsBeta:         isBeta,
+		InstallerURL:   installerURL,
 	}, nil
 }
 
@@ -478,10 +485,11 @@ func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
 
 	for i := range releases {
 		tagClean := strings.TrimPrefix(strings.TrimSpace(releases[i].TagName), "v")
-		if tagClean == currentVerClean {
+		cmp := CompareSemVer(currentVerClean, tagClean)
+		if cmp == 0 {
 			releases[i].IsCurrent = true
 			releases[i].Type = "current"
-		} else if isVersionNewer(currentVerClean, tagClean) {
+		} else if cmp < 0 {
 			releases[i].Type = "upgrade"
 		} else {
 			releases[i].Type = "downgrade"
@@ -489,6 +497,19 @@ func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
 	}
 
 	return releases, nil
+}
+
+// GetDesktopInstallerURL returns the direct download URL for the desktop application installer for a given release tag.
+func (a *App) GetDesktopInstallerURL(targetTag string) (string, error) {
+	info, err := fetchReleaseByTag(targetTag)
+	if err != nil {
+		return "", err
+	}
+	url := findDesktopInstallerAssetURL(info)
+	if url == "" {
+		return "", fmt.Errorf("no desktop installer asset found for %s", targetTag)
+	}
+	return url, nil
 }
 
 // InstallVersion downloads and atomically applies the specified release version tag (or latest if empty).
@@ -654,28 +675,7 @@ func (a *App) ForceKillNode() error {
 
 // isVersionNewer helper function to compare two semantic versions.
 func isVersionNewer(current, latest string) bool {
-	current = strings.TrimPrefix(strings.TrimSpace(current), "v")
-	latest = strings.TrimPrefix(strings.TrimSpace(latest), "v")
-	if current == "" {
-		return latest != ""
-	}
-	if latest == "" {
-		return false
-	}
-	cParts := strings.Split(current, ".")
-	lParts := strings.Split(latest, ".")
-	for i := 0; i < len(cParts) && i < len(lParts); i++ {
-		var cVal, lVal int
-		fmt.Sscanf(cParts[i], "%d", &cVal)
-		fmt.Sscanf(lParts[i], "%d", &lVal)
-		if lVal > cVal {
-			return true
-		}
-		if lVal < cVal {
-			return false
-		}
-	}
-	return len(lParts) > len(cParts)
+	return IsVersionNewer(current, latest)
 }
 
 // isProcessRunning checks if a process with the given name is active on the host system.

@@ -62,7 +62,7 @@ func TestPlatformArchiveAssetName(t *testing.T) {
 	}
 }
 
-func TestIsVersionNewer(t *testing.T) {
+func TestIsVersionNewer_Basic(t *testing.T) {
 	if !isVersionNewer("1.2.0", "1.2.5") {
 		t.Error("expected 1.2.5 > 1.2.0")
 	}
@@ -113,5 +113,21 @@ func TestFetchLatestRelease_Live(t *testing.T) {
 	}
 	if !strings.HasPrefix(info.TagName, "v") && info.TagName[0] < '0' {
 		t.Fatalf("suspicious tag: %s", info.TagName)
+	}
+}
+
+func TestFindDesktopInstallerAssetURL(t *testing.T) {
+	info := &latestReleaseInfo{
+		TagName: "v2.10.0-beta.1",
+		Assets: map[string]string{
+			"Membuss-Desktop-v2.10.0-beta.1-windows-amd64-installer.exe": "https://github.com/membuss-protocol/membuss/releases/download/v2.10.0-beta.1/Membuss-Desktop-v2.10.0-beta.1-windows-amd64-installer.exe",
+		},
+	}
+	url := findDesktopInstallerAssetURL(info)
+	if url == "" {
+		t.Fatal("expected installer download URL")
+	}
+	if !strings.Contains(url, "v2.10.0-beta.1") {
+		t.Fatalf("unexpected installer url: %s", url)
 	}
 }

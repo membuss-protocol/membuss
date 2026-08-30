@@ -67,18 +67,18 @@ func fetchLatestRelease() (*latestReleaseInfo, error) {
 
 	var errs []string
 
-	// 1) HTML redirect — primary path, no api.github.com quota.
-	if info, err := fetchLatestReleaseRedirect(); err == nil && info != nil && info.TagName != "" {
-		return cacheRelease(info), nil
-	} else if err != nil {
-		errs = append(errs, "redirect: "+err.Error())
-	}
-
-	// 2) Atom feed — also outside the REST API budget.
+	// 1) Atom feed — rate-limit safe, lists newest releases including beta/pre-releases.
 	if info, err := fetchLatestReleaseAtom(); err == nil && info != nil && info.TagName != "" {
 		return cacheRelease(info), nil
 	} else if err != nil {
 		errs = append(errs, "atom: "+err.Error())
+	}
+
+	// 2) HTML redirect — stable release path, no api.github.com quota.
+	if info, err := fetchLatestReleaseRedirect(); err == nil && info != nil && info.TagName != "" {
+		return cacheRelease(info), nil
+	} else if err != nil {
+		errs = append(errs, "redirect: "+err.Error())
 	}
 
 	// 3) REST API last resort (may 403 when rate-limited).
@@ -404,6 +404,40 @@ func findPlatformAssetURL(info *latestReleaseInfo) string {
 	return ""
 }
 
+// platformDesktopInstallerAssetName returns the installer or desktop application bundle name for the current OS.
+func platformDesktopInstallerAssetName(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Membuss-Desktop-%s-windows-amd64-installer.exe", tag)
+	}
+	if runtime.GOOS == "linux" {
+		return fmt.Sprintf("Membuss-Desktop-%s-linux-amd64.AppImage", tag)
+	}
+	if runtime.GOOS == "darwin" {
+		return fmt.Sprintf("Membuss-Desktop-%s-darwin-%s.dmg", tag, runtime.GOARCH)
+	}
+	return ""
+}
+
+// findDesktopInstallerAssetURL finds the browser download URL for the Desktop GUI app installer for this platform.
+func findDesktopInstallerAssetURL(info *latestReleaseInfo) string {
+	if info == nil || info.TagName == "" {
+		return ""
+	}
+	wantAsset := strings.ToLower(platformDesktopInstallerAssetName(info.TagName))
+	for name, url := range info.Assets {
+		if strings.ToLower(name) == wantAsset {
+			return url
+		}
+	}
+	// Fallback to constructed URL
+	if wantAsset != "" {
+		return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s",
+			githubRepoOwner, githubRepoName, info.TagName, platformDesktopInstallerAssetName(info.TagName))
+	}
+	return ""
+}
+
 func abbreviate(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= max {
@@ -414,12 +448,13 @@ func abbreviate(s string, max int) string {
 
 // ReleaseOption represents an available release version from GitHub.
 type ReleaseOption struct {
-	TagName     string `json:"tag_name"`
-	Name        string `json:"name"`
-	PublishedAt string `json:"published_at"`
-	IsLatest    bool   `json:"is_latest"`
-	IsCurrent   bool   `json:"is_current"`
-	Type        string `json:"type"` // "current", "upgrade", "downgrade"
+	TagName      string `json:"tag_name"`
+	Name         string `json:"name"`
+	PublishedAt  string `json:"published_at"`
+	IsLatest     bool   `json:"is_latest"`
+	IsCurrent    bool   `json:"is_current"`
+	IsPrerelease bool   `json:"is_prerelease"`
+	Type         string `json:"type"` // "current", "upgrade", "downgrade"
 }
 
 var (
@@ -485,11 +520,16 @@ func fetchAvailableReleases() ([]ReleaseOption, error) {
 						if t, err := time.Parse(time.RFC3339, pubDate); err == nil {
 							pubDate = t.Format("2006-01-02")
 						}
+						isPre, _ := r["prerelease"].(bool)
+						if !isPre {
+							isPre = IsPrerelease(tag)
+						}
 						list = append(list, ReleaseOption{
-							TagName:     tag,
-							Name:        name,
-							PublishedAt: pubDate,
-							IsLatest:    i == 0,
+							TagName:      tag,
+							Name:         name,
+							PublishedAt:  pubDate,
+							IsLatest:     i == 0,
+							IsPrerelease: isPre,
 						})
 					}
 					if len(list) > 0 {
@@ -508,10 +548,11 @@ func fetchAvailableReleases() ([]ReleaseOption, error) {
 	if latest, err := fetchLatestRelease(); err == nil && latest != nil && latest.TagName != "" {
 		return []ReleaseOption{
 			{
-				TagName:     latest.TagName,
-				Name:        "Release " + latest.TagName,
-				PublishedAt: time.Now().Format("2006-01-02"),
-				IsLatest:    true,
+				TagName:      latest.TagName,
+				Name:         "Release " + latest.TagName,
+				PublishedAt:  time.Now().Format("2006-01-02"),
+				IsLatest:     true,
+				IsPrerelease: IsPrerelease(latest.TagName),
 			},
 		}, nil
 	}
@@ -568,10 +609,11 @@ func parseAtomReleases(atomXML string) []ReleaseOption {
 		}
 
 		list = append(list, ReleaseOption{
-			TagName:     tag,
-			Name:        title,
-			PublishedAt: updated,
-			IsLatest:    i == 0,
+			TagName:      tag,
+			Name:         title,
+			PublishedAt:  updated,
+			IsLatest:     i == 0,
+			IsPrerelease: IsPrerelease(tag),
 		})
 	}
 	return list

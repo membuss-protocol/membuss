@@ -60,7 +60,14 @@
             </div>
             <div class="text-[#5a574f] font-mono">→</div>
             <div>
-              <span class="eyebrow !text-[9px] !text-[#57b79e] block">Target Version</span>
+              <div class="flex items-center justify-center gap-1.5">
+                <span class="eyebrow !text-[9px] !text-[#57b79e]">Target Version</span>
+                {#if app.updateInfo?.is_beta || (selectedTag && (selectedTag.includes('-beta') || selectedTag.includes('-rc') || selectedTag.includes('-alpha')))}
+                  <span class="text-[8px] font-mono font-bold px-1 py-0.2 rounded bg-[rgba(232,163,61,0.15)] text-[#e8a33d] border border-[rgba(232,163,61,0.3)]">
+                    BETA
+                  </span>
+                {/if}
+              </div>
               <span class="text-xs font-mono font-bold text-[#57b79e] mt-1 block">
                 {selectedTag || app.updateInfo?.latest_version || 'Latest'}
               </span>
@@ -87,7 +94,7 @@
               >
                 {#each app.availableVersions as rel}
                   <option value={rel.tag_name}>
-                    {rel.tag_name} {rel.is_latest ? '(Latest Release)' : ''} {rel.is_current ? '(Currently Installed)' : ''} {rel.type === 'downgrade' ? '(Older)' : ''} - {rel.published_at}
+                    {rel.tag_name} {rel.is_prerelease ? '[BETA]' : ''} {rel.is_latest ? '(Latest Release)' : ''} {rel.is_current ? '(Currently Installed)' : ''} {rel.type === 'downgrade' ? '(Older)' : ''} - {rel.published_at}
                   </option>
                 {/each}
               </select>
@@ -96,11 +103,25 @@
                 type="text"
                 bind:value={selectedTag}
                 disabled={app.updating}
-                placeholder="e.g. v2.8.8, v2.8.9..."
+                placeholder="e.g. v2.10.0-beta.1, v2.9.4..."
                 class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none focus:border-[#e8a33d]"
               />
             {/if}
           </div>
+
+          {#if app.updateInfo?.installer_url}
+            <div class="p-2.5 bg-[#0c1416] border border-[rgba(233,226,210,0.08)] rounded-[3px] flex items-center justify-between text-xs font-mono">
+              <span class="text-[#8c887a]">Standalone Desktop App:</span>
+              <a 
+                href={app.updateInfo.installer_url} 
+                target="_blank" 
+                class="text-[#57b79e] hover:text-[#7ae2c5] flex items-center gap-1.5 text-xs transition-colors"
+              >
+                <Icon name="download" size={12} />
+                Download App Package
+              </a>
+            </div>
+          {/if}
 
           <p class="text-xs text-[#8c887a] leading-relaxed">
             Membuss downloads the verified binary in a sandboxed staging directory, validates its integrity, stops the daemon, and atomically promotes the binary with auto-rollback protection.
