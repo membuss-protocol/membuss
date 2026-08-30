@@ -23,6 +23,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Build explorer frontend
+        uses: ./.github/actions/build-frontend
+
       - name: Build daemon binary (linux/amd64)
         run: go build -trimpath -o membuss ./cmd/membuss
 
