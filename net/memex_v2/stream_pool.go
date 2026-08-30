@@ -63,6 +63,7 @@ func (p *PeerStreamPool) RegisterInbound(stream network.Stream, pid peer.ID) {
 	}
 
 	ps := newPooledStream(pid, stream, p.engine)
+	ps.inbound = true
 	p.streams[pid] = ps
 	ps.Start()
 }
@@ -119,14 +120,19 @@ type pooledStream struct {
 	cancel context.CancelFunc
 	ctx    context.Context
 
-	writeMu    sync.Mutex // serialize writes to stream
+	// inbound marks server-side streams (opened by the remote peer).
+	// Blocks arriving on them are unsolicited pushes, subject to the
+	// AcceptUnsolicited gate; client-opened streams are exempt.
+	inbound bool
+
+	writeMu sync.Mutex // serialize writes to stream
 
 	// Congestion window and sequence tracking
-	seqMu      sync.Mutex
-	nextSeq    uint64
-	cwnd       int
-	inFlight   int
-	capCh      chan struct{}
+	seqMu    sync.Mutex
+	nextSeq  uint64
+	cwnd     int
+	inFlight int
+	capCh    chan struct{}
 }
 
 func (ps *pooledStream) writeFrameLocked(m *membusspb.MemexMessage) error {
@@ -237,7 +243,7 @@ func (ps *pooledStream) readLoop() {
 				continue
 			}
 			select {
-			case ps.engine.verifierCh <- verifierJob{block: b, from: ps.pid}:
+			case ps.engine.verifierCh <- verifierJob{block: b, from: ps.pid, src: ps}:
 			case <-ps.ctx.Done():
 				return
 			}
