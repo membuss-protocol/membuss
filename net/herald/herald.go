@@ -103,6 +103,13 @@ type Provider interface {
 	Provide(ctx context.Context, m mid.MID) error
 }
 
+// ShardSetAnnouncer additionally announces that this node holds
+// erasure shards of a root, making the node discoverable as a shard
+// source for k-of-n reconstruction. *dht.MemDHT satisfies it.
+type ShardSetAnnouncer interface {
+	ProvideShardSet(ctx context.Context, root mid.MID) error
+}
+
 // Config configures a MemHerald.
 type Config struct {
 	// Store is the local store to enumerate MIDs from.
@@ -142,6 +149,12 @@ type Config struct {
 	// assignment. Default is 3.
 	Replicas int
 
+	// ShardSetAnnouncer, when non-nil, additionally announces this
+	// node as an erasure shard holder for every sealed root announced
+	// under StrategyShards. nil = feature off; default behavior is
+	// unchanged.
+	ShardSetAnnouncer ShardSetAnnouncer
+
 	// Metrics is the live instrumentation handle. Optional.
 	Metrics *metrics.Metrics
 
@@ -153,8 +166,8 @@ type Config struct {
 
 // MemHerald is the long-lived reprovisioner.
 type MemHerald struct {
-	cfg Config
-	lim *tokenBucket
+	cfg   Config
+	lim   *tokenBucket
 	nsLim *tokenBucket // dedicated rate limiter for MemNS republishing
 
 	mu         sync.Mutex
@@ -483,7 +496,7 @@ func (h *MemHerald) collectStream(ctx context.Context, fn func(mid.MID) error) e
 		if h.cfg.ReprovideGroups > 1 {
 			hVal := deterministicHash(m)
 			if hVal%uint32(h.cfg.ReprovideGroups) != uint32(cycle%h.cfg.ReprovideGroups) {
-return nil // skip this MID in this cycle
+				return nil // skip this MID in this cycle
 			}
 		}
 		return fn(m)
@@ -505,6 +518,7 @@ return nil // skip this MID in this cycle
 				return ctx.Err()
 			}
 			if h.cfg.ShardRing == nil || h.cfg.PeerID == "" {
+				h.announceShardSet(ctx, m)
 				return filterFn(m)
 			}
 			if m.IsZero() {
@@ -516,6 +530,7 @@ return nil // skip this MID in this cycle
 			}
 			for _, p := range peers {
 				if p == h.cfg.PeerID {
+					h.announceShardSet(ctx, m)
 					if err := filterFn(m); err != nil {
 						return err
 					}
@@ -597,6 +612,25 @@ return nil // skip this MID in this cycle
 
 	default:
 		return fmt.Errorf("herald: unknown strategy %q", h.cfg.Strategy)
+	}
+}
+
+// announceShardSet publishes this node's shard-set announcement for
+// root through cfg.ShardSetAnnouncer, rate-limited on the shared
+// reprovide bucket and best-effort: failures are logged and never
+// abort the reprovide round. No-op when the announcer is unset.
+func (h *MemHerald) announceShardSet(ctx context.Context, m mid.MID) {
+	ann := h.cfg.ShardSetAnnouncer
+	if ann == nil || m.IsZero() {
+		return
+	}
+	// Shares the reprovide limiter so shard-set provides cannot flood
+	// the DHT alongside regular provider records.
+	if err := h.lim.Wait(ctx); err != nil {
+		return
+	}
+	if err := ann.ProvideShardSet(ctx, m); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("herald: shardset provide failed for %s: %v", m, err)
 	}
 }
 
