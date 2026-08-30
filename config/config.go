@@ -88,15 +88,20 @@ type Config struct {
 	// Default is 3. Bounded between 1 and 64.
 	ShardReplicas int `yaml:"shard_replicas"`
 
-	LogLevel string `yaml:"log_level"`
-	GatewayTLS TLSConfig `yaml:"gateway_tls"`
-	APITLS TLSConfig `yaml:"api_tls"`
-	APIKey string `yaml:"api_key"`
-	GatewayRateLimitPerMin int `yaml:"gateway_rate_limit_per_min"`
-	MemexRetryBackoff RetryBackoffConfig `yaml:"memex_retry_backoff"`
-	BootstrapBackoff RetryBackoffConfig `yaml:"bootstrap_backoff"`
-	MetricsEnabled bool   `yaml:"metrics_enabled"`
-	MetricsToken   string `yaml:"metrics_token"`
+	// ShardPlacement enables the placement engine: after ingest,
+	// erasure shards are pushed to their rendezvous-assigned peers
+	// and the shard set is announced on the DHT. Default false.
+	ShardPlacement bool `yaml:"shard_placement"`
+
+	LogLevel               string             `yaml:"log_level"`
+	GatewayTLS             TLSConfig          `yaml:"gateway_tls"`
+	APITLS                 TLSConfig          `yaml:"api_tls"`
+	APIKey                 string             `yaml:"api_key"`
+	GatewayRateLimitPerMin int                `yaml:"gateway_rate_limit_per_min"`
+	MemexRetryBackoff      RetryBackoffConfig `yaml:"memex_retry_backoff"`
+	BootstrapBackoff       RetryBackoffConfig `yaml:"bootstrap_backoff"`
+	MetricsEnabled         bool               `yaml:"metrics_enabled"`
+	MetricsToken           string             `yaml:"metrics_token"`
 
 	// --- Phase 11: NAT traversal + relay fallback ---
 
@@ -332,23 +337,24 @@ func Default() *Config {
 			"/ip6/::/udp/4001/quic-v1",
 			"/ip6/::/tcp/4002/ws",
 		},
-		AnnounceAddrs:     []string{},
+		AnnounceAddrs: []string{},
 		BootstrapPeers: []string{
 			"/ip4/37.60.239.84/tcp/4001/p2p/12D3KooWBDGfrVVLz8cG34jYUNTSghg9ZCV5hyM4b55jBWnYPDVd",
 			"/ip4/45.10.162.79/tcp/4001/p2p/12D3KooWPJHURqoqd9NYknBSBb6XZ79BedmunDZQ4QA9b6u2v9in",
 		},
-		RelayPeers:        []string{},
-		DataDir:           "./data",
-		GatewayAddr:       "127.0.0.1:8080",
-		APIAddr:           "127.0.0.1:5001",
-		GRPCAddr:          "127.0.0.1:50051",
-		AnchorMode:        false,
-		AutoGCInterval:    24 * time.Hour,
-		GCMinAge:          24 * time.Hour,
-		ReprovideInterval: 12 * time.Hour,
-		ReprovideGroups:   6,
-		ReprovideStrategy: "roots",
-		ShardReplicas:     3,
+		RelayPeers:             []string{},
+		DataDir:                "./data",
+		GatewayAddr:            "127.0.0.1:8080",
+		APIAddr:                "127.0.0.1:5001",
+		GRPCAddr:               "127.0.0.1:50051",
+		AnchorMode:             false,
+		AutoGCInterval:         24 * time.Hour,
+		GCMinAge:               24 * time.Hour,
+		ReprovideInterval:      12 * time.Hour,
+		ReprovideGroups:        6,
+		ReprovideStrategy:      "roots",
+		ShardReplicas:          3,
+		ShardPlacement:         false,
 		LogLevel:               "info",
 		GatewayTLS:             TLSConfig{},
 		APITLS:                 TLSConfig{},
@@ -366,26 +372,26 @@ func Default() *Config {
 			Factor:      2.0,
 			MaxAttempts: 5,
 		},
-		MetricsEnabled: true,
-		RelayService:         false,
-		RelayMaxConns:        128,
-		RelayMaxReservations: 128,
-		RelayBandwidthMB:     16,
-		ForceRelay:           false,
-		ForcePublic:          false,
-		NATWaitSeconds:       10,
-		BloomCapacity:                  10_000_000,
-		BloomFPRate:                    0.001,
-		BloomDisabled:                  false,
-		MemexBloomAnnounceInterval:     5 * time.Minute,
-		MIDVersion:                    "v1",
-		DHTMode:                       "server",
-		DHTOptimisticProvide:          true,
-		DHTProviderRecordTTL:          24 * time.Hour,
-		DHTProviderAddrTTL:            24 * time.Hour,
-		DHTProviderCleanupInterval:    1 * time.Hour,
-		EnableGeolocation:             true,
-		EnableMDNS:                    false,
+		MetricsEnabled:             true,
+		RelayService:               false,
+		RelayMaxConns:              128,
+		RelayMaxReservations:       128,
+		RelayBandwidthMB:           16,
+		ForceRelay:                 false,
+		ForcePublic:                false,
+		NATWaitSeconds:             10,
+		BloomCapacity:              10_000_000,
+		BloomFPRate:                0.001,
+		BloomDisabled:              false,
+		MemexBloomAnnounceInterval: 5 * time.Minute,
+		MIDVersion:                 "v1",
+		DHTMode:                    "server",
+		DHTOptimisticProvide:       true,
+		DHTProviderRecordTTL:       24 * time.Hour,
+		DHTProviderAddrTTL:         24 * time.Hour,
+		DHTProviderCleanupInterval: 1 * time.Hour,
+		EnableGeolocation:          true,
+		EnableMDNS:                 false,
 		Tunnel: TunnelConfig{
 			Enabled:   false,
 			Authtoken: "",
