@@ -113,7 +113,7 @@ func (b *memBackend) Resolve(ctx context.Context, m mid.MID) (io.ReadCloser, Con
 	return b.ResolveWithProgress(ctx, m, nil)
 }
 
-func (b *memBackend) ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(blocksResolved, blocksTotal uint64)) (io.ReadCloser, ContentInfo, error) {
+func (b *memBackend) ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(ProgressUpdate)) (io.ReadCloser, ContentInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	has := len(b.providers[m.String()]) > 0
@@ -123,7 +123,12 @@ func (b *memBackend) ResolveWithProgress(ctx context.Context, m mid.MID, progres
 		return nil, ContentInfo{}, ErrNotFound
 	}
 	if progressFn != nil {
-		progressFn(uint64(len(data)), uint64(len(data)))
+		progressFn(ProgressUpdate{
+			BlocksResolved: 1,
+			BlocksTotal:    1,
+			BytesDelivered: uint64(len(data)),
+			BytesTotal:     uint64(len(data)),
+		})
 	}
 	return io.NopCloser(strings.NewReader(string(data))), ContentInfo{
 		MID:    m.String(),

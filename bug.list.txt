@@ -3,6 +3,8 @@
 #   status: OPEN | FIXED | WONTFIX
 # Add new bugs at the top. Move FIXED/WONTFIX to bottom.
 
+[FIXED] BUG-037: Memex Session and Web Explorer progress jumping and premature 100% resolution reporting
+  Fixed: 2026-08-30 (d9eb5cb) — Unify download resolution telemetry and SSE schemas between Mem-Gate and Web Explorer. Calculate deterministic expected total block count and byte sizing upfront in net/memex_v2/session.go from root MemFSNode/Descriptor metadata. Prevent premature 100% progress reporting during multi-level DAG expansion. Update SvelteKit explorer frontend to smoothly track byte/block progress and stable piece mapping without destructive grid resets.
 
 [FIXED] BUG-036: Circuit relay v2 hop service deactivation on long-running nodes due to AutoNAT reachability fluctuation
   Fixed: 2026-08-18 — Add ForcePublic configuration (and auto-apply for RelayService nodes), locking host reachability to ReachabilityPublic permanently. Prevents transient AutoNAT probe/observer drops after 10-24h from shutting down the Circuit Relay v2 hop service. Disables AutoRelay client on relay providers. Added unit tests in net/host/nat_test.go.

@@ -259,11 +259,22 @@
 				resolvingMIDs[idx].statusText = 'Locating providers...';
 			}
 
-			if (d.total > 0) {
-				resolvingMIDs[idx].statusText = 'Downloading pieces...';
-				resolvingMIDs[idx].blocksTotal = d.total;
-				resolvingMIDs[idx].blocksResolved = d.blocks;
-				resolvingMIDs[idx].percent = Math.round((d.blocks / d.total) * 100);
+			const resolved = d.blocks_resolved ?? d.blocks ?? 0;
+			const total = d.blocks_total ?? d.total ?? 0;
+			const bytesDelivered = d.bytes_delivered ?? 0;
+			const bytesTotal = d.bytes_total ?? 0;
+
+			if (total > 0 || bytesTotal > 0 || bytesDelivered > 0 || resolved > 0) {
+				resolvingMIDs[idx].blocksTotal = Math.max(resolvingMIDs[idx].blocksTotal || 0, total);
+				resolvingMIDs[idx].blocksResolved = Math.max(resolvingMIDs[idx].blocksResolved || 0, resolved);
+
+				if (bytesTotal > 0) {
+					resolvingMIDs[idx].statusText = `Fetching (${formatBytes(bytesDelivered)} / ${formatBytes(bytesTotal)})...`;
+					resolvingMIDs[idx].percent = Math.min(99, Math.round((bytesDelivered / bytesTotal) * 100));
+				} else if (resolvingMIDs[idx].blocksTotal > 0) {
+					resolvingMIDs[idx].statusText = `Downloading (${resolvingMIDs[idx].blocksResolved}/${resolvingMIDs[idx].blocksTotal} blocks)...`;
+					resolvingMIDs[idx].percent = Math.min(99, Math.round((resolvingMIDs[idx].blocksResolved / resolvingMIDs[idx].blocksTotal) * 100));
+				}
 			}
 		};
 

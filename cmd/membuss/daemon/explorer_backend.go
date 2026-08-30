@@ -232,7 +232,7 @@ func (a *explorerAdapter) Resolve(ctx context.Context, m mid.MID) (io.ReadCloser
 // progressFn is called as blocks arrive with the running total
 // of bytes received and total bytes (total may be 0 until all
 // blocks are known).
-func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(blocksResolved, blocksTotal uint64)) (io.ReadCloser, explorer.ContentInfo, error) {
+func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(explorer.ProgressUpdate)) (io.ReadCloser, explorer.ContentInfo, error) {
 	b := a.b
 	if b.store == nil {
 		return nil, explorer.ContentInfo{}, errors.New("explorer: no store")
@@ -298,7 +298,14 @@ func (a *explorerAdapter) ResolveWithProgress(ctx context.Context, m mid.MID, pr
 			ProviderFinder: b.dht.FindProviders,
 			ProgressFn: func(update memex.ProgressUpdate) {
 				if progressFn != nil {
-					progressFn(update.BlocksResolved, update.BlocksTotal)
+					progressFn(explorer.ProgressUpdate{
+						BlocksResolved: update.BlocksResolved,
+						BlocksTotal:    update.BlocksTotal,
+						BytesDelivered: update.BytesDelivered,
+						BytesTotal:     update.BytesTotal,
+						Throughput:     update.Throughput,
+						ETA:            update.ETA,
+					})
 				}
 			},
 		})
