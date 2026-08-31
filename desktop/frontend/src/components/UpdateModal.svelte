@@ -62,7 +62,7 @@
             <div>
               <div class="flex items-center justify-center gap-1.5">
                 <span class="eyebrow !text-[9px] !text-[#57b79e]">Target Version</span>
-                {#if app.updateInfo?.is_beta || (selectedTag && (selectedTag.includes('-beta') || selectedTag.includes('-rc') || selectedTag.includes('-alpha')))}
+                {#if app.showBetas && app.updateInfo?.is_beta || (selectedTag && (selectedTag.includes('-beta') || selectedTag.includes('-rc') || selectedTag.includes('-alpha')))}
                   <span class="text-[8px] font-mono font-bold px-1 py-0.2 rounded bg-[rgba(232,163,61,0.15)] text-[#e8a33d] border border-[rgba(232,163,61,0.3)]">
                     BETA
                   </span>

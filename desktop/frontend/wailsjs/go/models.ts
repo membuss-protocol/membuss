@@ -57,7 +57,7 @@ export namespace main {
 	    current_version: string;
 	    latest_version: string;
 	    is_beta: boolean;
-	    installer_url: string;
+	    installer_url?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateCheckResult(source);

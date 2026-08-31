@@ -1,6 +1,6 @@
 module desktop
 
-go 1.25.13
+go 1.26.3
 
 require (
 	github.com/nnlgsakib/membuss v0.1.2

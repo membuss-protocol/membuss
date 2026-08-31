@@ -34,12 +34,12 @@ export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
 
-export function GetShowBetas() {
-  return window['go']['main']['App']['GetShowBetas']();
-}
-
 export function GetDaemonLogs() {
   return window['go']['main']['App']['GetDaemonLogs']();
+}
+
+export function GetDesktopInstallerURL(arg1) {
+  return window['go']['main']['App']['GetDesktopInstallerURL'](arg1);
 }
 
 export function GetNodeConfig() {
@@ -48,6 +48,10 @@ export function GetNodeConfig() {
 
 export function GetNodeConfigRaw() {
   return window['go']['main']['App']['GetNodeConfigRaw']();
+}
+
+export function GetShowBetas() {
+  return window['go']['main']['App']['GetShowBetas']();
 }
 
 export function InstallBinaries(arg1) {

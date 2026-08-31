@@ -234,6 +234,13 @@ class AppState {
     this.showBetas = !this.showBetas;
     await SetShowBetas(this.showBetas);
     await this.loadAvailableVersions();
+    // Clear selected tag if it's no longer in the filtered list
+    if (this.selectedVersionTag && this.availableVersions?.length > 0) {
+      const found = this.availableVersions.some(v => v.tag_name === this.selectedVersionTag);
+      if (!found) {
+        this.selectedVersionTag = this.availableVersions[0].tag_name;
+      }
+    }
   }
 
   async installVersionAction(tag?: string) {

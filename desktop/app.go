@@ -414,7 +414,7 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 
 	// 4. Determine best "latest" version to compare against.
 	//    When ShowBetas is on, pick the newest version from Atom (may be a beta).
-	//    When ShowBetas is off, prefer stable release, but still use Atom if stable failed.
+	//    When ShowBetas is off, use stable-only; fall back to first non-beta from Atom.
 	var latestVer string
 	var latestInfo *latestReleaseInfo
 	isBeta := false
@@ -430,7 +430,16 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 		latestInfo = stableInfo
 		isBeta = IsPrerelease(latestVer)
 	} else if atomErr == nil && atomInfo != nil && atomInfo.TagName != "" {
-		// Stable failed, fall back to Atom feed
+		// Stable failed, fall back to Atom feed — but only non-beta when ShowBetas is off
+		if !a.config.ShowBetas && IsPrerelease(atomInfo.TagName) {
+			// Atom feed first entry is a beta but betas are disabled — report no update
+			return &UpdateCheckResult{
+				HasUpdate:      false,
+				CurrentVersion: "v" + currentVer,
+				LatestVersion:  "v" + currentVer,
+				IsBeta:         false,
+			}, nil
+		}
 		latestVer = atomInfo.TagName
 		latestInfo = atomInfo
 		isBeta = IsPrerelease(latestVer)

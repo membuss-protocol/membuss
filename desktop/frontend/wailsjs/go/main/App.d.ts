@@ -18,13 +18,15 @@ export function GetAvailableVersions():Promise<Array<main.ReleaseOption>>;
 
 export function GetConfig():Promise<main.DesktopConfig>;
 
-export function GetShowBetas():Promise<boolean>;
-
 export function GetDaemonLogs():Promise<string>;
+
+export function GetDesktopInstallerURL(arg1:string):Promise<string>;
 
 export function GetNodeConfig():Promise<Record<string, any>>;
 
 export function GetNodeConfigRaw():Promise<string>;
+
+export function GetShowBetas():Promise<boolean>;
 
 export function InstallBinaries(arg1:string):Promise<void>;
 
