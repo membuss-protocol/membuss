@@ -1,8 +1,11 @@
 package main
 
 import (
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTagFromReleaseLocation(t *testing.T) {
@@ -129,5 +132,36 @@ func TestFindDesktopInstallerAssetURL(t *testing.T) {
 	}
 	if !strings.Contains(url, "v2.10.0-beta.1") {
 		t.Fatalf("unexpected installer url: %s", url)
+	}
+}
+
+func TestFetchAvailableReleases_Live(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, githubAtomFeed, nil)
+	req.Header.Set("User-Agent", desktopUserAgent())
+	req.Header.Set("Accept", "application/atom+xml, application/xml, text/xml, */*")
+	resp, err := newGitHubHTTPClient(15 * time.Second).Do(req)
+	if err != nil {
+		t.Skipf("network/GitHub unavailable: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	releases := parseAtomReleases(string(body))
+	if len(releases) == 0 {
+		t.Fatal("expected at least one release from atom feed")
+	}
+	if releases[0].TagName != "v2.10.0-beta.1" {
+		t.Fatalf("expected latest tag v2.10.0-beta.1, got %s", releases[0].TagName)
+	}
+}
+
+func TestFetchReleaseByTag_Live(t *testing.T) {
+	info, err := fetchReleaseByTag("v2.10.0-beta.1")
+	if err != nil {
+		t.Skipf("network/GitHub unavailable: %v", err)
+	}
+	url := findPlatformAssetURL(info)
+	t.Logf("RESOLVED ASSET URL: %s", url)
+	if !strings.Contains(url, "v2.10.0-beta.1") {
+		t.Fatalf("expected URL with v2.10.0-beta.1, got %s", url)
 	}
 }

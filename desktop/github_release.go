@@ -261,11 +261,11 @@ func extractTagFromAtom(xml string) string {
 	i := strings.Index(xml, marker)
 	if i >= 0 {
 		rest := xml[i+len(marker):]
-		end := strings.IndexAny(rest, `"'?# \t\n\r<`)
+		end := strings.IndexAny(rest, "\"'?# \t\n\r<")
 		if end < 0 {
 			end = len(rest)
-			if end > 40 {
-				end = 40
+			if end > 64 {
+				end = 64
 			}
 		}
 		tag := strings.TrimSpace(rest[:end])
@@ -291,7 +291,7 @@ func extractTagFromAtom(xml string) string {
 					title = strings.TrimPrefix(title, "Release ")
 					if strings.HasPrefix(title, "v") || (len(title) > 0 && title[0] >= '0' && title[0] <= '9') {
 						// take first token
-						if sp := strings.IndexAny(title, " \t\n"); sp > 0 {
+						if sp := strings.IndexAny(title, " \t\n\r"); sp > 0 {
 							title = title[:sp]
 						}
 						return title
@@ -324,11 +324,11 @@ func extractTagFromHTML(html string) string {
 		return ""
 	}
 	rest := html[i+len(marker):]
-	end := strings.IndexAny(rest, `"'?# \t\n\r`)
+	end := strings.IndexAny(rest, "\"'?# \t\n\r<")
 	if end < 0 {
 		end = len(rest)
-		if end > 32 {
-			end = 32
+		if end > 64 {
+			end = 64
 		}
 	}
 	tag := strings.TrimSpace(rest[:end])
@@ -574,7 +574,7 @@ func parseAtomReleases(atomXML string) []ReleaseOption {
 		const marker = "/releases/tag/"
 		if idx := strings.Index(entry, marker); idx >= 0 {
 			rest := entry[idx+len(marker):]
-			end := strings.IndexAny(rest, `"'?# \t\n\r<`)
+			end := strings.IndexAny(rest, "\"'?# \t\n\r<")
 			if end > 0 {
 				tag = strings.TrimSpace(rest[:end])
 			}

@@ -86,27 +86,38 @@
               {/if}
             </div>
 
-            {#if app.availableVersions && app.availableVersions.length > 0}
-              <select
-                bind:value={selectedTag}
-                disabled={app.updating}
-                class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none focus:border-[#e8a33d]"
-              >
-                {#each app.availableVersions as rel}
-                  <option value={rel.tag_name}>
-                    {rel.tag_name} {rel.is_prerelease ? '[BETA]' : ''} {rel.is_latest ? '(Latest Release)' : ''} {rel.is_current ? '(Currently Installed)' : ''} {rel.type === 'downgrade' ? '(Older)' : ''} - {rel.published_at}
-                  </option>
-                {/each}
-              </select>
-            {:else}
-              <input
-                type="text"
-                bind:value={selectedTag}
-                disabled={app.updating}
-                placeholder="e.g. v2.10.0-beta.1, v2.9.4..."
-                class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none focus:border-[#e8a33d]"
-              />
-            {/if}
+            <div class="relative w-full">
+              {#if app.availableVersions && app.availableVersions.length > 0}
+                <select
+                  bind:value={selectedTag}
+                  disabled={app.updating}
+                  class="w-full appearance-none bg-[#0c1416] border border-[rgba(233,226,210,0.14)] text-[#e9e2d2] text-xs font-mono rounded-[3px] py-2.5 pl-3 pr-9 outline-none hover:border-[rgba(233,226,210,0.25)] focus:border-[#e8a33d] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  style="color-scheme: dark; background-color: #0c1416; color: #e9e2d2;"
+                >
+                  {#each app.availableVersions as rel}
+                    <option
+                      value={rel.tag_name}
+                      class="bg-[#0c1416] text-[#e9e2d2] py-1"
+                      style="background-color: #0c1416; color: #e9e2d2;"
+                    >
+                      {rel.tag_name} {rel.is_prerelease ? '[BETA]' : ''} {rel.is_latest ? '(Latest Release)' : ''} {rel.is_current ? '(Currently Installed)' : ''} {rel.type === 'downgrade' ? '(Older)' : ''} - {rel.published_at}
+                    </option>
+                  {/each}
+                </select>
+                <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#8c887a] flex items-center">
+                  <Icon name="chevron-down" size={13} />
+                </div>
+              {:else}
+                <input
+                  type="text"
+                  bind:value={selectedTag}
+                  disabled={app.updating}
+                  placeholder="e.g. v2.10.0-beta.1, v2.9.4..."
+                  class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.14)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none hover:border-[rgba(233,226,210,0.25)] focus:border-[#e8a33d] transition-colors"
+                  style="color-scheme: dark; background-color: #0c1416; color: #e9e2d2;"
+                />
+              {/if}
+            </div>
           </div>
 
           {#if app.updateInfo?.installer_url}
