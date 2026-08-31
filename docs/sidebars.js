@@ -39,6 +39,7 @@ const sidebars = {
         'core-protocols/shard-placement',
         'core-protocols/memns',
         'core-protocols/memedge',
+        'core-protocols/memvpn',
       ],
     },
     {
