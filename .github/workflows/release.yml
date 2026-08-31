@@ -433,6 +433,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           body_path: release-notes.md
           files: |
             artifacts/membuss-core-*.zip
@@ -444,4 +445,5 @@ jobs:
           fail_on_unmatched_files: false
           draft: false
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') }}
+          make_latest: ${{ contains(github.ref_name, '-beta') && 'false' || 'true' }}
 
