@@ -386,9 +386,10 @@ type UpdateCheckResult struct {
 	InstallerURL   string `json:"installer_url,omitempty"`
 }
 
-// CheckForUpdate queries GitHub for the latest release (including beta/pre-releases) and compares with the installed version.
-// Uses the Atom feed and REST API with automatic HTML redirect fallback so anonymous
-// clients still work after API rate limits (HTTP 403).
+// CheckForUpdate queries GitHub for the latest release and compares with the installed version.
+// When ShowBetas is enabled, pre-release versions (beta, alpha, rc) are included in the check.
+// The Atom feed is always tried first as it includes all release types; the /releases/latest
+// redirect (stable-only) is only used as a final fallback.
 func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	// 1. Determine current version
 	currentVer := a.config.InstalledVersion
@@ -405,19 +406,43 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	}
 	currentVer = strings.TrimPrefix(currentVer, "v")
 
-	// 2. Fetch latest release (Atom feed / API → HTML redirect fallback)
-	info, err := fetchLatestRelease()
-	if err != nil {
-		return nil, fmt.Errorf("failed to check for updates: %w", err)
+	// 2. Fetch releases via Atom feed (includes betas) — always try first.
+	atomInfo, atomErr := fetchLatestReleaseAtom()
+
+	// 3. Fetch stable-only fallback.
+	stableInfo, stableErr := fetchLatestRelease()
+
+	// 4. Determine best "latest" version to compare against.
+	//    When ShowBetas is on, pick the newest version from Atom (may be a beta).
+	//    When ShowBetas is off, prefer stable release, but still use Atom if stable failed.
+	var latestVer string
+	var latestInfo *latestReleaseInfo
+	isBeta := false
+
+	if a.config.ShowBetas && atomErr == nil && atomInfo != nil && atomInfo.TagName != "" {
+		// Beta-aware: use Atom feed result directly (first entry = newest including betas)
+		latestVer = atomInfo.TagName
+		latestInfo = atomInfo
+		isBeta = IsPrerelease(latestVer)
+	} else if stableErr == nil && stableInfo != nil && stableInfo.TagName != "" {
+		// Stable-only: use /releases/latest (stable release)
+		latestVer = stableInfo.TagName
+		latestInfo = stableInfo
+		isBeta = IsPrerelease(latestVer)
+	} else if atomErr == nil && atomInfo != nil && atomInfo.TagName != "" {
+		// Stable failed, fall back to Atom feed
+		latestVer = atomInfo.TagName
+		latestInfo = atomInfo
+		isBeta = IsPrerelease(latestVer)
+	} else {
+		return nil, fmt.Errorf("failed to check for updates: %w", coalesceErr(stableErr, atomErr))
 	}
 
-	latestVer := info.TagName
 	if latestVer == "" {
 		return nil, fmt.Errorf("failed to check for updates: empty release tag")
 	}
 	latestVerClean := strings.TrimPrefix(latestVer, "v")
 	hasUpdate := IsVersionNewer(currentVer, latestVerClean)
-	isBeta := IsPrerelease(latestVer)
 
 	// Normalize latest for display (always v-prefixed).
 	displayLatest := latestVer
@@ -425,7 +450,7 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 		displayLatest = "v" + displayLatest
 	}
 
-	installerURL := findDesktopInstallerAssetURL(info)
+	installerURL := findDesktopInstallerAssetURL(latestInfo)
 
 	return &UpdateCheckResult{
 		HasUpdate:      hasUpdate,
@@ -434,6 +459,16 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 		IsBeta:         isBeta,
 		InstallerURL:   installerURL,
 	}, nil
+}
+
+// coalesceErr returns the first non-nil error.
+func coalesceErr(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return fmt.Errorf("unknown error")
 }
 
 // getInstalledBinaryVersion runs the installed CLI binary and parses its version string.
@@ -462,7 +497,19 @@ func getInstalledBinaryVersion(cliPath string) string {
 	return ""
 }
 
+// GetShowBetas returns the current beta visibility setting.
+func (a *App) GetShowBetas() bool {
+	return a.config.ShowBetas
+}
+
+// SetShowBetas toggles whether pre-release/beta versions appear in update checks and version picker.
+func (a *App) SetShowBetas(enabled bool) {
+	a.config.ShowBetas = enabled
+	_ = a.config.Save()
+}
+
 // GetAvailableVersions fetches all published releases from GitHub and computes their relationship to current version.
+// When ShowBetas is false, pre-release versions are filtered out of the returned list.
 func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
 	currentVer := a.config.InstalledVersion
 	if currentVer == "" {
@@ -481,6 +528,18 @@ func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
 	releases, err := fetchAvailableReleases()
 	if err != nil {
 		return nil, err
+	}
+
+	// When ShowBetas is off, filter out pre-release versions but always keep the current version.
+	if !a.config.ShowBetas {
+		var filtered []ReleaseOption
+		for _, r := range releases {
+			if r.IsPrerelease && !r.IsCurrent {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		releases = filtered
 	}
 
 	for i := range releases {

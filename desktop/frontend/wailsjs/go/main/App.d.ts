@@ -18,6 +18,8 @@ export function GetAvailableVersions():Promise<Array<main.ReleaseOption>>;
 
 export function GetConfig():Promise<main.DesktopConfig>;
 
+export function GetShowBetas():Promise<boolean>;
+
 export function GetDaemonLogs():Promise<string>;
 
 export function GetNodeConfig():Promise<Record<string, any>>;
@@ -41,6 +43,8 @@ export function SaveNodeConfig(arg1:Record<string, any>):Promise<void>;
 export function SaveNodeConfigRaw(arg1:string):Promise<void>;
 
 export function SelectDirectory():Promise<string>;
+
+export function SetShowBetas(arg1:boolean):Promise<void>;
 
 export function StartNode():Promise<void>;
 

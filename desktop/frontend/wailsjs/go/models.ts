@@ -9,6 +9,7 @@ export namespace main {
 	    keep_alive: boolean;
 	    auto_start: boolean;
 	    installed_version: string;
+	    show_betas: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopConfig(source);
@@ -24,6 +25,7 @@ export namespace main {
 	        this.keep_alive = source["keep_alive"];
 	        this.auto_start = source["auto_start"];
 	        this.installed_version = source["installed_version"];
+	        this.show_betas = source["show_betas"];
 	    }
 	}
 	export class ReleaseOption {
@@ -32,6 +34,7 @@ export namespace main {
 	    published_at: string;
 	    is_latest: boolean;
 	    is_current: boolean;
+	    is_prerelease: boolean;
 	    type: string;
 	
 	    static createFrom(source: any = {}) {
@@ -45,6 +48,7 @@ export namespace main {
 	        this.published_at = source["published_at"];
 	        this.is_latest = source["is_latest"];
 	        this.is_current = source["is_current"];
+	        this.is_prerelease = source["is_prerelease"];
 	        this.type = source["type"];
 	    }
 	}
@@ -52,6 +56,8 @@ export namespace main {
 	    has_update: boolean;
 	    current_version: string;
 	    latest_version: string;
+	    is_beta: boolean;
+	    installer_url: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateCheckResult(source);
@@ -62,6 +68,8 @@ export namespace main {
 	        this.has_update = source["has_update"];
 	        this.current_version = source["current_version"];
 	        this.latest_version = source["latest_version"];
+	        this.is_beta = source["is_beta"];
+	        this.installer_url = source["installer_url"];
 	    }
 	}
 

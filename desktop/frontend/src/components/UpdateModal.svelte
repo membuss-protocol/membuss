@@ -78,12 +78,23 @@
           <div class="space-y-1.5">
             <div class="flex items-center justify-between">
               <span class="eyebrow !text-[9px]">Select Release Target</span>
-              {#if app.loadingVersions}
-                <span class="text-[9px] font-mono text-[#8c887a] flex items-center gap-1">
-                  <Icon name="refresh" size={10} class="animate-spin text-[#e8a33d]" />
-                  fetching tags...
-                </span>
-              {/if}
+              <div class="flex items-center gap-2.5">
+                <button
+                  class="flex items-center gap-1.5 text-[9px] font-mono cursor-pointer transition-colors {app.showBetas ? 'text-[#e8a33d]' : 'text-[#8c887a] hover:text-[#b0a898]'}"
+                  onclick={() => app.toggleBetas()}
+                >
+                  <div class="w-5 h-2.5 rounded-full relative transition-colors {app.showBetas ? 'bg-[rgba(232,163,61,0.3)]' : 'bg-[rgba(233,226,210,0.1)]'} border {app.showBetas ? 'border-[rgba(232,163,61,0.4)]' : 'border-[rgba(233,226,210,0.15)]'}">
+                    <div class="absolute top-0 left-0 w-2 h-2 rounded-full transition-all duration-200 {app.showBetas ? 'translate-x-2.5 bg-[#e8a33d]' : 'translate-x-0 bg-[#8c887a]'}"></div>
+                  </div>
+                  <span class="font-bold">BETAS</span>
+                </button>
+                {#if app.loadingVersions}
+                  <span class="text-[9px] font-mono text-[#8c887a] flex items-center gap-1">
+                    <Icon name="refresh" size={10} class="animate-spin text-[#e8a33d]" />
+                    fetching tags...
+                  </span>
+                {/if}
+              </div>
             </div>
 
             <div class="relative w-full">

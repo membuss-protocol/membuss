@@ -34,6 +34,7 @@ type DesktopConfig struct {
 	KeepAlive        bool   `json:"keep_alive"` // Keep daemon running when GUI closes
 	AutoStart        bool   `json:"auto_start"` // Deprecated: ignored; node starts only via Start Node
 	InstalledVersion string `json:"installed_version"`
+	ShowBetas        bool   `json:"show_betas"` // When true, update checks include pre-release/beta versions
 }
 
 // GetConfigPath returns the persistent configuration path:

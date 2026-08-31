@@ -34,6 +34,10 @@ export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
 
+export function GetShowBetas() {
+  return window['go']['main']['App']['GetShowBetas']();
+}
+
 export function GetDaemonLogs() {
   return window['go']['main']['App']['GetDaemonLogs']();
 }
@@ -80,6 +84,10 @@ export function SaveNodeConfigRaw(arg1) {
 
 export function SelectDirectory() {
   return window['go']['main']['App']['SelectDirectory']();
+}
+
+export function SetShowBetas(arg1) {
+  return window['go']['main']['App']['SetShowBetas'](arg1);
 }
 
 export function StartNode() {

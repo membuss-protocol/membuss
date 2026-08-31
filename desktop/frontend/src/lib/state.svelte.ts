@@ -10,7 +10,9 @@ import {
   UpgradeBinaries,
   GetAvailableVersions,
   InstallVersion,
-  GetDaemonLogs
+  GetDaemonLogs,
+  GetShowBetas,
+  SetShowBetas
 } from '../../wailsjs/go/main/App';
 import * as wailsRuntime from '../../wailsjs/runtime/runtime';
 
@@ -58,6 +60,7 @@ class AppState {
   selectedVersionTag = $state<string>('');
   updateProgress = $state<number>(0);
   updateMessage = $state<string>('');
+  showBetas = $state<boolean>(false);
 
   // Modals
   showDownloaderModal = $state(false);
@@ -93,6 +96,7 @@ class AppState {
     this.loading = true;
     try {
       this.config = await GetConfig();
+      this.showBetas = await GetShowBetas();
       this.installation = await VerifyInstallation();
       await this.refreshNodeStatus();
 
@@ -224,6 +228,12 @@ class AppState {
     } finally {
       this.loadingVersions = false;
     }
+  }
+
+  async toggleBetas() {
+    this.showBetas = !this.showBetas;
+    await SetShowBetas(this.showBetas);
+    await this.loadAvailableVersions();
   }
 
   async installVersionAction(tag?: string) {

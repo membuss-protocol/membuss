@@ -149,19 +149,19 @@ func TestFetchAvailableReleases_Live(t *testing.T) {
 	if len(releases) == 0 {
 		t.Fatal("expected at least one release from atom feed")
 	}
-	if releases[0].TagName != "v2.10.0-beta.1" {
-		t.Fatalf("expected latest tag v2.10.0-beta.1, got %s", releases[0].TagName)
+	if releases[0].TagName != "v3.0.0-beta.1" {
+		t.Fatalf("expected latest tag v3.0.0-beta.1, got %s", releases[0].TagName)
 	}
 }
 
 func TestFetchReleaseByTag_Live(t *testing.T) {
-	info, err := fetchReleaseByTag("v2.10.0-beta.1")
+	info, err := fetchReleaseByTag("v3.0.0-beta.1")
 	if err != nil {
 		t.Skipf("network/GitHub unavailable: %v", err)
 	}
 	url := findPlatformAssetURL(info)
 	t.Logf("RESOLVED ASSET URL: %s", url)
-	if !strings.Contains(url, "v2.10.0-beta.1") {
-		t.Fatalf("expected URL with v2.10.0-beta.1, got %s", url)
+	if !strings.Contains(url, "v3.0.0-beta.1") {
+		t.Fatalf("expected URL with v3.0.0-beta.1, got %s", url)
 	}
 }
