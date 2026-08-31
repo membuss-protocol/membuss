@@ -202,12 +202,8 @@ class AppState {
     this.updateChecking = true;
     try {
       const result = await CheckForUpdate();
-      if (result && result.has_update) {
-        this.updateInfo = result;
-        this.showUpdateModal = true;
-      } else {
-        this.addToast('success', 'Membuss is up to date (' + (result?.current_version || 'latest') + ')');
-      }
+      this.updateInfo = result;
+      this.showUpdateModal = true;
     } catch (e: any) {
       this.addToast('error', 'Update check failed: ' + (e.message || e));
     } finally {
@@ -220,7 +216,6 @@ class AppState {
     try {
       this.availableVersions = await GetAvailableVersions();
       if (this.availableVersions?.length > 0 && !this.selectedVersionTag) {
-        // Default select the latest or first
         this.selectedVersionTag = this.availableVersions[0].tag_name;
       }
     } catch (e: any) {
@@ -230,15 +225,20 @@ class AppState {
     }
   }
 
+  get filteredVersions(): any[] {
+    if (!this.availableVersions) return [];
+    if (this.showBetas) return this.availableVersions;
+    return this.availableVersions.filter(v => !v.is_prerelease || v.is_current);
+  }
+
   async toggleBetas() {
     this.showBetas = !this.showBetas;
     await SetShowBetas(this.showBetas);
-    await this.loadAvailableVersions();
     // Clear selected tag if it's no longer in the filtered list
-    if (this.selectedVersionTag && this.availableVersions?.length > 0) {
-      const found = this.availableVersions.some(v => v.tag_name === this.selectedVersionTag);
+    if (this.selectedVersionTag && this.filteredVersions?.length > 0) {
+      const found = this.filteredVersions.some(v => v.tag_name === this.selectedVersionTag);
       if (!found) {
-        this.selectedVersionTag = this.availableVersions[0].tag_name;
+        this.selectedVersionTag = this.filteredVersions[0].tag_name;
       }
     }
   }

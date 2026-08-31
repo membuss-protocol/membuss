@@ -9,8 +9,15 @@
       if (app.availableVersions.length === 0) {
         app.loadAvailableVersions();
       }
-      if (!selectedTag && app.updateInfo?.latest_version) {
-        selectedTag = app.updateInfo.latest_version;
+      // When betas toggle changes, clear selection if it's now hidden
+      if (selectedTag && app.filteredVersions?.length > 0) {
+        const found = app.filteredVersions.some(v => v.tag_name === selectedTag);
+        if (!found) {
+          selectedTag = app.filteredVersions[0].tag_name;
+        }
+      }
+      if (!selectedTag && app.filteredVersions?.length > 0) {
+        selectedTag = app.filteredVersions[0].tag_name;
       }
     }
   });
@@ -98,14 +105,14 @@
             </div>
 
             <div class="relative w-full">
-              {#if app.availableVersions && app.availableVersions.length > 0}
+              {#if app.filteredVersions && app.filteredVersions.length > 0}
                 <select
                   bind:value={selectedTag}
                   disabled={app.updating}
                   class="w-full appearance-none bg-[#0c1416] border border-[rgba(233,226,210,0.14)] text-[#e9e2d2] text-xs font-mono rounded-[3px] py-2.5 pl-3 pr-9 outline-none hover:border-[rgba(233,226,210,0.25)] focus:border-[#e8a33d] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   style="color-scheme: dark; background-color: #0c1416; color: #e9e2d2;"
                 >
-                  {#each app.availableVersions as rel}
+                  {#each app.filteredVersions as rel}
                     <option
                       value={rel.tag_name}
                       class="bg-[#0c1416] text-[#e9e2d2] py-1"

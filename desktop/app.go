@@ -388,8 +388,7 @@ type UpdateCheckResult struct {
 
 // CheckForUpdate queries GitHub for the latest release and compares with the installed version.
 // When ShowBetas is enabled, pre-release versions (beta, alpha, rc) are included in the check.
-// The Atom feed is always tried first as it includes all release types; the /releases/latest
-// redirect (stable-only) is only used as a final fallback.
+// When ShowBetas is disabled, only stable releases are considered.
 func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	// 1. Determine current version
 	currentVer := a.config.InstalledVersion
@@ -406,45 +405,66 @@ func (a *App) CheckForUpdate() (*UpdateCheckResult, error) {
 	}
 	currentVer = strings.TrimPrefix(currentVer, "v")
 
-	// 2. Fetch releases via Atom feed (includes betas) — always try first.
-	atomInfo, atomErr := fetchLatestReleaseAtom()
-
-	// 3. Fetch stable-only fallback.
-	stableInfo, stableErr := fetchLatestRelease()
-
-	// 4. Determine best "latest" version to compare against.
-	//    When ShowBetas is on, pick the newest version from Atom (may be a beta).
-	//    When ShowBetas is off, use stable-only; fall back to first non-beta from Atom.
+	// 2. Fetch the appropriate "latest" version.
 	var latestVer string
 	var latestInfo *latestReleaseInfo
 	isBeta := false
 
-	if a.config.ShowBetas && atomErr == nil && atomInfo != nil && atomInfo.TagName != "" {
-		// Beta-aware: use Atom feed result directly (first entry = newest including betas)
-		latestVer = atomInfo.TagName
-		latestInfo = atomInfo
-		isBeta = IsPrerelease(latestVer)
-	} else if stableErr == nil && stableInfo != nil && stableInfo.TagName != "" {
-		// Stable-only: use /releases/latest (stable release)
-		latestVer = stableInfo.TagName
-		latestInfo = stableInfo
-		isBeta = IsPrerelease(latestVer)
-	} else if atomErr == nil && atomInfo != nil && atomInfo.TagName != "" {
-		// Stable failed, fall back to Atom feed — but only non-beta when ShowBetas is off
-		if !a.config.ShowBetas && IsPrerelease(atomInfo.TagName) {
-			// Atom feed first entry is a beta but betas are disabled — report no update
-			return &UpdateCheckResult{
-				HasUpdate:      false,
-				CurrentVersion: "v" + currentVer,
-				LatestVersion:  "v" + currentVer,
-				IsBeta:         false,
-			}, nil
+	if a.config.ShowBetas {
+		// Beta-aware: Atom feed first entry is the newest release (may be a beta)
+		atomInfo, atomErr := fetchLatestReleaseAtom()
+		if atomErr == nil && atomInfo != nil && atomInfo.TagName != "" {
+			latestVer = atomInfo.TagName
+			latestInfo = atomInfo
+			isBeta = IsPrerelease(latestVer)
+		} else {
+			// Fallback to /releases/latest (stable only)
+			info, err := fetchLatestReleaseRedirect()
+			if err == nil && info != nil && info.TagName != "" {
+				latestVer = info.TagName
+				latestInfo = info
+				isBeta = IsPrerelease(latestVer)
+			} else {
+				return nil, fmt.Errorf("failed to check for updates: %w", coalesceErr(atomErr, err))
+			}
 		}
-		latestVer = atomInfo.TagName
-		latestInfo = atomInfo
-		isBeta = IsPrerelease(latestVer)
 	} else {
-		return nil, fmt.Errorf("failed to check for updates: %w", coalesceErr(stableErr, atomErr))
+		// Stable-only: use HTML redirect /releases/latest (no API quota, stable-only)
+		info, err := fetchLatestReleaseRedirect()
+		if err == nil && info != nil && info.TagName != "" {
+			// Double-check: even if GitHub treats this as stable, our tag parser may disagree
+			if IsPrerelease(info.TagName) {
+				// Redirect returned a prerelease — try the REST API for a true stable release
+				apiInfo, apiErr := fetchLatestReleaseAPI()
+				if apiErr == nil && apiInfo != nil && apiInfo.TagName != "" && !IsPrerelease(apiInfo.TagName) {
+					latestVer = apiInfo.TagName
+					latestInfo = apiInfo
+					isBeta = false
+				} else {
+					// No true stable release found — report no update
+					return &UpdateCheckResult{
+						HasUpdate:      false,
+						CurrentVersion: "v" + currentVer,
+						LatestVersion:  "v" + currentVer,
+						IsBeta:         false,
+					}, nil
+				}
+			} else {
+				latestVer = info.TagName
+				latestInfo = info
+				isBeta = false
+			}
+		} else {
+			// Fallback to REST API /releases/latest (also stable-only)
+			apiInfo, apiErr := fetchLatestReleaseAPI()
+			if apiErr == nil && apiInfo != nil && apiInfo.TagName != "" && !IsPrerelease(apiInfo.TagName) {
+				latestVer = apiInfo.TagName
+				latestInfo = apiInfo
+				isBeta = false
+			} else {
+				return nil, fmt.Errorf("failed to check for updates: %w", coalesceErr(err, apiErr))
+			}
+		}
 	}
 
 	if latestVer == "" {
@@ -518,7 +538,6 @@ func (a *App) SetShowBetas(enabled bool) {
 }
 
 // GetAvailableVersions fetches all published releases from GitHub and computes their relationship to current version.
-// When ShowBetas is false, pre-release versions are filtered out of the returned list.
 func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
 	currentVer := a.config.InstalledVersion
 	if currentVer == "" {
@@ -537,18 +556,6 @@ func (a *App) GetAvailableVersions() ([]ReleaseOption, error) {
 	releases, err := fetchAvailableReleases()
 	if err != nil {
 		return nil, err
-	}
-
-	// When ShowBetas is off, filter out pre-release versions but always keep the current version.
-	if !a.config.ShowBetas {
-		var filtered []ReleaseOption
-		for _, r := range releases {
-			if r.IsPrerelease && !r.IsCurrent {
-				continue
-			}
-			filtered = append(filtered, r)
-		}
-		releases = filtered
 	}
 
 	for i := range releases {
