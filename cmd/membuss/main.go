@@ -192,6 +192,7 @@ Run "membuss init" first to set up the data directory.`,
 		newKeyRingCmd(),
 		newDescriptorCmd(),
 		newEdgeCmd(),
+		newVPNCmd(),
 		newVersionCmd(),
 	)
 

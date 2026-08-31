@@ -215,6 +215,26 @@ type Config struct {
 
 	// EdgeCompute configures the decentralized MemEdge serverless engine.
 	EdgeCompute EdgeComputeConfig `yaml:"edge_compute"`
+
+	// MemVPN configures the encrypted WireGuard and P2P overlay mesh subsystem.
+	MemVPN MemVPNConfig `yaml:"memvpn"`
+}
+
+// MemVPNConfig configures the encrypted WireGuard and P2P overlay mesh subsystem.
+type MemVPNConfig struct {
+	Enabled          bool          `yaml:"enabled"`
+	MeshID           string        `yaml:"mesh_id"`
+	NodeName         string        `yaml:"node_name"`
+	PreSharedKey     string        `yaml:"preshared_key"`
+	VirtualIP        string        `yaml:"virtual_ip"`
+	AllowAllPeers    bool          `yaml:"allow_all_peers"`
+	AllowedPeers     []string      `yaml:"allowed_peers"`
+	WGListenPort     int           `yaml:"wg_listen_port"`
+	IsExitNode       bool          `yaml:"is_exit_node"`
+	SelectedExit     string        `yaml:"selected_exit"`
+	ExitAllowAll     bool          `yaml:"exit_allow_all"`
+	ExitAllowedPeers []string      `yaml:"exit_allowed_peers"`
+	ConnectTimeout   time.Duration `yaml:"connect_timeout"`
 }
 
 // EdgeComputeConfig configures the decentralized MemEdge serverless engine.
@@ -413,6 +433,13 @@ func Default() *Config {
 			MaxExecutionTime:   500 * time.Millisecond,
 			MaxMemoryMB:        32,
 			MaxConcurrentTasks: 16,
+		},
+		MemVPN: MemVPNConfig{
+			Enabled:       true,
+			MeshID:        "default",
+			AllowAllPeers: true,
+			WGListenPort:  51820,
+			ExitAllowAll:  true,
 		},
 	}
 }

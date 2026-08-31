@@ -59,6 +59,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memlink"
 	"github.com/nnlgsakib/membuss/core/memns"
+	"github.com/nnlgsakib/membuss/core/memvpn"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/shard"
 	"github.com/nnlgsakib/membuss/core/store"
@@ -143,6 +144,10 @@ func Run(args []string) error {
 	if *forceRelayFlag {
 		cfg.ForceRelay = true
 	}
+	// Always override config DataDir with the resolved --datadir value
+	// so that all subsystems (dht, pex, keyring, audit, memvpn, certs)
+	// write state under the same directory.
+	cfg.DataDir = resolvedDatadir
 	if os.Getenv("MEMBUSS_FORCE_PUBLIC") == "true" {
 		cfg.ForcePublic = true
 	}
@@ -727,9 +732,39 @@ func Run(args []string) error {
 		fmt.Fprintf(os.Stdout, "  manifest_rpc:   disabled\n")
 	}
 
+	// 9.5) MemVPN: WireGuard server & P2P mesh overlay network
+	var vpnSvc *memvpn.Service
+	if cfg.MemVPN.Enabled {
+		vpnMeshCfg := memvpn.MeshConfig{
+			MeshID:           cfg.MemVPN.MeshID,
+			NodeName:         cfg.MemVPN.NodeName,
+			PreSharedKey:     cfg.MemVPN.PreSharedKey,
+			VirtualIP:        cfg.MemVPN.VirtualIP,
+			AllowAllPeers:    cfg.MemVPN.AllowAllPeers,
+			AllowedPeers:     cfg.MemVPN.AllowedPeers,
+			WGListenPort:     cfg.MemVPN.WGListenPort,
+			IsExitNode:       cfg.MemVPN.IsExitNode,
+			SelectedExit:     cfg.MemVPN.SelectedExit,
+			ExitAllowAll:     cfg.MemVPN.ExitAllowAll,
+			ExitAllowedPeers: cfg.MemVPN.ExitAllowedPeers,
+			ConnectTimeout:   cfg.MemVPN.ConnectTimeout,
+			DataDir:          resolvedDatadir,
+		}
+		vpnSvc = memvpn.NewService(h, vpnMeshCfg)
+		if err := vpnSvc.Start(ctx); err != nil {
+			logger.Warn("memvpn start failed", "err", err.Error())
+		} else {
+			defer vpnSvc.Stop()
+			status := vpnSvc.GetStatus()
+			fmt.Fprintf(os.Stdout, "  memvpn:         enabled (mesh: %s, vip: %s, wg_port: %d)\n", status.MeshID, status.VirtualIP, status.WGServerPort)
+		}
+	} else {
+		fmt.Fprintf(os.Stdout, "  memvpn:         disabled\n")
+	}
+
 	var gateSrv *httpServer
 	if cfg.Servers.Gateway.Enabled {
-		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, aud, tunMgr, gateHTTPReg, cfg.MetricsToken, edgeEngine, edgeSvc)
+		srv, err := startGateway(cfg.GatewayAddr, newMemgateAdapter(backend), newExplorerAdapter(backend, cfg.AnchorMode, kr, memnsRes), cfg.GatewayRateLimitPerMin, cfg.GatewayTLS, memnsRes, cfg.DataDir, cfg.LogLevel, aud, tunMgr, gateHTTPReg, cfg.MetricsToken, edgeEngine, edgeSvc, vpnSvc)
 		if err != nil {
 			logger.Error("gateway", "err", err.Error())
 			os.Exit(1)
@@ -744,7 +779,7 @@ func Run(args []string) error {
 	// 10) Node API: local control plane over HTTP/JSON.
 	var apiSrv *httpServer
 	if cfg.Servers.NodeAPI.Enabled {
-		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, aud, nodeHTTPReg, edgeEngine, edgeSvc, httpIPCLis)
+		srv, err := startNodeAPI(cfg.APIAddr, newAPIAdapter(backend), mtrx, cfg.APIKey, cfg.APITLS, kr, memnsRes, cfg.DataDir, cfg.LogLevel, aud, nodeHTTPReg, edgeEngine, edgeSvc, vpnSvc, httpIPCLis)
 		if err != nil {
 			logger.Error("api", "err", err.Error())
 			os.Exit(1)
@@ -1130,17 +1165,18 @@ func (s *serverGRPC) Stop()         { s.gsrv.Stop() }
 // rateLimitPerMin is the per-IP request budget enforced on
 // every public request. tls enables HTTPS when its
 // CertFile/KeyFile are set.
-func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, aud *audit.Logger, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) (*httpServer, error) {
+func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimitPerMin int, tlsCfg config.TLSConfig, memnsRes *memns.Resolver, dataDir string, logLevel string, aud *audit.Logger, tunMgr *tunnel.Manager, pluginReg *plugin.MapHTTPRegistry, metricsToken string, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, vpnSvc *memvpn.Service) (*httpServer, error) {
 	mg, err := memgate.New(memgate.Config{
 		Backend:         b,
 		MaxCacheBytes:   64 << 20, // 64 MiB LRU
-		ExplorerHandler: buildExplorer(exp, aud, tunMgr, edgeEngine, edgeSvc),
+		ExplorerHandler: buildExplorer(exp, aud, tunMgr, edgeEngine, edgeSvc, vpnSvc),
 		RateLimitPerMin: rateLimitPerMin,
 		MemNSResolver:   memnsRes,
 		LogLevel:        logLevel,
 		MetricsToken:    metricsToken,
 		EdgeEngine:      edgeEngine,
 		EdgeService:     edgeSvc,
+		VPNService:      vpnSvc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("memgate: %w", err)
@@ -1154,7 +1190,13 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 			}
 		}
 	}
-	hs, err := startHTTP(addr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
+	listenAddr := addr
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if host == "" || host == "127.0.0.1" || host == "localhost" {
+			listenAddr = net.JoinHostPort("0.0.0.0", port)
+		}
+	}
+	hs, err := startHTTP(listenAddr, "membuss-gateway", mg.Handler(), tlsCfg, dataDir)
 	if err != nil {
 		_ = mg.Close()
 		return nil, err
@@ -1166,7 +1208,7 @@ func startGateway(addr string, b memgate.Backend, exp *explorerAdapter, rateLimi
 // startNodeAPI brings up the local Node control API. mtrx
 // exposes Prometheus at /metrics; apiKey enables X-Membuss-Key
 // auth on every /api/v1 endpoint; tls enables HTTPS.
-func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, aud *audit.Logger, pluginReg *plugin.MapHTTPRegistry, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, extraLis ...net.Listener) (*httpServer, error) {
+func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey string, tlsCfg config.TLSConfig, keyring *keyring.KeyRing, memnsRes *memns.Resolver, dataDir string, logLevel string, aud *audit.Logger, pluginReg *plugin.MapHTTPRegistry, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, vpnSvc *memvpn.Service, extraLis ...net.Listener) (*httpServer, error) {
 	nodeAPI, err := api.New(api.Config{
 		Backend:        b,
 		MaxUploadBytes: 1 << 30, // 1 GiB
@@ -1179,6 +1221,7 @@ func startNodeAPI(addr string, b api.Backend, mtrx *metrics.Metrics, apiKey stri
 		PluginRoutes:   pluginReg,
 		EdgeEngine:     edgeEngine,
 		EdgeService:    edgeSvc,
+		VPNService:     vpnSvc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("nodeapi: %w", err)
@@ -1315,7 +1358,7 @@ func (h *httpServer) Addr() string {
 // buildExplorer constructs the explorer http.Handler.
 // It returns nil when exp is nil so the gateway can be
 // constructed without an explorer for tests.
-func buildExplorer(exp *explorerAdapter, aud *audit.Logger, tunMgr *tunnel.Manager, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service) http.Handler {
+func buildExplorer(exp *explorerAdapter, aud *audit.Logger, tunMgr *tunnel.Manager, edgeEngine memedge.Engine, edgeSvc *edge_rpc.Service, vpnSvc *memvpn.Service) http.Handler {
 	if exp == nil {
 		return nil
 	}
@@ -1325,6 +1368,7 @@ func buildExplorer(exp *explorerAdapter, aud *audit.Logger, tunMgr *tunnel.Manag
 		TunnelManager: tunMgr,
 		EdgeEngine:    edgeEngine,
 		EdgeService:   edgeSvc,
+		VPNService:    vpnSvc,
 	})
 	if err != nil {
 		slog.Warn("explorer", "err", err.Error())

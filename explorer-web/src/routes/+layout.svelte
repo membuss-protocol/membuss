@@ -25,6 +25,7 @@
 		{ key: 'nav.edge', path: '/edge', icon: 'ph:lightning-light', group: 'compute' },
 		{ key: 'nav.peers', path: '/peers', icon: 'ph:circle-notch-light', group: 'network' },
 		{ key: 'nav.tunnel', path: '/tunnel', icon: 'ph:link-light', group: 'network' },
+		{ key: 'nav.vpn', path: '/vpn', icon: 'ph:shield-check-light', group: 'network' },
 		{ key: 'nav.node', path: '/node', icon: 'ph:gear-six-light', group: 'system' }
 	];
 

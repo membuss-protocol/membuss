@@ -12,6 +12,7 @@ import (
 	"html"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memns"
+	"github.com/nnlgsakib/membuss/core/memvpn"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/net/edge_rpc"
 )
@@ -168,6 +170,9 @@ type Config struct {
 	EdgeEngine  memedge.Engine
 	EdgeService *edge_rpc.Service
 	EdgeLimits  *memedge.Limits
+
+	// MemVPN: WireGuard & P2P Mesh Virtual Network
+	VPNService *memvpn.Service
 }
 
 // MemGate is the public HTTP gateway.
@@ -478,6 +483,11 @@ func (m *MemGate) buildRouter() chi.Router {
 	r.HandleFunc("/memns/{name}/*", m.handleMemNSResolve)
 	r.HandleFunc("/memlink/{domain}", m.handleMemLinkGet)
 	r.HandleFunc("/memlink/{domain}/*", m.handleMemLinkGet)
+
+	// MemVPN routes (WireGuard config download & reverse proxy)
+	r.Get("/vpn/wireguard.conf", m.handleWireGuardConf)
+	r.HandleFunc("/vpn/{peer}/{service}", m.handleVPNProxy)
+	r.HandleFunc("/vpn/{peer}/{service}/*", m.handleVPNProxy)
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if m.cfg.ExplorerHandler != nil {
@@ -1467,8 +1477,8 @@ func (m *MemGate) customDomainMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// localOnlyMiddleware blocks /explorer access from non-localhost sources.
-// The explorer is a local admin UI and must not be exposed to the public internet.
+// localOnlyMiddleware blocks /explorer access from non-local/non-LAN sources.
+// The explorer is an admin UI accessible from localhost and private LAN devices.
 func (m *MemGate) localOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/explorer") {
@@ -1480,6 +1490,10 @@ func (m *MemGate) localOnlyMiddleware(next http.Handler) http.Handler {
 			host = host[:idx]
 		}
 		if host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
 			next.ServeHTTP(w, r)
 			return
 		}

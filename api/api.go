@@ -33,6 +33,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/keyring"
 	"github.com/nnlgsakib/membuss/core/memedge"
 	"github.com/nnlgsakib/membuss/core/memns"
+	"github.com/nnlgsakib/membuss/core/memvpn"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/net/edge_rpc"
 	"github.com/nnlgsakib/membuss/obs/metrics"
@@ -220,6 +221,9 @@ type Config struct {
 	// MemEdge fields
 	EdgeEngine  memedge.Engine
 	EdgeService *edge_rpc.Service
+
+	// MemVPN fields
+	VPNService *memvpn.Service
 }
 
 // NodeAPI is the local HTTP control API.
@@ -330,6 +334,23 @@ func (a *NodeAPI) buildRouter() chi.Router {
 		r.Post("/edge/run", a.handleEdgeRun)
 		r.Get("/edge/status", a.handleEdgeStatus)
 		r.Post("/edge/validate", a.handleEdgeValidate)
+
+		// MemVPN & WireGuard endpoints
+		r.Get("/vpn/status", a.handleVPNStatus)
+		r.Get("/vpn/wg/profile", a.handleWireGuardProfile)
+		r.Get("/vpn/wg/devices", a.handleWireGuardDevices)
+		r.Get("/vpn/wg/device", a.handleWireGuardDevices)
+		r.Post("/vpn/wg/device", a.handleWireGuardAddDevice)
+		r.Post("/vpn/wg/devices", a.handleWireGuardAddDevice)
+		r.Delete("/vpn/wg/device", a.handleWireGuardDeleteDevice)
+		r.Delete("/vpn/wg/devices", a.handleWireGuardDeleteDevice)
+		r.Get("/vpn/wg/config", a.handleWireGuardDownloadConfig)
+		r.Post("/vpn/exit/select", a.handleVPNSelectExit)
+		r.Post("/vpn/exit/toggle", a.handleVPNToggleExit)
+		r.Post("/vpn/expose", a.handleVPNExposeService)
+		r.Post("/vpn/unexpose", a.handleVPNUnexposeService)
+		r.Post("/vpn/forward", a.handleVPNForwardService)
+		r.Post("/vpn/unforward", a.handleVPNUnforwardService)
 
 		// Plugin HTTP API routes
 		if a.cfg.PluginRoutes != nil {

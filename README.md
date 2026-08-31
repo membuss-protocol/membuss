@@ -193,9 +193,23 @@ export default function handler(req) {
 ./membuss add router.js
 # Output: mem1z4a2... (MID)
 
-# 2. Execute via HTTP Gateway
-curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
-# Output: {"usd":250,"eur":230,"rate":0.92}
+### 3. Pure-Go WireGuard & Decentralized Mesh Overlay (MemVPN)
+
+Every Membuss node embeds a pure-Go userspace **WireGuard server** and **P2P mesh router**. Connect your iPhone, Android, or laptop in seconds with official WireGuard apps:
+
+```bash
+# Display 1-Click WireGuard Mobile QR setup & download URL
+./membuss vpn qr
+
+# Export standard WireGuard .conf file
+./membuss vpn config > membuss.conf
+
+# Add or list multi-device profiles
+./membuss vpn device add "My iPhone"
+./membuss vpn device list
+
+# Route all system internet traffic through the decentralized P2P exit swarm
+./membuss vpn exit select auto
 ```
 
 ---
@@ -218,6 +232,8 @@ curl "http://localhost:8080/mem/mem1z4a2.../convert?usd=250&exec=true"
 | **Single-Pass Erasure Coding** | ❌ No | ❌ No | ⚠️ Internal Only | ✅ **Yes (SIMD Galois Field)** |
 | **Native HTTP Video Streaming (RFC 7233)** | ⚠️ Requires Torrent Client | ⚠️ High Gateway Latency | ✅ Yes | ✅ **Yes (Instant Range Seek)** |
 | **Serverless Edge Compute** | ❌ No | ❌ No | ✅ Yes (Cloud Functions) | ✅ **Yes (MemEdge WASI & JS)** |
+| **Standard WireGuard VPN (Mobile QR)** | ❌ No | ❌ No | ⚠️ Tailscale / WireGuard | ✅ **Yes (Built-in Zero-Root Engine)** |
+| **Decentralized Internet Exit Swarm** | ❌ No | ❌ No | ❌ No | ✅ **Yes (P2P Egress Tunneling)** |
 | **Sub-millisecond Cold Starts** | N/A | N/A | ❌ 50–300ms | ✅ **< 0.5ms (Goja / Wazero)** |
 | **Zero Infrastructure Invoices** | ✅ Yes | ✅ Yes | ❌ High Bandwidth Costs | ✅ **Yes (100% Permissionless)** |
 

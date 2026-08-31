@@ -10,5 +10,6 @@ export const en = {
 	'nav.edge': 'Edge',
 	'nav.peers': 'Peers',
 	'nav.tunnel': 'Tunnel',
+	'nav.vpn': 'MemVPN',
 	'nav.node': 'Node Info'
 } as const;

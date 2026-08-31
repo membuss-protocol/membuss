@@ -36,6 +36,7 @@ import (
 	"github.com/nnlgsakib/membuss/core/audit"
 	"github.com/nnlgsakib/membuss/core/descriptor"
 	"github.com/nnlgsakib/membuss/core/memedge"
+	"github.com/nnlgsakib/membuss/core/memvpn"
 	"github.com/nnlgsakib/membuss/core/mid"
 	"github.com/nnlgsakib/membuss/core/version"
 	"github.com/nnlgsakib/membuss/net/edge_rpc"
@@ -385,6 +386,8 @@ type Config struct {
 	EdgeEngine memedge.Engine
 	// EdgeService manages 3-Tier P2P edge execution.
 	EdgeService *edge_rpc.Service
+	// VPNService manages the WireGuard server and P2P mesh network.
+	VPNService *memvpn.Service
 }
 
 // EdgeFunctionDeployment records a deployed serverless function on the node.
@@ -620,6 +623,23 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Post("/descriptor/import", e.handleDescriptorImport)
 	r.Post("/descriptor/import-stream", e.handleDescriptorImportStream)
 
+	// MemVPN & WireGuard endpoints
+	r.Get("/vpn/status", e.handleVPNStatus)
+	r.Get("/vpn/wg/profile", e.handleWireGuardProfile)
+	r.Get("/vpn/wg/devices", e.handleWireGuardDevices)
+	r.Get("/vpn/wg/device", e.handleWireGuardDevices)
+	r.Post("/vpn/wg/device", e.handleWireGuardAddDevice)
+	r.Post("/vpn/wg/devices", e.handleWireGuardAddDevice)
+	r.Delete("/vpn/wg/device", e.handleWireGuardDeleteDevice)
+	r.Delete("/vpn/wg/devices", e.handleWireGuardDeleteDevice)
+	r.Get("/vpn/wg/config", e.handleWireGuardDownloadConfig)
+	r.Post("/vpn/exit/select", e.handleVPNSelectExit)
+	r.Post("/vpn/exit/toggle", e.handleVPNToggleExit)
+	r.Post("/vpn/expose", e.handleVPNExposeService)
+	r.Post("/vpn/unexpose", e.handleVPNUnexposeService)
+	r.Post("/vpn/forward", e.handleVPNForwardService)
+	r.Post("/vpn/unforward", e.handleVPNUnforwardService)
+
 	// serveSpaOrPage runs the handler if formatting requested or User-Agent is test.
 	// Otherwise it falls back to serving Svelte SPA index.html.
 	serveSpaOrPage := func(handler http.HandlerFunc) http.HandlerFunc {
@@ -641,6 +661,7 @@ func (e *Explorer) buildRouter() http.Handler {
 	r.Get("/upload", serveSpaOrPage(e.handleUploadPage))
 	r.Get("/memns/{name}", serveSpaOrPage(e.handleMemNSPage))
 	r.Get("/memlink/{domain}", serveSpaOrPage(e.handleMemLinkPage))
+	r.Get("/vpn", serveSpaOrPage(e.handleVPNStatus))
 
 	// Legacy static assets for tests.
 	r.Get("/static/style.css", e.handleStatic("style.css", "text/css; charset=utf-8"))
