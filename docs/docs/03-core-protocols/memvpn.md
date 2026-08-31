@@ -446,15 +446,15 @@ Returns `MeshStatus` JSON with full telemetry, peer list, exit nodes, services, 
 |---|---|---|
 | `GET` | `/api/v1/vpn/wg/devices` | List all registered client devices |
 | `POST` | `/api/v1/vpn/wg/device` | Register a new client device |
-| `DELETE` | `/api/v1/vpn/wg/device?id=<name>` | Delete a client device |
-| `GET` | `/api/v1/vpn/wg/profile?device=<name>` | Get WireGuard config profile |
-| `GET` | `/api/v1/vpn/wg/config?device=<name>` | Download .conf file |
+| `DELETE` | `/api/v1/vpn/wg/device?id=NAME` | Delete a client device |
+| `GET` | `/api/v1/vpn/wg/profile?device=NAME` | Get WireGuard config profile |
+| `GET` | `/api/v1/vpn/wg/config?device=NAME` | Download .conf file |
 
 ### 11.3 Exit Node Control
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/vpn/exit/select` | `{ "peer_id": "auto" \| "<peer-id>" \| "" }` | Select exit node |
+| `POST` | `/api/v1/vpn/exit/select` | `{ "peer_id": "auto" or peer_id or "" }` | Select exit node |
 | `POST` | `/api/v1/vpn/exit/toggle` | `{ "enabled": true, "allow_all": true }` | Toggle exit provider mode |
 
 ### 11.4 Service Mesh
@@ -462,9 +462,9 @@ Returns `MeshStatus` JSON with full telemetry, peer list, exit nodes, services, 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/v1/vpn/services/expose` | Expose a local service to the mesh |
-| `DELETE` | `/api/v1/vpn/services/expose?name=<name>` | Unexpose a service |
+| `DELETE` | `/api/v1/vpn/services/expose?name=NAME` | Unexpose a service |
 | `POST` | `/api/v1/vpn/services/forward` | Forward to a remote peer's service |
-| `DELETE` | `/api/v1/vpn/services/forward?local_addr=<addr>` | Stop port forwarding |
+| `DELETE` | `/api/v1/vpn/services/forward?local_addr=ADDR` | Stop port forwarding |
 
 ---
 
@@ -495,10 +495,10 @@ Returns `MeshStatus` JSON with full telemetry, peer list, exit nodes, services, 
 
 | Metric | Value |
 |---|---|
-| WireGuard handshake | <15ms (Noise IK) |
-| DNS resolution | Concurrent 3-resolver race, <500ms |
-| TCP handshake (local) | <10ms |
-| TCP handshake (swarm) | <100ms (libp2p stream dial) |
+| WireGuard handshake | under 15ms (Noise IK) |
+| DNS resolution | Concurrent 3-resolver race, under 500ms |
+| TCP handshake (local) | under 10ms |
+| TCP handshake (swarm) | under 100ms (libp2p stream dial) |
 | MTU | 1420 bytes (WireGuard default) |
 | PersistentKeepalive | 15 seconds |
 | UI poll interval | 1.5 seconds |
