@@ -40,11 +40,21 @@
     overflow: hidden;
     background-color: var(--ink);
     color: var(--bone);
+    color-scheme: dark;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     user-select: none;
     letter-spacing: normal;
+  }
+
+  select, option, input, textarea, button {
+    color-scheme: dark;
+  }
+
+  select option {
+    background-color: #0c1416;
+    color: #e9e2d2;
   }
 
   #app {

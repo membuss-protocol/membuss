@@ -67,18 +67,18 @@ func fetchLatestRelease() (*latestReleaseInfo, error) {
 
 	var errs []string
 
-	// 1) HTML redirect — primary path, no api.github.com quota.
-	if info, err := fetchLatestReleaseRedirect(); err == nil && info != nil && info.TagName != "" {
-		return cacheRelease(info), nil
-	} else if err != nil {
-		errs = append(errs, "redirect: "+err.Error())
-	}
-
-	// 2) Atom feed — also outside the REST API budget.
+	// 1) Atom feed — rate-limit safe, lists newest releases including beta/pre-releases.
 	if info, err := fetchLatestReleaseAtom(); err == nil && info != nil && info.TagName != "" {
 		return cacheRelease(info), nil
 	} else if err != nil {
 		errs = append(errs, "atom: "+err.Error())
+	}
+
+	// 2) HTML redirect — stable release path, no api.github.com quota.
+	if info, err := fetchLatestReleaseRedirect(); err == nil && info != nil && info.TagName != "" {
+		return cacheRelease(info), nil
+	} else if err != nil {
+		errs = append(errs, "redirect: "+err.Error())
 	}
 
 	// 3) REST API last resort (may 403 when rate-limited).
@@ -261,11 +261,11 @@ func extractTagFromAtom(xml string) string {
 	i := strings.Index(xml, marker)
 	if i >= 0 {
 		rest := xml[i+len(marker):]
-		end := strings.IndexAny(rest, `"'?# \t\n\r<`)
+		end := strings.IndexAny(rest, "\"'?# \t\n\r<")
 		if end < 0 {
 			end = len(rest)
-			if end > 40 {
-				end = 40
+			if end > 64 {
+				end = 64
 			}
 		}
 		tag := strings.TrimSpace(rest[:end])
@@ -291,7 +291,7 @@ func extractTagFromAtom(xml string) string {
 					title = strings.TrimPrefix(title, "Release ")
 					if strings.HasPrefix(title, "v") || (len(title) > 0 && title[0] >= '0' && title[0] <= '9') {
 						// take first token
-						if sp := strings.IndexAny(title, " \t\n"); sp > 0 {
+						if sp := strings.IndexAny(title, " \t\n\r"); sp > 0 {
 							title = title[:sp]
 						}
 						return title
@@ -324,11 +324,11 @@ func extractTagFromHTML(html string) string {
 		return ""
 	}
 	rest := html[i+len(marker):]
-	end := strings.IndexAny(rest, `"'?# \t\n\r`)
+	end := strings.IndexAny(rest, "\"'?# \t\n\r<")
 	if end < 0 {
 		end = len(rest)
-		if end > 32 {
-			end = 32
+		if end > 64 {
+			end = 64
 		}
 	}
 	tag := strings.TrimSpace(rest[:end])
@@ -404,6 +404,40 @@ func findPlatformAssetURL(info *latestReleaseInfo) string {
 	return ""
 }
 
+// platformDesktopInstallerAssetName returns the installer or desktop application bundle name for the current OS.
+func platformDesktopInstallerAssetName(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Membuss-Desktop-%s-windows-amd64-installer.exe", tag)
+	}
+	if runtime.GOOS == "linux" {
+		return fmt.Sprintf("Membuss-Desktop-%s-linux-amd64.AppImage", tag)
+	}
+	if runtime.GOOS == "darwin" {
+		return fmt.Sprintf("Membuss-Desktop-%s-darwin-%s.dmg", tag, runtime.GOARCH)
+	}
+	return ""
+}
+
+// findDesktopInstallerAssetURL finds the browser download URL for the Desktop GUI app installer for this platform.
+func findDesktopInstallerAssetURL(info *latestReleaseInfo) string {
+	if info == nil || info.TagName == "" {
+		return ""
+	}
+	wantAsset := strings.ToLower(platformDesktopInstallerAssetName(info.TagName))
+	for name, url := range info.Assets {
+		if strings.ToLower(name) == wantAsset {
+			return url
+		}
+	}
+	// Fallback to constructed URL
+	if wantAsset != "" {
+		return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s",
+			githubRepoOwner, githubRepoName, info.TagName, platformDesktopInstallerAssetName(info.TagName))
+	}
+	return ""
+}
+
 func abbreviate(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= max {
@@ -414,12 +448,13 @@ func abbreviate(s string, max int) string {
 
 // ReleaseOption represents an available release version from GitHub.
 type ReleaseOption struct {
-	TagName     string `json:"tag_name"`
-	Name        string `json:"name"`
-	PublishedAt string `json:"published_at"`
-	IsLatest    bool   `json:"is_latest"`
-	IsCurrent   bool   `json:"is_current"`
-	Type        string `json:"type"` // "current", "upgrade", "downgrade"
+	TagName      string `json:"tag_name"`
+	Name         string `json:"name"`
+	PublishedAt  string `json:"published_at"`
+	IsLatest     bool   `json:"is_latest"`
+	IsCurrent    bool   `json:"is_current"`
+	IsPrerelease bool   `json:"is_prerelease"`
+	Type         string `json:"type"` // "current", "upgrade", "downgrade"
 }
 
 var (
@@ -485,11 +520,16 @@ func fetchAvailableReleases() ([]ReleaseOption, error) {
 						if t, err := time.Parse(time.RFC3339, pubDate); err == nil {
 							pubDate = t.Format("2006-01-02")
 						}
+						isPre, _ := r["prerelease"].(bool)
+						if !isPre {
+							isPre = IsPrerelease(tag)
+						}
 						list = append(list, ReleaseOption{
-							TagName:     tag,
-							Name:        name,
-							PublishedAt: pubDate,
-							IsLatest:    i == 0,
+							TagName:      tag,
+							Name:         name,
+							PublishedAt:  pubDate,
+							IsLatest:     i == 0,
+							IsPrerelease: isPre,
 						})
 					}
 					if len(list) > 0 {
@@ -508,10 +548,11 @@ func fetchAvailableReleases() ([]ReleaseOption, error) {
 	if latest, err := fetchLatestRelease(); err == nil && latest != nil && latest.TagName != "" {
 		return []ReleaseOption{
 			{
-				TagName:     latest.TagName,
-				Name:        "Release " + latest.TagName,
-				PublishedAt: time.Now().Format("2006-01-02"),
-				IsLatest:    true,
+				TagName:      latest.TagName,
+				Name:         "Release " + latest.TagName,
+				PublishedAt:  time.Now().Format("2006-01-02"),
+				IsLatest:     true,
+				IsPrerelease: IsPrerelease(latest.TagName),
 			},
 		}, nil
 	}
@@ -533,7 +574,7 @@ func parseAtomReleases(atomXML string) []ReleaseOption {
 		const marker = "/releases/tag/"
 		if idx := strings.Index(entry, marker); idx >= 0 {
 			rest := entry[idx+len(marker):]
-			end := strings.IndexAny(rest, `"'?# \t\n\r<`)
+			end := strings.IndexAny(rest, "\"'?# \t\n\r<")
 			if end > 0 {
 				tag = strings.TrimSpace(rest[:end])
 			}
@@ -568,10 +609,11 @@ func parseAtomReleases(atomXML string) []ReleaseOption {
 		}
 
 		list = append(list, ReleaseOption{
-			TagName:     tag,
-			Name:        title,
-			PublishedAt: updated,
-			IsLatest:    i == 0,
+			TagName:      tag,
+			Name:         title,
+			PublishedAt:  updated,
+			IsLatest:     i == 0,
+			IsPrerelease: IsPrerelease(tag),
 		})
 	}
 	return list

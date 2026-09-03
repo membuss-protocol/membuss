@@ -1,8 +1,11 @@
 package main
 
 import (
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTagFromReleaseLocation(t *testing.T) {
@@ -62,7 +65,7 @@ func TestPlatformArchiveAssetName(t *testing.T) {
 	}
 }
 
-func TestIsVersionNewer(t *testing.T) {
+func TestIsVersionNewer_Basic(t *testing.T) {
 	if !isVersionNewer("1.2.0", "1.2.5") {
 		t.Error("expected 1.2.5 > 1.2.0")
 	}
@@ -113,5 +116,52 @@ func TestFetchLatestRelease_Live(t *testing.T) {
 	}
 	if !strings.HasPrefix(info.TagName, "v") && info.TagName[0] < '0' {
 		t.Fatalf("suspicious tag: %s", info.TagName)
+	}
+}
+
+func TestFindDesktopInstallerAssetURL(t *testing.T) {
+	info := &latestReleaseInfo{
+		TagName: "v2.10.0-beta.1",
+		Assets: map[string]string{
+			"Membuss-Desktop-v2.10.0-beta.1-windows-amd64-installer.exe": "https://github.com/membuss-protocol/membuss/releases/download/v2.10.0-beta.1/Membuss-Desktop-v2.10.0-beta.1-windows-amd64-installer.exe",
+		},
+	}
+	url := findDesktopInstallerAssetURL(info)
+	if url == "" {
+		t.Fatal("expected installer download URL")
+	}
+	if !strings.Contains(url, "v2.10.0-beta.1") {
+		t.Fatalf("unexpected installer url: %s", url)
+	}
+}
+
+func TestFetchAvailableReleases_Live(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, githubAtomFeed, nil)
+	req.Header.Set("User-Agent", desktopUserAgent())
+	req.Header.Set("Accept", "application/atom+xml, application/xml, text/xml, */*")
+	resp, err := newGitHubHTTPClient(15 * time.Second).Do(req)
+	if err != nil {
+		t.Skipf("network/GitHub unavailable: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	releases := parseAtomReleases(string(body))
+	if len(releases) == 0 {
+		t.Fatal("expected at least one release from atom feed")
+	}
+	if releases[0].TagName != "v2.10.0-beta.1" {
+		t.Fatalf("expected latest tag v2.10.0-beta.1, got %s", releases[0].TagName)
+	}
+}
+
+func TestFetchReleaseByTag_Live(t *testing.T) {
+	info, err := fetchReleaseByTag("v2.10.0-beta.1")
+	if err != nil {
+		t.Skipf("network/GitHub unavailable: %v", err)
+	}
+	url := findPlatformAssetURL(info)
+	t.Logf("RESOLVED ASSET URL: %s", url)
+	if !strings.Contains(url, "v2.10.0-beta.1") {
+		t.Fatalf("expected URL with v2.10.0-beta.1, got %s", url)
 	}
 }

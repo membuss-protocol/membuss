@@ -157,6 +157,34 @@ type DirectoryFile struct {
 	R    io.Reader
 }
 
+// ProgressUpdate represents a unified progress snapshot for downloads.
+type ProgressUpdate struct {
+	BlocksResolved uint64  `json:"blocks_resolved"`
+	BlocksTotal    uint64  `json:"blocks_total"`
+	BytesDelivered uint64  `json:"bytes_delivered"`
+	BytesTotal     uint64  `json:"bytes_total"`
+	Throughput     float64 `json:"throughput"`
+	ETA            float64 `json:"eta"`
+}
+
+// sseResolveEvent represents a progress snapshot event emitted over SSE.
+type sseResolveEvent struct {
+	MID            string   `json:"mid,omitempty"`
+	State          string   `json:"state,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	Blocks         uint64   `json:"blocks"`
+	Total          uint64   `json:"total"`
+	BlocksResolved uint64   `json:"blocks_resolved"`
+	BlocksTotal    uint64   `json:"blocks_total"`
+	BytesDelivered uint64   `json:"bytes_delivered"`
+	BytesTotal     uint64   `json:"bytes_total"`
+	Throughput     float64  `json:"throughput"`
+	ETA            float64  `json:"eta"`
+	Done           bool     `json:"done,omitempty"`
+	Providers      []string `json:"providers,omitempty"`
+	Missing        int      `json:"missing,omitempty"`
+}
+
 // Backend is the contract the explorer depends on. The
 // daemon supplies a real implementation; tests inject a
 // memBackend.
@@ -182,15 +210,13 @@ type Backend interface {
 	// same way the public Mem-Gate gateway does. The
 	// returned reader is the reassembled DAG; the caller
 	// is responsible for closing it. Returns an error
-	// (typically explorer.ErrNotFound) when the MID is
-	// neither local nor reachable from any known
-	// provider.
+	// Resolve(ctx, m) fetches the content addressed by m.
 	Resolve(ctx context.Context, m mid.MID) (io.ReadCloser, ContentInfo, error)
 	// ResolveWithProgress fetches the content addressed
 	// by m with progress reporting. progressFn is called
 	// as blocks arrive with the running count of blocks
-	// resolved and total blocks discovered so far.
-	ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(blocksResolved, blocksTotal uint64)) (io.ReadCloser, ContentInfo, error)
+	// resolved, total blocks, and byte telemetry.
+	ResolveWithProgress(ctx context.Context, m mid.MID, progressFn func(ProgressUpdate)) (io.ReadCloser, ContentInfo, error)
 	// Add ingests content from a reader and returns the
 	// resulting MID + metadata. name is the original
 	// filename (used for Content-Disposition on download).
@@ -499,17 +525,7 @@ func (e *Explorer) handleDescriptorImportStream(w http.ResponseWriter, r *http.R
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	type sseEvent struct {
-		State   string `json:"state,omitempty"`
-		Blocks  uint64 `json:"blocks,omitempty"`
-		Total   uint64 `json:"total,omitempty"`
-		Done    bool   `json:"done,omitempty"`
-		MID     string `json:"mid,omitempty"`
-		Error   string `json:"error,omitempty"`
-		Missing int    `json:"missing,omitempty"`
-	}
-
-	sendEvent := func(ev sseEvent) {
+	sendEvent := func(ev sseResolveEvent) {
 		data, _ := json.Marshal(ev)
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
@@ -517,7 +533,7 @@ func (e *Explorer) handleDescriptorImportStream(w http.ResponseWriter, r *http.R
 
 	d, err := descriptor.Parse(body)
 	if err != nil {
-		sendEvent(sseEvent{Error: "parse: " + err.Error()})
+		sendEvent(sseResolveEvent{Error: "parse: " + err.Error()})
 		return
 	}
 
@@ -526,12 +542,12 @@ func (e *Explorer) handleDescriptorImportStream(w http.ResponseWriter, r *http.R
 	if rootErr == nil {
 		// Already have everything
 		_ = e.cfg.Backend.TrackRootWithMetadata(d.RootMID, d.Name, d.MimeType, d.TotalSize)
-		sendEvent(sseEvent{State: "complete", Done: true, MID: d.RootMID.String()})
+		sendEvent(sseResolveEvent{State: "complete", Done: true, MID: d.RootMID.String()})
 		return
 	}
 
 	// Root not fully available — fetch from network
-	sendEvent(sseEvent{State: "fetching", Missing: int(d.BlockCount), Total: uint64(d.BlockCount)})
+	sendEvent(sseResolveEvent{State: "fetching", Missing: int(d.BlockCount), Total: uint64(d.BlockCount)})
 
 	timeout := e.cfg.ResolveTimeout
 	if timeout <= 0 {
@@ -540,15 +556,21 @@ func (e *Explorer) handleDescriptorImportStream(w http.ResponseWriter, r *http.R
 	fetchCtx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	rc, info, err := e.cfg.Backend.ResolveWithProgress(fetchCtx, d.RootMID, func(blocksResolved, blocksTotal uint64) {
-		sendEvent(sseEvent{
-			State:  "downloading",
-			Blocks: blocksResolved,
-			Total:  blocksTotal,
+	rc, info, err := e.cfg.Backend.ResolveWithProgress(fetchCtx, d.RootMID, func(u ProgressUpdate) {
+		sendEvent(sseResolveEvent{
+			State:          "downloading",
+			Blocks:         u.BlocksResolved,
+			Total:          u.BlocksTotal,
+			BlocksResolved: u.BlocksResolved,
+			BlocksTotal:    u.BlocksTotal,
+			BytesDelivered: u.BytesDelivered,
+			BytesTotal:     u.BytesTotal,
+			Throughput:     u.Throughput,
+			ETA:            u.ETA,
 		})
 	})
 	if err != nil {
-		sendEvent(sseEvent{Error: "fetch: " + err.Error()})
+		sendEvent(sseResolveEvent{Error: "fetch: " + err.Error()})
 		return
 	}
 	if rc != nil {
@@ -557,7 +579,7 @@ func (e *Explorer) handleDescriptorImportStream(w http.ResponseWriter, r *http.R
 	}
 
 	_ = e.cfg.Backend.TrackRootWithMetadata(d.RootMID, d.Name, d.MimeType, d.TotalSize)
-	sendEvent(sseEvent{State: "complete", Done: true, MID: info.MID})
+	sendEvent(sseResolveEvent{State: "complete", Done: true, MID: info.MID})
 }
 
 func (e *Explorer) buildRouter() http.Handler {
@@ -991,17 +1013,7 @@ func (e *Explorer) handleResolveStream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	b := e.cfg.Backend
 
-	type sseEvent struct {
-		State     string   `json:"state,omitempty"`
-		Blocks    uint64   `json:"blocks"`
-		Total     uint64   `json:"total"`
-		Done      bool     `json:"done,omitempty"`
-		MID       string   `json:"mid,omitempty"`
-		Error     string   `json:"error,omitempty"`
-		Providers []string `json:"providers,omitempty"`
-	}
-
-	sendEvent := func(ev sseEvent) {
+	sendEvent := func(ev sseResolveEvent) {
 		if r.Context().Err() != nil {
 			return
 		}
@@ -1016,10 +1028,10 @@ func (e *Explorer) handleResolveStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Initial State: connecting to DHT
-	sendEvent(sseEvent{State: "connecting"})
+	sendEvent(sseResolveEvent{MID: midStr, State: "connecting"})
 
 	provs, _ := b.Providers(ctx, root, e.cfg.ProviderLimit)
-	sendEvent(sseEvent{State: "connecting", Providers: provs})
+	sendEvent(sseResolveEvent{MID: midStr, State: "connecting", Providers: provs})
 
 	timeout := e.cfg.ResolveTimeout
 	if timeout <= 0 {
@@ -1028,27 +1040,34 @@ func (e *Explorer) handleResolveStream(w http.ResponseWriter, r *http.Request) {
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	rc, info, err := b.ResolveWithProgress(rctx, root, func(blocksResolved, blocksTotal uint64) {
+	rc, info, err := b.ResolveWithProgress(rctx, root, func(u ProgressUpdate) {
 		state := "downloading"
-		if blocksTotal > 1 && blocksResolved <= 1 {
+		if u.BlocksTotal > 1 && u.BlocksResolved <= 1 {
 			state = "checking"
 		}
-		sendEvent(sseEvent{
-			State:     state,
-			Blocks:    blocksResolved,
-			Total:     blocksTotal,
-			Providers: provs,
+		sendEvent(sseResolveEvent{
+			MID:            midStr,
+			State:          state,
+			Blocks:         u.BlocksResolved,
+			Total:          u.BlocksTotal,
+			BlocksResolved: u.BlocksResolved,
+			BlocksTotal:    u.BlocksTotal,
+			BytesDelivered: u.BytesDelivered,
+			BytesTotal:     u.BytesTotal,
+			Throughput:     u.Throughput,
+			ETA:            u.ETA,
+			Providers:      provs,
 		})
 	})
 	if err != nil {
-		sendEvent(sseEvent{Error: err.Error()})
+		sendEvent(sseResolveEvent{MID: midStr, State: "failed", Error: err.Error()})
 		return
 	}
 	if rc != nil {
 		_, _ = io.Copy(io.Discard, rc)
 		_ = rc.Close()
 	}
-	sendEvent(sseEvent{Done: true, MID: info.MID})
+	sendEvent(sseResolveEvent{MID: info.MID, State: "completed", Done: true})
 }
 
 func (e *Explorer) handleSeal(w http.ResponseWriter, r *http.Request) {

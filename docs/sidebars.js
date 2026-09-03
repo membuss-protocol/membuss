@@ -36,6 +36,7 @@ const sidebars = {
         'core-protocols/mem-dht',
         'core-protocols/mem-pex',
         'core-protocols/mem-herald',
+        'core-protocols/shard-placement',
         'core-protocols/memns',
         'core-protocols/memedge',
       ],

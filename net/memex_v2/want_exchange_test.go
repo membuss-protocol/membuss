@@ -159,3 +159,38 @@ func TestOpportunisticPushBlock(t *testing.T) {
 	// Give a short time for stream delivery
 	time.Sleep(50 * time.Millisecond)
 }
+
+// TestPeerWantlistTTL: expired wants stop being actionable and refresh
+// restores them. Guards the prune-before-insert ordering in
+// UpdatePeerWantlist.
+func TestPeerWantlistTTL(t *testing.T) {
+	pwm := newPeerWantlistManager()
+	testPeer := peer.ID("peer-ttl")
+	m := mid.FromBytes([]byte("ttl-block"))
+
+	entries := []*membusspb.WantEntry{
+		{Mid: m.String(), WantType: membusspb.WantType_WANT_BLOCK},
+	}
+	pwm.UpdatePeerWantlist(testPeer, entries, nil)
+	if got := pwm.GetPeersWantingBlock(m); len(got) != 1 {
+		t.Fatalf("fresh want should be actionable, got %v", got)
+	}
+
+	// Backdate past the TTL.
+	pwm.mu.Lock()
+	pwm.wants[testPeer][m.String()].UpdatedAt = time.Now().Add(-peerWantTTL - time.Minute)
+	pwm.mu.Unlock()
+
+	if peers := pwm.GetPeersWantingBlock(m); len(peers) != 0 {
+		t.Fatalf("expired want must be excluded, got %v", peers)
+	}
+	if pwm.HasPeerWant(testPeer, m) {
+		t.Fatal("expired want must fail HasPeerWant")
+	}
+
+	// Refresh restores actionability.
+	pwm.UpdatePeerWantlist(testPeer, entries, nil)
+	if got := pwm.GetPeersWantingBlock(m); len(got) != 1 {
+		t.Fatalf("refreshed want should be actionable again, got %v", got)
+	}
+}

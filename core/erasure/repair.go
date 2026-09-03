@@ -39,6 +39,12 @@ func RepairMID(s store.Blockstore, m mid.MID) (int, error) {
 	parityShards := int(manifest.ParityShards)
 	totalShards := dataShards + parityShards
 
+	// Root-level summary manifests carry k/n but no ShardMids; there is
+	// nothing to repair for them. Skip quietly instead of erroring.
+	if len(manifest.ShardMids) == 0 {
+		return 0, nil
+	}
+
 	if len(manifest.ShardMids) != totalShards {
 		return 0, fmt.Errorf("erasure: manifest shard count mismatch: got %d want %d", len(manifest.ShardMids), totalShards)
 	}
@@ -154,24 +160,45 @@ func (w *RepairWorker) AuditAndRepair(ctx context.Context) RepairStats {
 	}
 
 	var stats RepairStats
-	var sealedMIDs []mid.MID
-	if sl, ok := w.store.(interface {
-		AllSealed() ([]mid.MID, error)
+	// Enumerate MIDs that actually carry an erasure manifest (leaf-level
+	// shard manifests from the memfs builder). Sealed roots only carry the
+	// shardless summary manifest and would audit nothing.
+	var mids []mid.MID
+	if ms, ok := w.store.(interface {
+		IterateMetaPrefix(prefix string, fn func(key string) error) error
 	}); ok {
-		mids, serr := sl.AllSealed()
-		if serr == nil {
-			sealedMIDs = mids
+		err := ms.IterateMetaPrefix("erasure/", func(key string) error {
+			m, perr := mid.Parse(key)
+			if perr != nil {
+				return nil // skip non-MID keys under erasure/
+			}
+			mids = append(mids, m)
+			return nil
+		})
+		if err != nil {
+			slog.Warn("erasure repair: enumerate manifests", "err", err.Error())
 		}
-	} else if ab, ok := w.store.(interface {
-		AllBlocks() ([]mid.MID, error)
-	}); ok {
-		mids, aerr := ab.AllBlocks()
-		if aerr == nil {
-			sealedMIDs = mids
+	}
+	if len(mids) == 0 {
+		// Fallback for stores without meta-prefix iteration: old behavior.
+		if sl, ok := w.store.(interface {
+			AllSealed() ([]mid.MID, error)
+		}); ok {
+			sealedMIDs, serr := sl.AllSealed()
+			if serr == nil {
+				mids = sealedMIDs
+			}
+		} else if ab, ok := w.store.(interface {
+			AllBlocks() ([]mid.MID, error)
+		}); ok {
+			allBlocks, aerr := ab.AllBlocks()
+			if aerr == nil {
+				mids = allBlocks
+			}
 		}
 	}
 
-	for _, m := range sealedMIDs {
+	for _, m := range mids {
 		select {
 		case <-ctx.Done():
 			return stats

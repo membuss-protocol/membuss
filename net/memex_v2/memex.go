@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -72,17 +73,19 @@ func EstimateTimeout(contentBytes uint64) time.Duration {
 type Engine struct {
 	host         host.Host
 	bs           Blockstore
+	cfg          Config
 	wm           *wantManager
 	bloom        *BloomManager
 	streamPool   *PeerStreamPool
 	peerWantlist *PeerWantlistManager
 
 	// Verifier Worker Pool & DB Queue
-	verifierCh chan verifierJob
-	dbWriteCh  chan dbWriteJob
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	verifierCh     chan verifierJob
+	dbWriteCh      chan dbWriteJob
+	rejectedBlocks uint64
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
 
 	metricsMu   sync.RWMutex
 	peerMetrics map[peer.ID]*peerMetrics
@@ -101,6 +104,7 @@ type peerMetrics struct {
 type verifierJob struct {
 	block *membusspb.Block
 	from  peer.ID
+	src   *pooledStream
 }
 
 type dbWriteJob struct {
@@ -112,6 +116,15 @@ type Config struct {
 	Host       host.Host
 	Blockstore Blockstore
 	Bloom      *BloomManager
+
+	// AcceptUnsolicited, when non-nil, gates blocks arriving on inbound
+	// (server-side) streams — i.e. blocks pushed to us without a matching
+	// local want. Returning false drops the block before persistence (no
+	// store write, no notifications) and resets the sending stream.
+	// Blocks arriving on streams we opened as a client answer our own
+	// wants and bypass this gate. Nil means accept all (default, and the
+	// historical behavior).
+	AcceptUnsolicited func(from peer.ID, m mid.MID) bool
 }
 
 // New constructs an Engine.
@@ -126,6 +139,7 @@ func New(cfg Config) (*Engine, error) {
 	e := &Engine{
 		host:         cfg.Host,
 		bs:           cfg.Blockstore,
+		cfg:          cfg,
 		wm:           newWantManager(),
 		bloom:        cfg.Bloom,
 		peerWantlist: newPeerWantlistManager(),
@@ -142,7 +156,7 @@ func New(cfg Config) (*Engine, error) {
 
 func (e *Engine) Start() {
 	e.host.SetStreamHandler(ProtocolID, e.handleStream)
-	
+
 	// Start Verifier Pool
 	workers := runtime.NumCPU()
 	if workers < 2 {
@@ -184,9 +198,9 @@ func (e *Engine) StopWait(ctx context.Context) error {
 	}
 }
 
-func (e *Engine) Blockstore() Blockstore { return e.bs }
-func (e *Engine) WantManager() *wantManager { return e.wm }
-func (e *Engine) BloomManager() *BloomManager { return e.bloom }
+func (e *Engine) Blockstore() Blockstore             { return e.bs }
+func (e *Engine) WantManager() *wantManager          { return e.wm }
+func (e *Engine) BloomManager() *BloomManager        { return e.bloom }
 func (e *Engine) PeerWantlist() *PeerWantlistManager { return e.peerWantlist }
 
 func (e *Engine) RegisterSession(s *Session) {
@@ -298,6 +312,21 @@ func (e *Engine) verifierWorker() {
 				log.Printf("memex_v2 verifier: block hash mismatch for MID %s from peer %s", id, job.from)
 				continue
 			}
+
+			// Unsolicited acceptance gate: blocks arriving on inbound
+			// (server-side) streams were pushed to us without a matching
+			// local want. Consult the configured policy before persisting.
+			// Blocks on client-opened streams answer our own wants and are
+			// exempt so local fetches are never gated.
+			if job.src != nil && job.src.inbound {
+				if accept := e.cfg.AcceptUnsolicited; accept != nil && !accept(job.from, id) {
+					atomic.AddUint64(&e.rejectedBlocks, 1)
+					_ = job.src.stream.Reset()
+					log.Printf("memex_v2 verifier: rejected unsolicited block %s from peer %s (policy)", id, job.from)
+					continue
+				}
+			}
+
 			// Enqueue to batch DB writer
 			select {
 			case e.dbWriteCh <- dbWriteJob{id: id, data: job.block.Data}:
@@ -420,6 +449,12 @@ func (e *Engine) objectInfoFor(m mid.MID) (*membusspb.ObjectInfo, bool) {
 		MimeType: info.MimeType,
 		Size:     info.Size,
 	}, true
+}
+
+// RejectedUnsolicited reports how many hash-valid unsolicited blocks have
+// been dropped by the AcceptUnsolicited policy gate.
+func (e *Engine) RejectedUnsolicited() uint64 {
+	return atomic.LoadUint64(&e.rejectedBlocks)
 }
 
 func (e *Engine) RecordPeerSuccess(pid peer.ID, latency time.Duration) {

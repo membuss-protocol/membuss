@@ -10,7 +10,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: frontend-builder
 # ---------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 
 WORKDIR /src/explorer-web
 

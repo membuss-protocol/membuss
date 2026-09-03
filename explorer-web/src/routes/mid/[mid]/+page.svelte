@@ -126,15 +126,29 @@
 	let statPeers = $state(0);
 	let statBlocksResolved = $state(0);
 	let statBlocksTotal = $state(0);
+	let statBytesDelivered = $state(0);
+	let statBytesTotal = $state(0);
+	let statThroughput = $state(0);
+	let statETA = $state(0);
 	let statAvailability = $state('0%');
 	let activeProviders = $state<string[]>([]);
 	let eventSource = $state<EventSource | null>(null);
 	let pieceGrid = $state<('queued' | 'scanning' | 'checked' | 'downloaded' | 'finished')[]>([]);
 
 	const MAX_BOXES = 300;
-	function initPieceGrid(total: number) {
+	function initPieceGrid(total: number, initialResolved: number = 0) {
 		const size = total > 0 ? Math.min(MAX_BOXES, total) : 100;
-		pieceGrid = Array(size).fill('queued');
+		const oldGrid = pieceGrid;
+		const nextGrid: ('queued' | 'scanning' | 'checked' | 'downloaded' | 'finished')[] = Array(size).fill('queued');
+		for (let i = 0; i < size; i++) {
+			const endIdx = Math.floor(((i + 1) * total) / size);
+			if (initialResolved >= endIdx) {
+				nextGrid[i] = 'downloaded';
+			} else if (i < oldGrid.length && oldGrid[i] === 'downloaded') {
+				nextGrid[i] = 'downloaded';
+			}
+		}
+		pieceGrid = nextGrid;
 	}
 
 	function closeResolver() {
@@ -149,9 +163,15 @@
 		closeResolver();
 
 		resolverActive = true;
-		initPieceGrid(0);
+		initPieceGrid(0, 0);
 		statusBadgeText = 'Connecting';
 		statStatusText = 'Connecting to network DHT...';
+		statBytesDelivered = 0;
+		statBytesTotal = 0;
+		statThroughput = 0;
+		statETA = 0;
+		statBlocksResolved = 0;
+		statBlocksTotal = 0;
 
 		const url = `${base}/mid/${mid}/resolve-stream`;
 		const es = new EventSource(url);
@@ -162,7 +182,7 @@
 
 		// 10-second timeout for DHT provider discovery
 		notFoundTimer = setTimeout(() => {
-			if (activeProviders.length === 0 && statBlocksResolved === 0) {
+			if (activeProviders.length === 0 && statBlocksResolved === 0 && statBytesDelivered === 0) {
 				statStatusText = 'Content Not Available on Network (0 Active Providers)';
 				statusBadgeText = 'Not Found';
 				statAvailability = '0% (Unavailable)';
@@ -187,6 +207,12 @@
 				statusBadgeText = 'Complete';
 				statStatusText = 'Assembly Complete!';
 				statAvailability = '100% (Complete)';
+				if (statBlocksTotal > 0) {
+					statBlocksResolved = statBlocksTotal;
+				}
+				if (statBytesTotal > 0) {
+					statBytesDelivered = statBytesTotal;
+				}
 
 				setTimeout(async () => {
 					await fetchMIDData(mid, true);
@@ -214,30 +240,47 @@
 				}
 			}
 
-			if (d.total > 0) {
-				const resolved = d.blocks ?? 0;
-				const total = d.total ?? 1;
-				statBlocksTotal = total;
-				statBlocksResolved = resolved;
+			const resolved = d.blocks_resolved ?? d.blocks ?? 0;
+			const total = d.blocks_total ?? d.total ?? 0;
+			const bytesDelivered = d.bytes_delivered ?? 0;
+			const bytesTotal = d.bytes_total ?? 0;
+			const throughput = d.throughput ?? 0;
+			const eta = d.eta ?? 0;
 
-				const targetGridSize = total > 0 ? Math.min(MAX_BOXES, total) : 100;
+			if (total > 0 || bytesTotal > 0 || bytesDelivered > 0 || resolved > 0) {
+				statBlocksTotal = Math.max(statBlocksTotal, total);
+				statBlocksResolved = Math.max(statBlocksResolved, resolved);
+				statBytesDelivered = bytesDelivered;
+				statBytesTotal = bytesTotal;
+				statThroughput = throughput;
+				statETA = eta;
+
+				const effectiveTotal = statBlocksTotal > 0 ? statBlocksTotal : (total > 0 ? total : 1);
+				const targetGridSize = Math.min(MAX_BOXES, effectiveTotal);
 				if (!hasStartedScan || pieceGrid.length !== targetGridSize) {
 					hasStartedScan = true;
-					initPieceGrid(total);
+					initPieceGrid(effectiveTotal, statBlocksResolved);
 				}
-				updateGridState(total, resolved, true);
+				updateGridState(effectiveTotal, statBlocksResolved, true);
 
-				const pct = Math.round((resolved / total) * 100);
-				statAvailability = `${pct}% (${resolved}/${total} blocks)`;
-				statStatusText = resolved > 0
-					? `Downloading blocks (${resolved}/${total})...`
-					: `Requesting blocks (0/${total})...`;
+				let pct = 0;
+				if (bytesTotal > 0) {
+					pct = Math.min(99, Math.round((bytesDelivered / bytesTotal) * 100));
+					statAvailability = `${pct}% (${formatBytes(bytesDelivered)} / ${formatBytes(bytesTotal)})`;
+					statStatusText = `Downloading (${formatBytes(bytesDelivered)} / ${formatBytes(bytesTotal)}, ${statBlocksResolved}/${effectiveTotal} blocks)...`;
+				} else if (effectiveTotal > 0) {
+					pct = Math.min(99, Math.round((statBlocksResolved / effectiveTotal) * 100));
+					statAvailability = `${pct}% (${statBlocksResolved}/${effectiveTotal} blocks)`;
+					statStatusText = statBlocksResolved > 0
+						? `Downloading blocks (${statBlocksResolved}/${effectiveTotal})...`
+						: `Requesting blocks (0/${effectiveTotal})...`;
+				}
 				statusBadgeText = 'Downloading';
 			}
 		};
 
 		es.onerror = () => {
-			if (activeProviders.length === 0 && statBlocksResolved === 0) {
+			if (activeProviders.length === 0 && statBlocksResolved === 0 && statBytesDelivered === 0) {
 				statStatusText = 'No provider peers holding this MID were found on the network.';
 				statusBadgeText = 'Not Found';
 				statAvailability = '0% (Unavailable)';
@@ -595,6 +638,18 @@
 								<span class="text-slate-500">Resolved Blocks</span>
 								<span class="text-slate-200 font-bold">{statBlocksResolved} / {statBlocksTotal}</span>
 							</div>
+							{#if statBytesTotal > 0}
+								<div class="flex justify-between py-1 border-b border-slate-900/50">
+									<span class="text-slate-500">Data Transferred</span>
+									<span class="text-slate-200 font-bold">{formatBytes(statBytesDelivered)} / {formatBytes(statBytesTotal)}</span>
+								</div>
+							{/if}
+							{#if statThroughput > 0}
+								<div class="flex justify-between py-1 border-b border-slate-900/50">
+									<span class="text-slate-500">Speed / ETA</span>
+									<span class="text-slate-200 font-bold">{formatBytes(statThroughput)}/s {statETA > 0 ? `(${Math.round(statETA)}s remaining)` : ''}</span>
+								</div>
+							{/if}
 							<div class="flex justify-between py-1">
 								<span class="text-slate-500">Verification scan</span>
 								<span class="text-cyan-400 font-bold">{statAvailability}</span>
@@ -604,7 +659,7 @@
 						<div class="w-full h-2 rounded-full bg-slate-950 border border-slate-850 overflow-hidden mt-2">
 							<div
 								class="h-full bg-cyan-500 transition-all duration-300"
-								style={`width: ${statBlocksTotal > 0 ? (statBlocksResolved * 100 / statBlocksTotal) : 0}%`}
+								style={`width: ${statBytesTotal > 0 ? Math.min(100, (statBytesDelivered * 100 / statBytesTotal)) : (statBlocksTotal > 0 ? Math.min(100, (statBlocksResolved * 100 / statBlocksTotal)) : 0)}%`}
 							></div>
 						</div>
 					</div>

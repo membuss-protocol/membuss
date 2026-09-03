@@ -13,6 +13,7 @@ import (
 	corepeerstore "github.com/libp2p/go-libp2p/core/peerstore"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/nnlgsakib/membuss/core/chunk"
 	"github.com/nnlgsakib/membuss/core/dag"
 	"github.com/nnlgsakib/membuss/core/memfs"
 	"github.com/nnlgsakib/membuss/core/mid"
@@ -39,6 +40,51 @@ func tryParseDescriptor(data []byte) (*membusspb.DescriptorPayload, error) {
 		return &descWrapped, nil
 	}
 	return nil, errors.New("descriptor: failed to parse wrapped")
+}
+
+func estimateFileBlocks(fileSize uint64, nodeBlocks []*membusspb.MemFSBlock) uint64 {
+	if fileSize == 0 {
+		return 1
+	}
+	// If 1-level file with explicit chunk sizes
+	if len(nodeBlocks) > 0 && nodeBlocks[0].GetSize() > 0 {
+		return 1 + uint64(len(nodeBlocks))
+	}
+
+	blockSize := uint64(chunk.AdaptiveBlockSize(int64(fileSize)))
+	if blockSize == 0 {
+		blockSize = chunk.DefaultBlockSize
+	}
+	leafChunks := (fileSize + blockSize - 1) / blockSize
+	if leafChunks == 0 {
+		leafChunks = 1
+	}
+
+	if len(nodeBlocks) > 0 {
+		// Multi-level with intermediate nodes in root
+		return 1 + uint64(len(nodeBlocks)) + leafChunks
+	}
+
+	if leafChunks <= uint64(dag.Fanout) {
+		return 1 + leafChunks
+	}
+	intermediate := (leafChunks + uint64(dag.Fanout) - 1) / uint64(dag.Fanout)
+	return 1 + intermediate + leafChunks
+}
+
+func estimateDirBlocks(node *membusspb.MemFSNode) uint64 {
+	var total uint64 = 1
+	for _, entry := range node.GetEntries() {
+		if entry == nil {
+			continue
+		}
+		if entry.GetType() == membusspb.MemFSType_FILE {
+			total += estimateFileBlocks(entry.GetSize(), nil)
+		} else {
+			total += 1
+		}
+	}
+	return total
 }
 
 type ProgressUpdate struct {
@@ -83,16 +129,18 @@ type Session struct {
 	touchFn      func()
 	findingProvs uint32
 
-	mu              sync.Mutex
-	enqueued        map[string]struct{}
-	resolved        map[string]struct{}
-	wantlist        map[string]mid.MID
-	wantStates      map[string]*wantState
-	schedulerWakeCh chan struct{}
+	mu                  sync.Mutex
+	enqueued            map[string]struct{}
+	resolved            map[string]struct{}
+	wantlist            map[string]mid.MID
+	wantStates          map[string]*wantState
+	schedulerWakeCh     chan struct{}
+	expectedTotalBlocks uint64
+	discoveryDone       bool
 
-	startTime       time.Time
-	bytesDelivered  uint64
-	bytesTotal      uint64
+	startTime      time.Time
+	bytesDelivered uint64
+	bytesTotal     uint64
 
 	provMu          sync.Mutex
 	liveProviders   []peer.AddrInfo
@@ -112,6 +160,13 @@ func (s *Session) emitProgress() {
 	s.mu.Lock()
 	resolved := uint64(len(s.resolved))
 	total := uint64(len(s.enqueued))
+	if s.expectedTotalBlocks > total {
+		total = s.expectedTotalBlocks
+	}
+	// Never report 100% complete if DAG discovery is still underway
+	if !s.discoveryDone && total <= resolved {
+		total = resolved + 1
+	}
 	delivered := s.bytesDelivered
 	totalBytes := s.bytesTotal
 	start := s.startTime
@@ -325,6 +380,10 @@ func (s *Session) Fetch(ctx context.Context) (io.Reader, error) {
 		cancel()
 		return nil, errors.New("memex session: not all blocks resolved")
 	}
+
+	s.mu.Lock()
+	s.discoveryDone = true
+	s.mu.Unlock()
 
 	// Emit a terminal update so the caller sees 100% of blocks
 	// resolved before the reader is drained
@@ -705,6 +764,9 @@ func (s *Session) enqueueChildren(ctx context.Context, midStr string) error {
 		if desc.TotalSize > 0 {
 			s.bytesTotal = desc.TotalSize
 		}
+		if desc.BlockCount > 0 && uint64(desc.BlockCount) > s.expectedTotalBlocks {
+			s.expectedTotalBlocks = uint64(desc.BlockCount)
+		}
 		s.mu.Unlock()
 		if rMID, err := mid.Parse(desc.RootMid); err == nil {
 			childMIDs = append(childMIDs, rMID)
@@ -718,8 +780,20 @@ func (s *Session) enqueueChildren(ctx context.Context, midStr string) error {
 		var node membusspb.MemFSNode
 		if uerr := proto.Unmarshal(data, &node); uerr == nil {
 			s.mu.Lock()
-			if node.GetFileSize() > 0 {
+			if node.GetFileSize() > 0 && s.bytesTotal == 0 {
 				s.bytesTotal = node.GetFileSize()
+			}
+			switch node.Type {
+			case membusspb.MemFSType_FILE:
+				est := estimateFileBlocks(node.GetFileSize(), node.Blocks)
+				if est > s.expectedTotalBlocks {
+					s.expectedTotalBlocks = est
+				}
+			case membusspb.MemFSType_DIR:
+				est := estimateDirBlocks(&node)
+				if est > s.expectedTotalBlocks {
+					s.expectedTotalBlocks = est
+				}
 			}
 			s.mu.Unlock()
 			switch node.Type {

@@ -577,8 +577,8 @@ func TestMemStoreDeleteRecursiveDescriptor(t *testing.T) {
 	// Build the wrapped format (.mbuss format)
 	var wrappedBuf bytes.Buffer
 	wrappedBuf.Write([]byte{'M', 'E', 'M', 'B'}) // Magic
-	wrappedBuf.WriteByte(1) // Version
-	wrappedBuf.Write(descData) // Payload
+	wrappedBuf.WriteByte(1)                      // Version
+	wrappedBuf.Write(descData)                   // Payload
 	h := sha256.Sum256(descData)
 	wrappedBuf.Write(h[:]) // Checksum
 	wrappedData := wrappedBuf.Bytes()
@@ -997,3 +997,136 @@ func TestMemStore_HybridBlockStorageThreshold(t *testing.T) {
 	}
 }
 
+// TestMemStoreIterateMetaPrefix: prefix iteration over the meta keyspace
+// returns unprefixed keys in sorted order and stops at the prefix boundary.
+func TestMemStoreIterateMetaPrefix(t *testing.T) {
+	s, err := NewMemStore(Options{InMemory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	put := func(k string) {
+		if err := s.PutMeta("erasure/"+k, []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("zzz-last")
+	put("aaa-first")
+	if err := s.PutMeta("other/", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	err = s.IterateMetaPrefix("erasure/", func(key string) error {
+		got = append(got, key)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "aaa-first" || got[1] != "zzz-last" {
+		t.Fatalf("unexpected keys %v", got)
+	}
+
+	// Callback error must abort iteration.
+	stop := errors.New("stop")
+	err = s.IterateMetaPrefix("erasure/", func(string) error { return stop })
+	if err != stop {
+		t.Fatalf("expected callback error to propagate, got %v", err)
+	}
+}
+
+// putErasureFixture stores data plus a manifest at "erasure/<data-mid>"
+// whose ShardMids are the given shards. Shard payloads are their own
+// source bytes so they hash to their MIDs.
+func putErasureFixture(s *MemStore, t *testing.T, data []byte, shardDatas [][]byte) mid.MID {
+	t.Helper()
+	m := mid.FromBytes(data)
+	if err := s.Put(m, data); err != nil {
+		t.Fatal(err)
+	}
+	shards := make([]mid.MID, len(shardDatas))
+	for i, sd := range shardDatas {
+		shards[i] = mid.FromBytes(sd)
+		if err := s.Put(shards[i], sd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mf := &membusspb.ErasureManifest{
+		OriginalMid: m.String(),
+		ShardMids:   make([]string, len(shards)),
+	}
+	for i, shard := range shards {
+		mf.ShardMids[i] = shard.String()
+	}
+	raw, err := proto.Marshal(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMeta("erasure/"+m.String(), raw); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// TestMemStoreGCKeepsErasureShards proves GC treats erasure shards as
+// reachable: a manifest's shard blocks survive GC of a sealed root even
+// though Walk cannot discover them from block data alone.
+func TestMemStoreGCKeepsErasureShards(t *testing.T) {
+	s := newTestStore(t)
+
+	shards := make([]mid.MID, 3)
+	shardDatas := [][]byte{[]byte("gc-shard-0"), []byte("gc-shard-1"), []byte("gc-shard-2")}
+	for i, sd := range shardDatas {
+		shards[i] = mid.FromBytes(sd)
+	}
+	leaf := putErasureFixture(s, t, []byte("gc-erasure-leaf"), shardDatas)
+
+	if err := s.Seal(leaf, false); err != nil {
+		t.Fatal(err)
+	}
+
+	freed, err := s.GC(context.Background())
+	if err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	_ = freed
+
+	for i, shard := range shards {
+		ok, err := s.Has(shard)
+		if err != nil {
+			t.Fatalf("Has shard %d: %v", i, err)
+		}
+		if !ok {
+			t.Fatalf("GC deleted erasure shard %d (%s)", i, shard)
+		}
+	}
+}
+
+// TestMemStoreDeleteRecursiveRemovesShards proves DeleteRecursive collects
+// erasure shards so deleting a root does not orphan them in the store.
+func TestMemStoreDeleteRecursiveRemovesShards(t *testing.T) {
+	s := newTestStore(t)
+
+	shards := make([]mid.MID, 3)
+	shardDatas := [][]byte{[]byte("del-shard-0"), []byte("del-shard-1"), []byte("del-shard-2")}
+	for i, sd := range shardDatas {
+		shards[i] = mid.FromBytes(sd)
+	}
+	leaf := putErasureFixture(s, t, []byte("del-erasure-leaf"), shardDatas)
+
+	if _, _, err := s.DeleteRecursive(leaf); err != nil {
+		t.Fatalf("DeleteRecursive: %v", err)
+	}
+
+	for i, shard := range shards {
+		ok, err := s.Has(shard)
+		if err != nil {
+			t.Fatalf("Has shard %d: %v", i, err)
+		}
+		if ok {
+			t.Fatalf("DeleteRecursive orphaned erasure shard %d (%s)", i, shard)
+		}
+	}
+}

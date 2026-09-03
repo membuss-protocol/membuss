@@ -149,6 +149,27 @@ func (s *MemStore) IterateSealed(fn func(mid.MID) error) error {
 	return nil
 }
 
+// erasureShardMIDs returns the shard MIDs recorded in the erasure
+// manifest stored at "erasure/<m>", if any. Key shape mirrors
+// core/erasure.ManifestMetaKey (store cannot import erasure).
+func erasureShardMIDs(s *MemStore, m mid.MID) []mid.MID {
+	raw, err := s.db.Get(db.MetaKey("erasure/" + m.String()))
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var mf membusspb.ErasureManifest
+	if proto.Unmarshal(raw, &mf) != nil {
+		return nil
+	}
+	out := make([]mid.MID, 0, len(mf.ShardMids))
+	for _, sm := range mf.ShardMids {
+		if shard, perr := mid.Parse(sm); perr == nil {
+			out = append(out, shard)
+		}
+	}
+	return out
+}
+
 // GC walks every sealed root, collects the reachable MID set,
 // and deletes every key in the store that is NOT in that set
 // AND is older than the minimum age.
@@ -206,6 +227,11 @@ func (s *MemStore) GCWithMinAge(ctx context.Context, minAge time.Duration) (uint
 		_ = tmpDB.Set(root.Bytes(), []byte{1})
 		_ = Walk(s, root, func(m mid.MID, _ bool) error {
 			_ = tmpDB.Set(m.Bytes(), []byte{1})
+			// Keep erasure shards reachable: the manifest lives in
+			// metadata, so Walk cannot discover them from block data.
+			for _, shard := range erasureShardMIDs(s, m) {
+				_ = tmpDB.Set(shard.Bytes(), []byte{1})
+			}
 			return nil
 		})
 	}
@@ -395,6 +421,11 @@ func (s *MemStore) DeleteRecursive(root mid.MID) (uint64, uint64, error) {
 
 		for _, child := range childMIDs {
 			collect(child)
+		}
+		// Collect erasure shards too, or DeleteRecursive leaves them
+		// orphaned in the store.
+		for _, shard := range erasureShardMIDs(s, m) {
+			collect(shard)
 		}
 	}
 

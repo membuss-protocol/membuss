@@ -830,3 +830,28 @@ func (s *MemStore) GetMeta(key string) ([]byte, error) {
 	}
 	return val, err
 }
+
+// IterateMetaPrefix calls fn for every meta key with the given prefix,
+// passing the key without the prefix. Keys arrive in sorted order.
+// It is the generic form of IterateSealed: callers own the prefix
+// vocabulary (erasure/, obj/, ts/ ...).
+func (s *MemStore) IterateMetaPrefix(prefix string, fn func(key string) error) error {
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.exit()
+	it, err := s.db.NewIter()
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	pfx := []byte(db.MetaKey(prefix))
+	for it.SeekGE(pfx); it.Valid() && bytes.HasPrefix(it.Key(), pfx); it.Next() {
+		key := append([]byte(nil), it.Key()...)
+		key = key[len(db.PrefixMeta)+len(prefix):]
+		if err := fn(string(key)); err != nil {
+			return err
+		}
+	}
+	return nil
+}

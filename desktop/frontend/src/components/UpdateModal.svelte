@@ -55,12 +55,19 @@
             <div>
               <span class="eyebrow !text-[9px] block">Installed</span>
               <span class="text-xs font-mono font-bold text-[#e9e2d2] mt-1 block">
-                {app.updateInfo?.current_version || app.config?.installed_version || 'v2.9.4'}
+                {app.updateInfo?.current_version || app.config?.installed_version || 'v2.10.0-beta.2'}
               </span>
             </div>
             <div class="text-[#5a574f] font-mono">→</div>
             <div>
-              <span class="eyebrow !text-[9px] !text-[#57b79e] block">Target Version</span>
+              <div class="flex items-center justify-center gap-1.5">
+                <span class="eyebrow !text-[9px] !text-[#57b79e]">Target Version</span>
+                {#if app.updateInfo?.is_beta || (selectedTag && (selectedTag.includes('-beta') || selectedTag.includes('-rc') || selectedTag.includes('-alpha')))}
+                  <span class="text-[8px] font-mono font-bold px-1 py-0.2 rounded bg-[rgba(232,163,61,0.15)] text-[#e8a33d] border border-[rgba(232,163,61,0.3)]">
+                    BETA
+                  </span>
+                {/if}
+              </div>
               <span class="text-xs font-mono font-bold text-[#57b79e] mt-1 block">
                 {selectedTag || app.updateInfo?.latest_version || 'Latest'}
               </span>
@@ -79,28 +86,53 @@
               {/if}
             </div>
 
-            {#if app.availableVersions && app.availableVersions.length > 0}
-              <select
-                bind:value={selectedTag}
-                disabled={app.updating}
-                class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none focus:border-[#e8a33d]"
-              >
-                {#each app.availableVersions as rel}
-                  <option value={rel.tag_name}>
-                    {rel.tag_name} {rel.is_latest ? '(Latest Release)' : ''} {rel.is_current ? '(Currently Installed)' : ''} {rel.type === 'downgrade' ? '(Older)' : ''} - {rel.published_at}
-                  </option>
-                {/each}
-              </select>
-            {:else}
-              <input
-                type="text"
-                bind:value={selectedTag}
-                disabled={app.updating}
-                placeholder="e.g. v2.8.8, v2.8.9..."
-                class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.12)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none focus:border-[#e8a33d]"
-              />
-            {/if}
+            <div class="relative w-full">
+              {#if app.availableVersions && app.availableVersions.length > 0}
+                <select
+                  bind:value={selectedTag}
+                  disabled={app.updating}
+                  class="w-full appearance-none bg-[#0c1416] border border-[rgba(233,226,210,0.14)] text-[#e9e2d2] text-xs font-mono rounded-[3px] py-2.5 pl-3 pr-9 outline-none hover:border-[rgba(233,226,210,0.25)] focus:border-[#e8a33d] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  style="color-scheme: dark; background-color: #0c1416; color: #e9e2d2;"
+                >
+                  {#each app.availableVersions as rel}
+                    <option
+                      value={rel.tag_name}
+                      class="bg-[#0c1416] text-[#e9e2d2] py-1"
+                      style="background-color: #0c1416; color: #e9e2d2;"
+                    >
+                      {rel.tag_name} {rel.is_prerelease ? '[BETA]' : ''} {rel.is_latest ? '(Latest Release)' : ''} {rel.is_current ? '(Currently Installed)' : ''} {rel.type === 'downgrade' ? '(Older)' : ''} - {rel.published_at}
+                    </option>
+                  {/each}
+                </select>
+                <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#8c887a] flex items-center">
+                  <Icon name="chevron-down" size={13} />
+                </div>
+              {:else}
+                <input
+                  type="text"
+                  bind:value={selectedTag}
+                  disabled={app.updating}
+                  placeholder="e.g. v2.10.0-beta.1, v2.9.4..."
+                  class="w-full bg-[#0c1416] border border-[rgba(233,226,210,0.14)] text-[#e9e2d2] text-xs font-mono rounded-[3px] p-2.5 outline-none hover:border-[rgba(233,226,210,0.25)] focus:border-[#e8a33d] transition-colors"
+                  style="color-scheme: dark; background-color: #0c1416; color: #e9e2d2;"
+                />
+              {/if}
+            </div>
           </div>
+
+          {#if app.updateInfo?.installer_url}
+            <div class="p-2.5 bg-[#0c1416] border border-[rgba(233,226,210,0.08)] rounded-[3px] flex items-center justify-between text-xs font-mono">
+              <span class="text-[#8c887a]">Standalone Desktop App:</span>
+              <a 
+                href={app.updateInfo.installer_url} 
+                target="_blank" 
+                class="text-[#57b79e] hover:text-[#7ae2c5] flex items-center gap-1.5 text-xs transition-colors"
+              >
+                <Icon name="download" size={12} />
+                Download App Package
+              </a>
+            </div>
+          {/if}
 
           <p class="text-xs text-[#8c887a] leading-relaxed">
             Membuss downloads the verified binary in a sandboxed staging directory, validates its integrity, stops the daemon, and atomically promotes the binary with auto-rollback protection.
